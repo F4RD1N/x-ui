@@ -63,6 +63,23 @@ bash <(curl -Ls https://raw.githubusercontent.com/F4RD1N/x-ui/main/install.sh) d
 Any default can be overridden the same way (`port=`, `user=`, `pass=`, `path=`)
 or through the matching `XUI_*` environment variables.
 
+## Updating
+
+The **x-ui** card on the overview page has an **Update** button. It checks this
+repository for a newer release, tells you whether one exists, and on
+confirmation replaces the panel and restarts it. Your database, inbounds and
+login are kept — an update deliberately does not re-apply the install defaults.
+
+The panel and its core are always replaced together, because a release carries
+the two built against each other. There is still no way to update the core on
+its own.
+
+From the shell it is the same thing:
+
+```bash
+x-ui update
+```
+
 ## Replacing the database later
 
 ```bash
