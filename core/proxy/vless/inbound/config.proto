@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package xray.proxy.vless.inbound;
+option csharp_namespace = "Xray.Proxy.Vless.Inbound";
+option go_package = "github.com/xtls/xray-core/proxy/vless/inbound";
+option java_package = "com.xray.proxy.vless.inbound";
+option java_multiple_files = true;
+
+import "common/protocol/user.proto";
+
+message Fallback {
+  string name = 1;
+  string alpn = 2;
+  string path = 3;
+  string type = 4;
+  string dest = 5;
+  uint64 xver = 6;
+}
+
+message Config {
+  repeated xray.common.protocol.User clients = 1;
+  repeated Fallback fallbacks = 2;
+
+  string decryption = 3;
+  uint32 xorMode = 4;
+  int64 seconds_from = 5;
+  int64 seconds_to = 6;
+  string padding = 7;
+
+  // Dialects is the set of VLESS request version bytes this inbound accepts.
+  // Empty means {0}, which is stock VLESS, so an inbound that does not set it
+  // behaves exactly as it did before.
+  //
+  // Listing more than one is what makes a staged migration possible: set
+  // [0, 4] while old and new clients are both in the field, then drop to [4]
+  // once every client speaks the new dialect. Only from that last step does an
+  // extracted config stop working in a stock client.
+  repeated uint32 dialects = 8;
+}

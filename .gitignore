@@ -1,0 +1,17 @@
+# Build output
+/dist/
+/x-ui
+/bin/
+
+# Local databases and downloaded certificates
+*.db
+*.db.backup
+*.db.temp
+/certs/
+
+# Secrets never travel with the source
+local.properties
+signing.properties
+*.jks
+*.keystore
+.env
