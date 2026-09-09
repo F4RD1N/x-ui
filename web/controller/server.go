@@ -39,6 +39,7 @@ func (a *ServerController) initRouter(g *gin.RouterGroup) {
 
 	g.GET("/status", a.status)
 	g.GET("/cpuHistory/:bucket", a.getCpuHistoryBucket)
+	g.GET("/checkUpdate", a.checkUpdate)
 	g.GET("/getConfigJson", a.getConfigJson)
 	g.GET("/getDb", a.getDb)
 	g.GET("/getNewUUID", a.getNewUUID)
@@ -49,6 +50,7 @@ func (a *ServerController) initRouter(g *gin.RouterGroup) {
 
 	g.POST("/stopXrayService", a.stopXrayService)
 	g.POST("/restartXrayService", a.restartXrayService)
+	g.POST("/updatePanel", a.updatePanel)
 	g.POST("/updateGeofile", a.updateGeofile)
 	g.POST("/updateGeofile/:fileName", a.updateGeofile)
 	g.POST("/logs/:count", a.getLogs)
@@ -207,6 +209,23 @@ func (a *ServerController) getXrayLogs(c *gin.Context) {
 
 	logs := a.serverService.GetXrayLogs(count, filter, showDirect, showBlocked, showProxy, freedoms, blackholes)
 	jsonObj(c, logs, nil)
+}
+
+// checkUpdate reports the running version and the latest released one.
+func (a *ServerController) checkUpdate(c *gin.Context) {
+	info, err := a.serverService.CheckPanelUpdate()
+	if err != nil {
+		jsonMsg(c, "Check update", err)
+		return
+	}
+	jsonObj(c, info, nil)
+}
+
+// updatePanel starts a background update to the latest release. The panel is
+// stopped and restarted by the updater, so this returns before it finishes.
+func (a *ServerController) updatePanel(c *gin.Context) {
+	err := a.serverService.UpdatePanel()
+	jsonMsg(c, "Update panel", err)
 }
 
 // getConfigJson retrieves the Xray configuration as JSON.

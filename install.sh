@@ -26,6 +26,10 @@ XUI_DB_URL="${XUI_DB_URL:-}"
 XUI_REPO="${XUI_REPO:-F4RD1N/x-ui}"
 XUI_TAG="${XUI_TAG:-}"                     # empty means latest release
 XUI_LOCAL_TARBALL="${XUI_LOCAL_TARBALL:-}" # install from a local build instead
+# XUI_MODE=update upgrades in place: the binaries and the core are replaced,
+# but the panel's username, password, port and path are left as they are.
+# A fresh install applies the defaults above.
+XUI_MODE="${XUI_MODE:-install}"
 
 xui_folder="/usr/local/x-ui"
 db_folder="/etc/x-ui"
@@ -39,6 +43,7 @@ for arg in "$@"; do
         pass=*)    XUI_PASS="${arg#pass=}" ;;
         path=*)    XUI_PATH="${arg#path=}" ;;
         tag=*)     XUI_TAG="${arg#tag=}" ;;
+        update)    XUI_MODE="update" ;;
         *)         echo -e "${yellow}Ignoring unknown argument: $arg${plain}" ;;
     esac
 done
@@ -126,6 +131,13 @@ configure() {
 
     "$xui_folder/x-ui" migrate >/dev/null 2>&1
 
+    # An update must not reset the panel to the defaults; whoever is running it
+    # is already logged in with credentials of their own.
+    if [[ "$XUI_MODE" == "update" ]]; then
+        info "Update: keeping the existing username, password, port and path."
+        return
+    fi
+
     "$xui_folder/x-ui" setting -username "$XUI_USER" -password "$XUI_PASS" \
         -port "$XUI_PORT" -webBasePath "$XUI_PATH" >/dev/null \
         || die "Could not apply the panel settings."
@@ -152,10 +164,15 @@ start_x_ui
 
 IP=$(server_ip)
 echo
-info "x-ui (dialect build) installed."
-echo -e "  URL:      ${green}http://${IP}:${XUI_PORT}/${XUI_PATH}${plain}"
-echo -e "  Username: ${green}${XUI_USER}${plain}"
-echo -e "  Password: ${green}${XUI_PASS}${plain}"
+if [[ "$XUI_MODE" == "update" ]]; then
+    info "x-ui (dialect build) updated to $("$xui_folder/x-ui" -v 2>/dev/null)."
+    echo "  The panel's username, password, port and path are unchanged."
+else
+    info "x-ui (dialect build) installed."
+    echo -e "  URL:      ${green}http://${IP}:${XUI_PORT}/${XUI_PATH}${plain}"
+    echo -e "  Username: ${green}${XUI_USER}${plain}"
+    echo -e "  Password: ${green}${XUI_PASS}${plain}"
+fi
 echo
 echo "  Core:     bundled dialect fork, not switchable"
 echo "  Database: ${db_folder}/x-ui.db"

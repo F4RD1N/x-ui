@@ -167,22 +167,24 @@
                 </a-card>
               </a-col>
               <a-col :sm="24" :lg="12">
-                <a-card title='3X-UI' hoverable>
-                  <a rel="noopener" href="https://github.com/MHSanaei/3x-ui/releases" target="_blank">
+                <a-card title='x-ui' hoverable>
+                  <a rel="noopener" href="https://github.com/F4RD1N/x-ui/releases" target="_blank">
                     <a-tag color="green">
                       <span>v{{ .cur_ver }}</span>
                     </a-tag>
                   </a>
-                  <a rel="noopener" href="https://t.me/XrayUI" target="_blank">
-                    <a-tag color="green">
-                      <span>@XrayUI</span>
-                    </a-tag>
-                  </a>
-                  <a rel="noopener" href="https://github.com/MHSanaei/3x-ui/wiki" target="_blank">
-                    <a-tag color="purple">
-                      <span>{{ i18n "pages.index.documentation" }}</span>
-                    </a-tag>
-                  </a>
+                  <a-tag v-if="panelUpdate.available" color="orange">
+                    <span>v[[ panelUpdate.latest ]] available</span>
+                  </a-tag>
+                  <a-tag v-else-if="panelUpdate.checked" color="blue">
+                    <span>up to date</span>
+                  </a-tag>
+                  <template #actions>
+                    <a-space direction="horizontal" @click="updatePanel" class="jc-center">
+                      <a-icon :type="panelUpdate.busy ? 'loading' : 'cloud-download'"></a-icon>
+                      <span v-if="!isMobile">[[ panelUpdate.busyText || 'Update' ]]</span>
+                    </a-space>
+                  </template>
                 </a-card>
               </a-col>
               <a-col :sm="24" :lg="12">
@@ -951,6 +953,14 @@
   cpuHistoryLabels: [],
   cpuHistoryModal: { visible: false, bucket: 2 },
       versionModal,
+      panelUpdate: {
+        busy: false,
+        busyText: '',
+        checked: false,
+        available: false,
+        current: '',
+        latest: '',
+      },
       logModal,
       xraylogModal,
       backupModal,
@@ -1036,6 +1046,51 @@
         } catch(e) {
           console.error('Failed to fetch bucketed cpu history', e)
         }
+      },
+      // Checks for a newer release, then asks before replacing the panel. The
+      // button carries its own loading state, because the page overlay is not
+      // shown for this and the update takes a while to start.
+      async updatePanel() {
+        if (this.panelUpdate.busy) return;
+        this.panelUpdate.busy = true;
+        this.panelUpdate.busyText = 'Checking...';
+
+        const msg = await HttpUtil.get('/panel/api/server/checkUpdate');
+        this.panelUpdate.busy = false;
+        this.panelUpdate.busyText = '';
+        if (!msg.success) return;
+
+        const info = msg.obj;
+        this.panelUpdate.checked = true;
+        this.panelUpdate.current = info.current;
+        this.panelUpdate.latest = info.latest;
+        this.panelUpdate.available = info.available;
+
+        if (!info.available) {
+          this.$message.success(`Already on the latest version (v${info.current}).`);
+          return;
+        }
+
+        this.$confirm({
+          title: 'Update panel',
+          content: `Update from v${info.current} to v${info.latest}? `
+            + 'The panel and its Xray core are replaced together and the panel restarts. '
+            + 'Your database, inbounds and login are kept.',
+          okText: '{{ i18n "confirm"}}',
+          class: themeSwitcher.currentTheme,
+          cancelText: '{{ i18n "cancel"}}',
+          onOk: async () => {
+            this.panelUpdate.busy = true;
+            this.panelUpdate.busyText = 'Updating...';
+            const res = await HttpUtil.post('/panel/api/server/updatePanel');
+            if (!res.success) {
+              this.panelUpdate.busy = false;
+              this.panelUpdate.busyText = '';
+              return;
+            }
+            this.$message.success('Update started. The panel will restart shortly.');
+          },
+        });
       },
       openGeofiles() {
         versionModal.show([]);
