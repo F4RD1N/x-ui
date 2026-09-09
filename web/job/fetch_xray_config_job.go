@@ -47,6 +47,12 @@ func (j *FetchXrayConfigJob) Run() {
 		return
 	}
 	j.lastFetch = time.Now()
+	// Recorded before the outcome is known, so a check that fails still shows
+	// as a check: a check time well ahead of an apply time is how a URL that
+	// has stopped working looks from the panel.
+	if err := j.settingService.SetXrayConfigLastCheck(j.lastFetch.Unix()); err != nil {
+		logger.Warning("Could not record the Xray config check time: ", err)
+	}
 
 	body, err := fetchConfig(url)
 	if err != nil {
@@ -94,6 +100,10 @@ func (j *FetchXrayConfigJob) Run() {
 	if err := j.xraySettingService.SaveXraySetting(body); err != nil {
 		logger.Warning("Saving the fetched Xray config failed: ", err)
 		return
+	}
+
+	if err := j.settingService.SetXrayConfigLastApply(time.Now().Unix()); err != nil {
+		logger.Warning("Could not record the Xray config apply time: ", err)
 	}
 
 	logger.Info("Xray config template updated from ", url)

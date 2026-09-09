@@ -66,6 +66,22 @@
                     :style="{ width: '100%' }"></a-input-number>
             </template>
         </a-setting-list-item>
+        <a-setting-list-item paddings="small">
+            <template #title>Last checked</template>
+            <template #control>
+                <a-tag :color="xrayConfigLastCheck ? 'green' : 'default'">
+                    [[ formatFetchTime(xrayConfigLastCheck) ]]
+                </a-tag>
+            </template>
+        </a-setting-list-item>
+        <a-setting-list-item paddings="small">
+            <template #title>Last applied</template>
+            <template #control>
+                <a-tag :color="xrayConfigLastApply ? 'green' : 'default'">
+                    [[ formatFetchTime(xrayConfigLastApply) ]]
+                </a-tag>
+            </template>
+        </a-setting-list-item>
     </a-collapse-panel>
     <a-collapse-panel key="2" header='{{ i18n "pages.xray.statistics" }}'>
         <a-setting-list-item paddings="small">

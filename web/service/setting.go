@@ -88,6 +88,10 @@ var defaultValueMap = map[string]string{
 	// a zero interval means the fetch is off, so this is inert until asked for.
 	"xrayConfigUrl":      "",
 	"xrayConfigInterval": "0",
+	// When the fetch last ran, and when it last actually replaced the config.
+	// Unix seconds; zero means it has not happened yet.
+	"xrayConfigLastCheck": "0",
+	"xrayConfigLastApply": "0",
 
 	// LDAP defaults
 	"ldapEnable":            "false",
@@ -300,6 +304,28 @@ func (s *SettingService) GetXrayConfigInterval() (int, error) {
 
 func (s *SettingService) SetXrayConfigInterval(minutes int) error {
 	return s.setInt("xrayConfigInterval", minutes)
+}
+
+// GetXrayConfigLastCheck returns when the timed fetch last ran, in Unix
+// seconds, or zero if it never has. It is written on every attempt, whether or
+// not the config turned out to be new or even usable.
+func (s *SettingService) GetXrayConfigLastCheck() (int, error) {
+	return s.getInt("xrayConfigLastCheck")
+}
+
+func (s *SettingService) SetXrayConfigLastCheck(at int64) error {
+	return s.setInt("xrayConfigLastCheck", int(at))
+}
+
+// GetXrayConfigLastApply returns when a fetched config was last stored, in Unix
+// seconds. It stays put when a fetch finds nothing new or is rejected, so a
+// check time far ahead of an apply time is the normal, healthy state.
+func (s *SettingService) GetXrayConfigLastApply() (int, error) {
+	return s.getInt("xrayConfigLastApply")
+}
+
+func (s *SettingService) SetXrayConfigLastApply(at int64) error {
+	return s.setInt("xrayConfigLastApply", int(at))
 }
 
 func (s *SettingService) GetXrayOutboundTestUrl() (string, error) {

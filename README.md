@@ -110,6 +110,12 @@ the far end of the URL cannot stop a running core:
 If any check fails the reason is written to the panel log and the current
 config is kept.
 
+The section also shows **Last checked** and **Last applied**. Last checked is
+written on every run, whatever the outcome; last applied only when a config was
+actually stored. So a check time well ahead of an apply time is the normal,
+healthy state — it means the config has not changed — and it is also how a URL
+that has quietly stopped working shows up.
+
 ## Certificates by URL
 
 Anywhere a certificate or key path is accepted — the panel's own certificate

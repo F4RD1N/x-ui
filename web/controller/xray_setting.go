@@ -61,12 +61,16 @@ func (a *XraySettingController) getXraySetting(c *gin.Context) {
 	}
 	xrayConfigUrl, _ := a.SettingService.GetXrayConfigUrl()
 	xrayConfigInterval, _ := a.SettingService.GetXrayConfigInterval()
+	xrayConfigLastCheck, _ := a.SettingService.GetXrayConfigLastCheck()
+	xrayConfigLastApply, _ := a.SettingService.GetXrayConfigLastApply()
 	xrayResponse := map[string]interface{}{
-		"xraySetting":        json.RawMessage(xraySetting),
-		"inboundTags":        json.RawMessage(inboundTags),
-		"outboundTestUrl":    outboundTestUrl,
-		"xrayConfigUrl":      xrayConfigUrl,
-		"xrayConfigInterval": xrayConfigInterval,
+		"xraySetting":         json.RawMessage(xraySetting),
+		"inboundTags":         json.RawMessage(inboundTags),
+		"outboundTestUrl":     outboundTestUrl,
+		"xrayConfigUrl":       xrayConfigUrl,
+		"xrayConfigInterval":  xrayConfigInterval,
+		"xrayConfigLastCheck": xrayConfigLastCheck,
+		"xrayConfigLastApply": xrayConfigLastApply,
 	}
 	result, err := json.Marshal(xrayResponse)
 	if err != nil {

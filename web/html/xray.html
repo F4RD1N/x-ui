@@ -256,6 +256,10 @@
       oldXrayConfigUrl: '',
       xrayConfigInterval: 0,
       oldXrayConfigInterval: 0,
+      // Reported by the fetch job, never edited here, so they take no "old"
+      // counterpart and stay out of the save comparison.
+      xrayConfigLastCheck: 0,
+      xrayConfigLastApply: 0,
       oldOutboundTestUrl: 'https://www.google.com/generate_204',
       inboundTags: [],
       outboundsTraffic: [],
@@ -412,8 +416,21 @@
           this.oldXrayConfigUrl = this.xrayConfigUrl;
           this.xrayConfigInterval = result.xrayConfigInterval || 0;
           this.oldXrayConfigInterval = this.xrayConfigInterval;
+          this.xrayConfigLastCheck = result.xrayConfigLastCheck || 0;
+          this.xrayConfigLastApply = result.xrayConfigLastApply || 0;
           this.saveBtnDisable = true;
         }
+      },
+      // Unix seconds as the fetch job stores them; zero means it has not
+      // happened yet. Formatted by hand on a 24-hour clock rather than through
+      // IntlUtil, whose locale-driven options put some languages on a 12-hour
+      // one. Times are the viewer's own.
+      formatFetchTime(seconds) {
+        if (!seconds) return 'never';
+        const d = new Date(seconds * 1000);
+        const pad = n => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+          + ` ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
       },
       async updateXraySetting() {
         this.loading(true);
