@@ -1,6 +1,7 @@
 package job
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/mhsanaei/3x-ui/v2/logger"
 	"github.com/mhsanaei/3x-ui/v2/web/service"
+	"github.com/mhsanaei/3x-ui/v2/xray"
 )
 
 // FetchXrayConfigJob pulls the Xray config template from a remote URL on a
@@ -52,11 +54,33 @@ func (j *FetchXrayConfigJob) Run() {
 		return
 	}
 
-	// Reject anything that is not a usable Xray config before it is stored: a
-	// captive portal or an error page would otherwise replace the template and
-	// take the core down at the next restart.
-	if err := j.xraySettingService.CheckXrayConfig(body); err != nil {
-		logger.Warning("Xray config fetched from ", url, " is not valid, keeping the current one: ", err)
+	// Reject anything that is not a usable Xray config before it is stored.
+	//
+	// Two checks, because the cheap one is not enough on its own: unmarshalling
+	// into the config struct ignores unknown fields, so an error page rendered
+	// as JSON, or a config naming a protocol that does not exist, would sail
+	// through it and stop the core at the next restart.
+	if err := j.xraySettingService.CheckXrayTemplateUsable(body); err != nil {
+		logger.Warning("Xray config fetched from ", url, " is not usable, keeping the current one: ", err)
+		return
+	}
+
+	// The real check: build the config the core would actually run -- this
+	// template plus the enabled inbounds -- and ask the core itself whether it
+	// would accept it. Nothing is stored unless it says yes, so a bad config at
+	// the far end of the URL cannot take a running core down.
+	candidate, err := j.xrayService.GetXrayConfigFor(body)
+	if err != nil {
+		logger.Warning("Xray config fetched from ", url, " could not be assembled, keeping the current one: ", err)
+		return
+	}
+	candidateJSON, err := json.MarshalIndent(candidate, "", "  ")
+	if err != nil {
+		logger.Warning("Xray config fetched from ", url, " could not be serialised, keeping the current one: ", err)
+		return
+	}
+	if err := xray.TestConfig(string(candidateJSON)); err != nil {
+		logger.Warning("Xray config fetched from ", url, " was refused by the core, keeping the current one: ", err)
 		return
 	}
 

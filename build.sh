@@ -53,7 +53,9 @@ for ARCH in $ARCHES; do
             continue
         fi
     fi
-    CGO_ENABLED=1 GOOS=linux GOARCH="$ARCH" ${cc:+CC=$cc} \
+    # env, not a bare assignment prefix: a CC= produced by expansion is not
+    # recognised as an assignment and would be run as a command.
+    env CGO_ENABLED=1 GOOS=linux GOARCH="$ARCH" ${cc:+CC="$cc"} \
         go build -trimpath -ldflags "-s -w" -o "$STAGE/x-ui" .
 
     echo "  core (dialect fork)"

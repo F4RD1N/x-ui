@@ -141,3 +141,29 @@ func TestMaterializeStreamCertsLeavesPlainSettings(t *testing.T) {
 		t.Errorf("settings were rewritten:\n got %s\nwant %s", out, in)
 	}
 }
+
+// A template that parses but names no outbound would start the core and then
+// route nothing, which is the failure the plain unmarshal check cannot see.
+func TestCheckXrayTemplateUsable(t *testing.T) {
+	s := &XraySettingService{}
+
+	refused := map[string]string{
+		"an error page that happens to be JSON": `{"hello":"world"}`,
+		"an empty object":                       `{}`,
+		"outbounds present but empty":           `{"outbounds":[]}`,
+	}
+	for name, cfg := range refused {
+		if err := s.CheckXrayTemplateUsable(cfg); err == nil {
+			t.Errorf("%s was accepted: %s", name, cfg)
+		}
+	}
+
+	accepted := `{"log":{"loglevel":"warning"},"outbounds":[{"protocol":"freedom","tag":"direct"}]}`
+	if err := s.CheckXrayTemplateUsable(accepted); err != nil {
+		t.Errorf("a usable template was refused: %v", err)
+	}
+
+	if err := s.CheckXrayTemplateUsable(`{not json`); err == nil {
+		t.Error("invalid JSON was accepted")
+	}
+}

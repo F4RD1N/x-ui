@@ -96,9 +96,20 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	return s.buildXrayConfig(templateConfig)
+}
 
+// GetXrayConfigFor builds the config the core would run if the given template
+// were the stored one, without storing it. It is how a candidate template can
+// be tested against the real core before it is allowed anywhere near the
+// running one.
+func (s *XrayService) GetXrayConfigFor(templateConfig string) (*xray.Config, error) {
+	return s.buildXrayConfig(templateConfig)
+}
+
+func (s *XrayService) buildXrayConfig(templateConfig string) (*xray.Config, error) {
 	xrayConfig := &xray.Config{}
-	err = json.Unmarshal([]byte(templateConfig), xrayConfig)
+	err := json.Unmarshal([]byte(templateConfig), xrayConfig)
 	if err != nil {
 		return nil, err
 	}

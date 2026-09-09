@@ -29,3 +29,28 @@ func (s *XraySettingService) CheckXrayConfig(XrayTemplateConfig string) error {
 	}
 	return nil
 }
+
+// CheckXrayTemplateUsable rejects a template that would leave the core running
+// but useless.
+//
+// Unmarshalling alone proves almost nothing, because encoding/json ignores
+// fields it does not know: an error page that happens to be JSON parses into an
+// empty config, and the core will happily start on it -- with no outbound, so
+// nothing it accepts can go anywhere. A template with no outbounds is never
+// what anyone meant, so it is refused here rather than silently swallowing
+// every connection.
+func (s *XraySettingService) CheckXrayTemplateUsable(XrayTemplateConfig string) error {
+	xrayConfig := &xray.Config{}
+	if err := json.Unmarshal([]byte(XrayTemplateConfig), xrayConfig); err != nil {
+		return common.NewError("xray template config invalid:", err)
+	}
+
+	var outbounds []any
+	if len(xrayConfig.OutboundConfigs) > 0 {
+		_ = json.Unmarshal(xrayConfig.OutboundConfigs, &outbounds)
+	}
+	if len(outbounds) == 0 {
+		return common.NewError("xray template config has no outbounds; the core would start but route nothing")
+	}
+	return nil
+}

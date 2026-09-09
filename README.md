@@ -75,10 +75,23 @@ the new one has opened successfully. The panel is restarted afterwards.
 
 ## Remote Xray config
 
-**Xray Configs → Remote config** takes a URL and an interval in minutes. The
-panel fetches the config template on that interval, and applies it only if it
-parses and actually differs, so an unchanged config never restarts the core.
-An interval of `0` turns it off.
+**Xray Configs → Remote config** takes a URL and an interval in minutes. An
+interval of `0` turns it off.
+
+A fetched config is stored only if it survives three checks, so a bad file at
+the far end of the URL cannot stop a running core:
+
+1. it parses as JSON, and names at least one outbound — a config that parses to
+   nothing (an error page that happens to be JSON) would otherwise start the
+   core with no outbound and silently route nothing;
+2. it is merged with the current inbounds and handed to the bundled core with
+   `xray -test`, which is the same parse the core does at startup, so anything
+   it would refuse to start on is refused here instead;
+3. it actually differs from the config already in use, so an unchanged config
+   never restarts the core.
+
+If any check fails the reason is written to the panel log and the current
+config is kept.
 
 ## Certificates by URL
 
