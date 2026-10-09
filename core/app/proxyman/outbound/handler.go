@@ -357,6 +357,24 @@ func (h *Handler) SetOutboundGateway(ctx context.Context, ob *session.Outbound) 
 	}
 }
 
+// LocalSocketSettings returns the socket options of this outbound's own
+// sockets, for a proxy that opens a socket the dialer cannot make (freedom's
+// ICMP echo socket). ok is false when the outbound's traffic leaves through
+// another outbound (proxySettings or sockopt.dialerProxy): a socket of its
+// own would bypass that outbound.
+func (h *Handler) LocalSocketSettings() (sockopt *internet.SocketConfig, ok bool) {
+	if h.senderSettings != nil && h.senderSettings.ProxySettings.HasTag() {
+		return nil, false
+	}
+	if h.streamSettings != nil {
+		sockopt = h.streamSettings.SocketSettings
+	}
+	if sockopt != nil && len(sockopt.DialerProxy) > 0 {
+		return nil, false
+	}
+	return sockopt, true
+}
+
 func (h *Handler) getStatCouterConnection(conn stat.Connection) stat.Connection {
 	if h.uplinkCounter != nil || h.downlinkCounter != nil {
 		return &stat.CounterConnection{

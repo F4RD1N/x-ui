@@ -218,6 +218,27 @@ func RegisterDialerController(ctl control.Func) error {
 	return nil
 }
 
+// ControlSocket gives a socket opened outside the system dialer, such as the
+// freedom outbound's ICMP echo socket, what a dialed socket gets: the
+// registered dialer controllers, then sockopt. Failures are logged and
+// ignored, as they are when dialing.
+func ControlSocket(ctx context.Context, network, address string, c syscall.RawConn, sockopt *SocketConfig) {
+	if d, ok := effectiveSystemDialer.(*DefaultSystemDialer); ok {
+		for _, ctl := range d.controllers {
+			if err := ctl(network, address, c); err != nil {
+				errors.LogInfoInner(ctx, err, "failed to apply external controller")
+			}
+		}
+	}
+	if sockopt != nil {
+		c.Control(func(fd uintptr) {
+			if err := applyOutboundSocketOptions(network, address, fd, sockopt); err != nil {
+				errors.LogInfoInner(ctx, err, "failed to apply socket options")
+			}
+		})
+	}
+}
+
 type FakePacketConn struct {
 	net.Conn
 }

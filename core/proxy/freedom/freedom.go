@@ -12,6 +12,7 @@ import (
 	"github.com/xtls/xray-core/common/crypto"
 	"github.com/xtls/xray-core/common/dice"
 	"github.com/xtls/xray-core/common/errors"
+	"github.com/xtls/xray-core/common/icmpecho"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/platform"
 	"github.com/xtls/xray-core/common/retry"
@@ -109,6 +110,19 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 	input := link.Reader
 	output := link.Writer
 
+	// Pings (common/icmpecho) in a UDP flow are executed here. A flow that
+	// opens with one has no UDP socket to dial.
+	var echo *echoFlow
+	if destination.Network == net.Network_UDP {
+		echo = h.newEchoFlow(ctx, dialer, ob, output)
+	}
+	if echo != nil {
+		defer echo.Close()
+		if icmpecho.IsMarker(ob.Target) {
+			return h.processEcho(ctx, link, ob.Target.Address, echo)
+		}
+	}
+
 	var conn stat.Connection
 	err := retry.ExponentialBackoff(5, 100).On(func() error {
 		dialDest := destination
@@ -172,6 +186,9 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 			newCancel()
 		}
 	}, plcy.Timeouts.ConnectionIdle)
+	if echo != nil {
+		echo.activity = timer.Update
+	}
 
 	requestDone := func() error {
 		defer timer.SetTimeout(plcy.Timeouts.DownlinkOnly)
@@ -199,6 +216,9 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 					UDPOverride: UDPOverride,
 					remoteAddr:  net.DestinationFromAddr(conn.RemoteAddr()).Address,
 				}
+			}
+			if echo != nil {
+				writer = &echoSplitWriter{Writer: writer, echo: echo}
 			}
 		}
 
