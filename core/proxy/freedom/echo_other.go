@@ -16,14 +16,12 @@ type echoConn struct {
 	wireID uint16
 }
 
-func openEchoConn(context.Context, bool, net.IP, *internet.SocketConfig) (*echoConn, error) {
+func openEchoConn(context.Context, bool, net.IP, *internet.SocketConfig, func(net.IP, []byte)) (*echoConn, error) {
 	return nil, errors.New("ICMP echo is not supported on this platform")
 }
 
 func (c *echoConn) write(net.IP, []byte) error {
 	return errors.New("ICMP echo is not supported on this platform")
 }
-
-func (c *echoConn) readLoop(func(net.IP, []byte)) {}
 
 func (c *echoConn) Close() error { return nil }

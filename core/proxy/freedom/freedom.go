@@ -111,18 +111,139 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 	output := link.Writer
 
 	// Pings (common/icmpecho) in a UDP flow are executed here. A flow that
-	// opens with one has no UDP socket to dial.
+	// opens with one dials its UDP socket only if ordinary UDP follows.
 	var echo *echoFlow
+	var udp *udpOnDemand
 	if destination.Network == net.Network_UDP {
 		echo = h.newEchoFlow(ctx, dialer, ob, output)
 	}
 	if echo != nil {
 		defer echo.Close()
 		if icmpecho.IsMarker(ob.Target) {
-			return h.processEcho(ctx, link, ob.Target.Address, echo)
+			udp = h.newUDPOnDemand(ctx, dialer, inbound, outGateway, UDPOverride)
+			defer udp.Close()
 		}
 	}
 
+	var conn stat.Connection
+	if udp == nil {
+		var err error
+		if conn, err = h.dial(ctx, dialer, inbound, destination, origTargetAddr, outGateway); err != nil {
+			return errors.New("failed to open connection to ", destination).Base(err)
+		}
+		defer conn.Close()
+		errors.LogInfo(ctx, "connection opened to ", destination, ", local endpoint ", conn.LocalAddr(), ", remote endpoint ", conn.RemoteAddr())
+	}
+
+	var newCtx context.Context
+	var newCancel context.CancelFunc
+	if session.TimeoutOnlyFromContext(ctx) {
+		newCtx, newCancel = context.WithCancel(context.Background())
+	}
+
+	plcy := h.policy()
+	ctx, cancel := context.WithCancel(ctx)
+	timer := signal.CancelAfterInactivity(ctx, func() {
+		cancel()
+		if newCancel != nil {
+			newCancel()
+		}
+	}, plcy.Timeouts.ConnectionIdle)
+	if echo != nil {
+		echo.activity = timer.Update
+	}
+	if udp != nil {
+		udp.activity = timer.Update
+	}
+	done := ctx.Done()
+	if newCtx != nil {
+		done = newCtx.Done()
+	}
+
+	requestDone := func() error {
+		defer timer.SetTimeout(plcy.Timeouts.DownlinkOnly)
+
+		var writer buf.Writer
+		// A flow that opened with a ping is kept alive by the echoes and the
+		// UDP it sends and receives, not by datagrams it drops.
+		copyOpts := []buf.CopyOption{buf.UpdateActivity(timer)}
+		if destination.Network == net.Network_TCP {
+			if h.config.Fragment != nil {
+				errors.LogDebug(ctx, "FRAGMENT", h.config.Fragment.PacketsFrom, h.config.Fragment.PacketsTo, h.config.Fragment.LengthMin, h.config.Fragment.LengthMax,
+					h.config.Fragment.IntervalMin, h.config.Fragment.IntervalMax, h.config.Fragment.MaxSplitMin, h.config.Fragment.MaxSplitMax)
+				writer = buf.NewWriter(&FragmentWriter{
+					fragment: h.config.Fragment,
+					writer:   conn,
+				})
+			} else {
+				writer = buf.NewWriter(conn)
+			}
+		} else {
+			if udp != nil {
+				writer = udp
+				copyOpts = nil
+			} else {
+				writer = h.newUDPWriter(ctx, conn, UDPOverride, destination)
+			}
+			if echo != nil {
+				writer = &echoSplitWriter{Writer: writer, echo: echo, target: ob.Target, udp: udp}
+			}
+		}
+
+		if err := buf.Copy(input, writer, copyOpts...); err != nil {
+			return errors.New("failed to process request").Base(err)
+		}
+
+		return nil
+	}
+
+	responseDone := func() error {
+		defer timer.SetTimeout(plcy.Timeouts.UplinkOnly)
+		if destination.Network == net.Network_TCP && useSplice && proxy.IsRAWTransportWithoutSecurity(conn) { // it would be tls conn in special use case of MITM, we need to let link handle traffic
+			var writeConn net.Conn
+			var inTimer *signal.ActivityTimer
+			if inbound := session.InboundFromContext(ctx); inbound != nil && inbound.Conn != nil {
+				writeConn = inbound.Conn
+				inTimer = inbound.Timer
+			}
+			return proxy.CopyRawConnIfExist(ctx, conn, writeConn, link.Writer, timer, inTimer)
+		}
+		var reader buf.Reader
+		if destination.Network == net.Network_TCP {
+			reader = buf.NewReader(conn)
+		} else if udp != nil {
+			// Echo replies are written by the echo flow; UDP replies once the
+			// flow has sent UDP, if it ever does.
+			select {
+			case <-udp.ready:
+				reader = udp.reader
+			case <-done:
+				return nil
+			}
+		} else {
+			reader = NewPacketReader(conn, UDPOverride, destination)
+		}
+		if err := buf.Copy(reader, output, buf.UpdateActivity(timer)); err != nil {
+			return errors.New("failed to process response").Base(err)
+		}
+		return nil
+	}
+
+	if newCtx != nil {
+		ctx = newCtx
+	}
+
+	if err := task.Run(ctx, requestDone, task.OnSuccess(responseDone, task.Close(output))); err != nil {
+		return errors.New("connection ends").Base(err)
+	}
+
+	return nil
+}
+
+// dial opens a connection to destination: a domain is resolved by the
+// domainStrategy, with retries, and a PROXY protocol header is sent when
+// configured. origTargetAddr is the address the client asked for.
+func (h *Handler) dial(ctx context.Context, dialer internet.Dialer, inbound *session.Inbound, destination net.Destination, origTargetAddr, outGateway net.Address) (stat.Connection, error) {
 	var conn stat.Connection
 	err := retry.ExponentialBackoff(5, 100).On(func() error {
 		dialDest := destination
@@ -166,101 +287,24 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		conn = rawConn
 		return nil
 	})
-	if err != nil {
-		return errors.New("failed to open connection to ", destination).Base(err)
-	}
-	defer conn.Close()
-	errors.LogInfo(ctx, "connection opened to ", destination, ", local endpoint ", conn.LocalAddr(), ", remote endpoint ", conn.RemoteAddr())
+	return conn, err
+}
 
-	var newCtx context.Context
-	var newCancel context.CancelFunc
-	if session.TimeoutOnlyFromContext(ctx) {
-		newCtx, newCancel = context.WithCancel(context.Background())
-	}
-
-	plcy := h.policy()
-	ctx, cancel := context.WithCancel(ctx)
-	timer := signal.CancelAfterInactivity(ctx, func() {
-		cancel()
-		if newCancel != nil {
-			newCancel()
+// newUDPWriter is the writer of a UDP flow's datagrams to conn, dialed to
+// destination.
+func (h *Handler) newUDPWriter(ctx context.Context, conn net.Conn, UDPOverride net.Destination, destination net.Destination) buf.Writer {
+	writer := NewPacketWriter(conn, h, UDPOverride, destination)
+	if h.config.Noises != nil {
+		errors.LogDebug(ctx, "NOISE", h.config.Noises)
+		writer = &NoisePacketWriter{
+			Writer:      writer,
+			noises:      h.config.Noises,
+			firstWrite:  true,
+			UDPOverride: UDPOverride,
+			remoteAddr:  net.DestinationFromAddr(conn.RemoteAddr()).Address,
 		}
-	}, plcy.Timeouts.ConnectionIdle)
-	if echo != nil {
-		echo.activity = timer.Update
 	}
-
-	requestDone := func() error {
-		defer timer.SetTimeout(plcy.Timeouts.DownlinkOnly)
-
-		var writer buf.Writer
-		if destination.Network == net.Network_TCP {
-			if h.config.Fragment != nil {
-				errors.LogDebug(ctx, "FRAGMENT", h.config.Fragment.PacketsFrom, h.config.Fragment.PacketsTo, h.config.Fragment.LengthMin, h.config.Fragment.LengthMax,
-					h.config.Fragment.IntervalMin, h.config.Fragment.IntervalMax, h.config.Fragment.MaxSplitMin, h.config.Fragment.MaxSplitMax)
-				writer = buf.NewWriter(&FragmentWriter{
-					fragment: h.config.Fragment,
-					writer:   conn,
-				})
-			} else {
-				writer = buf.NewWriter(conn)
-			}
-		} else {
-			writer = NewPacketWriter(conn, h, UDPOverride, destination)
-			if h.config.Noises != nil {
-				errors.LogDebug(ctx, "NOISE", h.config.Noises)
-				writer = &NoisePacketWriter{
-					Writer:      writer,
-					noises:      h.config.Noises,
-					firstWrite:  true,
-					UDPOverride: UDPOverride,
-					remoteAddr:  net.DestinationFromAddr(conn.RemoteAddr()).Address,
-				}
-			}
-			if echo != nil {
-				writer = &echoSplitWriter{Writer: writer, echo: echo}
-			}
-		}
-
-		if err := buf.Copy(input, writer, buf.UpdateActivity(timer)); err != nil {
-			return errors.New("failed to process request").Base(err)
-		}
-
-		return nil
-	}
-
-	responseDone := func() error {
-		defer timer.SetTimeout(plcy.Timeouts.UplinkOnly)
-		if destination.Network == net.Network_TCP && useSplice && proxy.IsRAWTransportWithoutSecurity(conn) { // it would be tls conn in special use case of MITM, we need to let link handle traffic
-			var writeConn net.Conn
-			var inTimer *signal.ActivityTimer
-			if inbound := session.InboundFromContext(ctx); inbound != nil && inbound.Conn != nil {
-				writeConn = inbound.Conn
-				inTimer = inbound.Timer
-			}
-			return proxy.CopyRawConnIfExist(ctx, conn, writeConn, link.Writer, timer, inTimer)
-		}
-		var reader buf.Reader
-		if destination.Network == net.Network_TCP {
-			reader = buf.NewReader(conn)
-		} else {
-			reader = NewPacketReader(conn, UDPOverride, destination)
-		}
-		if err := buf.Copy(reader, output, buf.UpdateActivity(timer)); err != nil {
-			return errors.New("failed to process response").Base(err)
-		}
-		return nil
-	}
-
-	if newCtx != nil {
-		ctx = newCtx
-	}
-
-	if err := task.Run(ctx, requestDone, task.OnSuccess(responseDone, task.Close(output))); err != nil {
-		return errors.New("connection ends").Base(err)
-	}
-
-	return nil
+	return writer
 }
 
 func NewPacketReader(conn net.Conn, UDPOverride net.Destination, DialDest net.Destination) buf.Reader {

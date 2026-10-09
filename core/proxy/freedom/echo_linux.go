@@ -25,25 +25,74 @@ import (
 // socket (root or CAP_NET_RAW). Tests narrow it to one.
 var echoSocketTypes = []int{unix.SOCK_DGRAM, unix.SOCK_RAW}
 
-// echoConn is one flow's ICMP socket of one family.
+// echoRawRcvBuf is the receive buffer asked for a shared raw socket, which
+// takes the replies of every flow sharing it.
+const echoRawRcvBuf = 1 << 21
+
+// echoConn is one flow's ICMP endpoint of one family.
 //
-// A datagram socket gets an identifier from the kernel, which rewrites it
-// on the way out and delivers to the socket only the replies carrying it. A
-// raw socket sees every ICMP message the host receives, so each one is given
-// an identifier no other raw echo socket of this process holds, and a socket
-// filter passes it only echo replies carrying that identifier.
+// A datagram socket is the flow's own. The kernel gives it an identifier,
+// rewrites it on the way out and delivers to the socket only the replies
+// carrying it.
+//
+// A raw socket is handed a copy of every ICMP message the host receives that
+// its filter does not reject, so every raw socket costs the kernel work on
+// such packets, whoever sends them. Flows therefore never open raw sockets
+// of their own: the flows of one family and one set of socket settings share
+// one (echoSocket), however many flows there are. Each flow holds an
+// identifier no other flow of this process holds, and the socket's reader
+// hands each reply to the flow holding its identifier. The socket is given
+// echo replies only, and a flow's source address (sendThrough) goes with each
+// echo it sends rather than in a bind.
 type echoConn struct {
 	ipv6   bool
-	raw    bool
 	wireID uint16 // raw: the identifier on the wire; datagram: 0, the kernel's
-	file   *os.File
-	rc     syscall.RawConn
+	oob    []byte // raw: the source address as IP_PKTINFO / IPV6_PKTINFO
+	sock   *echoSocket
+	closed bool // raw: guarded by rawEchoSockets.mu
 }
 
-func openEchoConn(ctx context.Context, ipv6 bool, bind net.IP, sockopt *internet.SocketConfig) (*echoConn, error) {
+// echoSocket is an ICMP socket: a flow's own datagram socket, or a raw
+// socket shared by flows.
+type echoSocket struct {
+	ipv6 bool
+	raw  bool
+	file *os.File
+	rc   syscall.RawConn
+
+	// Shared raw sockets only, guarded by rawEchoSockets.mu.
+	key   rawEchoKey
+	flows map[uint16]func(peer net.IP, msg []byte)
+}
+
+// rawEchoKey tells apart the raw sockets flows cannot share: the family, and
+// the outbound's socket settings (mark, interface, ...), which belong to one
+// outbound.
+type rawEchoKey struct {
+	ipv6    bool
+	sockopt *internet.SocketConfig
+}
+
+// rawEchoSockets holds this process's shared raw sockets. A socket is opened
+// for the first flow that needs it and closed when its last flow leaves.
+var rawEchoSockets struct {
+	mu    sync.RWMutex
+	socks map[rawEchoKey]*echoSocket
+}
+
+// openEchoConn opens the flow's endpoint of the family. deliver is called,
+// from a reader of the socket, with every echo reply that may be the flow's;
+// it must not block or keep msg.
+func openEchoConn(ctx context.Context, ipv6 bool, bind net.IP, sockopt *internet.SocketConfig, deliver func(peer net.IP, msg []byte)) (*echoConn, error) {
 	var errs []error
 	for _, typ := range echoSocketTypes {
-		c, err := newEchoConn(ctx, ipv6, typ, bind, sockopt)
+		var c *echoConn
+		var err error
+		if typ == unix.SOCK_RAW {
+			c, err = joinRawEchoSocket(ctx, ipv6, bind, sockopt, deliver)
+		} else {
+			c, err = openDatagramEchoConn(ctx, ipv6, bind, sockopt, deliver)
+		}
 		if err == nil {
 			return c, nil
 		}
@@ -52,7 +101,68 @@ func openEchoConn(ctx context.Context, ipv6 bool, bind net.IP, sockopt *internet
 	return nil, errors.New("no ICMP socket could be opened").Base(errors.Combine(errs...))
 }
 
-func newEchoConn(ctx context.Context, ipv6 bool, typ int, bind net.IP, sockopt *internet.SocketConfig) (*echoConn, error) {
+func openDatagramEchoConn(ctx context.Context, ipv6 bool, bind net.IP, sockopt *internet.SocketConfig, deliver func(net.IP, []byte)) (*echoConn, error) {
+	s, err := newEchoSocket(ctx, ipv6, unix.SOCK_DGRAM, sockopt)
+	if err != nil {
+		return nil, err
+	}
+	if bind != nil {
+		var berr error
+		err := s.rc.Control(func(fd uintptr) {
+			berr = unix.Bind(int(fd), echoSockaddr(bind, ipv6))
+		})
+		if err == nil {
+			err = berr
+		}
+		if err != nil {
+			s.file.Close()
+			return nil, errors.New("failed to bind the ICMP socket to ", bind).Base(err)
+		}
+	}
+	go s.readLoop(deliver)
+	return &echoConn{ipv6: ipv6, sock: s}, nil
+}
+
+// joinRawEchoSocket gives the flow an identifier on the shared raw socket
+// for the family and sockopt, opening the socket if no flow holds it.
+func joinRawEchoSocket(ctx context.Context, ipv6 bool, bind net.IP, sockopt *internet.SocketConfig, deliver func(net.IP, []byte)) (*echoConn, error) {
+	c := &echoConn{ipv6: ipv6}
+	if bind != nil {
+		c.oob = echoPktinfo(bind, ipv6)
+	}
+	key := rawEchoKey{ipv6: ipv6, sockopt: sockopt}
+	r := &rawEchoSockets
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s := r.socks[key]
+	if s == nil {
+		var err error
+		if s, err = newEchoSocket(ctx, ipv6, unix.SOCK_RAW, sockopt); err != nil {
+			return nil, err
+		}
+		s.key = key
+		s.flows = make(map[uint16]func(net.IP, []byte))
+		if r.socks == nil {
+			r.socks = make(map[rawEchoKey]*echoSocket)
+		}
+		r.socks[key] = s
+		go s.readLoop(s.dispatch)
+	}
+	id, ok := rawEchoIDs.alloc(ipv6)
+	if !ok {
+		if len(s.flows) == 0 {
+			delete(r.socks, key)
+			s.file.Close()
+		}
+		return nil, errors.New("no free ICMP identifier")
+	}
+	s.flows[id] = deliver
+	c.wireID = id
+	c.sock = s
+	return c, nil
+}
+
+func newEchoSocket(ctx context.Context, ipv6 bool, typ int, sockopt *internet.SocketConfig) (*echoSocket, error) {
 	family, proto, network := unix.AF_INET, unix.IPPROTO_ICMP, "ip4:icmp"
 	if ipv6 {
 		family, proto, network = unix.AF_INET6, unix.IPPROTO_ICMPV6, "ip6:ipv6-icmp"
@@ -61,64 +171,58 @@ func newEchoConn(ctx context.Context, ipv6 bool, typ int, bind net.IP, sockopt *
 	if err != nil {
 		return nil, os.NewSyscallError("socket", err)
 	}
-	c := &echoConn{ipv6: ipv6, raw: typ == unix.SOCK_RAW}
-	if c.raw {
-		id, ok := rawEchoIDs.alloc(ipv6)
-		if !ok {
-			unix.Close(fd)
-			return nil, errors.New("no free ICMP identifier")
-		}
-		c.wireID = id
-		if err := attachEchoFilter(fd, ipv6, id); err != nil {
-			rawEchoIDs.release(ipv6, id)
+	s := &echoSocket{ipv6: ipv6, raw: typ == unix.SOCK_RAW}
+	if s.raw {
+		if err := filterEchoReplies(fd, ipv6); err != nil {
 			unix.Close(fd)
 			return nil, err
+		}
+		if unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUFFORCE, echoRawRcvBuf) != nil {
+			unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, echoRawRcvBuf)
 		}
 	}
 	// The descriptor is non-blocking, so the file is pollable: reads wait in
 	// the runtime's poller and Close wakes them.
-	c.file = os.NewFile(uintptr(fd), network)
-	if c.rc, err = c.file.SyscallConn(); err != nil {
-		c.Close()
+	s.file = os.NewFile(uintptr(fd), network)
+	if s.rc, err = s.file.SyscallConn(); err != nil {
+		s.file.Close()
 		return nil, err
 	}
-	internet.ControlSocket(ctx, network, "", c.rc, sockopt)
-	if bind != nil {
-		var berr error
-		if err := c.rc.Control(func(fd uintptr) {
-			berr = unix.Bind(int(fd), echoSockaddr(bind, ipv6))
-		}); err == nil {
-			err = berr
-		}
-		if err != nil {
-			c.Close()
-			return nil, errors.New("failed to bind the ICMP socket to ", bind).Base(err)
-		}
-	}
-	return c, nil
+	internet.ControlSocket(ctx, network, "", s.rc, sockopt)
+	return s, nil
 }
 
-// attachEchoFilter makes a raw socket receive only echo replies carrying id.
-// A raw IPv4 socket's packets start at the IP header; ICMPv6 ones at the
+// filterEchoReplies makes a raw socket receive echo replies only.
+// ICMP_FILTER / ICMPV6_FILTER reject every other type before the kernel
+// copies a packet for the socket; a socket filter checks the type again. A
+// raw IPv4 socket's packets start at the IP header; ICMPv6 ones at the
 // ICMPv6 header.
-func attachEchoFilter(fd int, ipv6 bool, id uint16) error {
+func filterEchoReplies(fd int, ipv6 bool) error {
 	var prog []bpf.Instruction
 	if ipv6 {
+		var f unix.ICMPv6Filter // a set bit blocks the type
+		for i := range f.Data {
+			f.Data[i] = ^uint32(0)
+		}
+		f.Data[icmpecho.TypeEchoReply6>>5] &^= 1 << (icmpecho.TypeEchoReply6 & 31)
+		if err := unix.SetsockoptICMPv6Filter(fd, unix.IPPROTO_ICMPV6, unix.ICMPV6_FILTER, &f); err != nil {
+			return os.NewSyscallError("setsockopt ICMPV6_FILTER", err)
+		}
 		prog = []bpf.Instruction{
 			bpf.LoadAbsolute{Off: 0, Size: 1},
-			bpf.JumpIf{Cond: bpf.JumpEqual, Val: icmpecho.TypeEchoReply6, SkipFalse: 3},
-			bpf.LoadAbsolute{Off: 4, Size: 2},
-			bpf.JumpIf{Cond: bpf.JumpEqual, Val: uint32(id), SkipFalse: 1},
+			bpf.JumpIf{Cond: bpf.JumpEqual, Val: icmpecho.TypeEchoReply6, SkipFalse: 1},
 			bpf.RetConstant{Val: 0xffffffff},
 			bpf.RetConstant{Val: 0},
 		}
 	} else {
+		mask := ^uint32(1 << icmpecho.TypeEchoReply4) // a set bit blocks the type
+		if err := unix.SetsockoptInt(fd, unix.SOL_RAW, unix.ICMP_FILTER, int(int32(mask))); err != nil {
+			return os.NewSyscallError("setsockopt ICMP_FILTER", err)
+		}
 		prog = []bpf.Instruction{
 			bpf.LoadMemShift{Off: 0}, // X = IP header length
 			bpf.LoadIndirect{Off: 0, Size: 1},
-			bpf.JumpIf{Cond: bpf.JumpEqual, Val: icmpecho.TypeEchoReply4, SkipFalse: 3},
-			bpf.LoadIndirect{Off: 4, Size: 2},
-			bpf.JumpIf{Cond: bpf.JumpEqual, Val: uint32(id), SkipFalse: 1},
+			bpf.JumpIf{Cond: bpf.JumpEqual, Val: icmpecho.TypeEchoReply4, SkipFalse: 1},
 			bpf.RetConstant{Val: 0xffffffff},
 			bpf.RetConstant{Val: 0},
 		}
@@ -149,13 +253,30 @@ func echoSockaddr(ip net.IP, ipv6 bool) unix.Sockaddr {
 	return sa
 }
 
+// echoPktinfo is the control message that sends a datagram from src. The
+// kernel refuses it, as it refuses a bind, when src is not of this host.
+func echoPktinfo(src net.IP, ipv6 bool) []byte {
+	if ipv6 {
+		var info unix.Inet6Pktinfo
+		copy(info.Addr[:], src.To16())
+		return unix.PktInfo6(&info)
+	}
+	var info unix.Inet4Pktinfo
+	copy(info.Spec_dst[:], src.To4())
+	return unix.PktInfo4(&info)
+}
+
 // write sends one echo request message to ip. It never waits: an echo that
 // does not fit the socket buffer is dropped.
 func (c *echoConn) write(ip net.IP, msg []byte) error {
 	sa := echoSockaddr(ip, c.ipv6)
 	var serr error
-	if err := c.rc.Write(func(fd uintptr) bool {
-		serr = unix.Sendto(int(fd), msg, 0, sa)
+	if err := c.sock.rc.Write(func(fd uintptr) bool {
+		if c.oob != nil {
+			_, serr = unix.SendmsgN(int(fd), msg, c.oob, sa, 0)
+		} else {
+			serr = unix.Sendto(int(fd), msg, 0, sa)
+		}
 		return true
 	}); err != nil {
 		return err
@@ -164,16 +285,16 @@ func (c *echoConn) write(ip net.IP, msg []byte) error {
 }
 
 // echoReadPool holds receive buffers. One is taken only once the socket is
-// readable and returned once the reply is handled, so an idle flow holds
+// readable and returned once the reply is handled, so an idle socket holds
 // none.
 var echoReadPool = sync.Pool{New: func() any {
 	b := make([]byte, 1<<16)
 	return &b
 }}
 
-// readLoop hands each ICMP message received to deliver, from the IP it came
+// readLoop hands each echo reply received to deliver, from the IP it came
 // from, until the socket is closed. deliver must not keep msg.
-func (c *echoConn) readLoop(deliver func(peer net.IP, msg []byte)) {
+func (s *echoSocket) readLoop(deliver func(peer net.IP, msg []byte)) {
 	for {
 		var (
 			bp   *[]byte
@@ -181,7 +302,7 @@ func (c *echoConn) readLoop(deliver func(peer net.IP, msg []byte)) {
 			from unix.Sockaddr
 			rerr error
 		)
-		err := c.rc.Read(func(fd uintptr) bool {
+		err := s.rc.Read(func(fd uintptr) bool {
 			bp = echoReadPool.Get().(*[]byte)
 			for {
 				n, from, rerr = unix.Recvfrom(int(fd), *bp, 0)
@@ -203,7 +324,7 @@ func (c *echoConn) readLoop(deliver func(peer net.IP, msg []byte)) {
 			return
 		}
 		if rerr == nil {
-			if peer, msg, ok := c.parse(from, (*bp)[:n]); ok {
+			if peer, msg, ok := s.parse(from, (*bp)[:n]); ok {
 				deliver(peer, msg)
 			}
 		}
@@ -211,9 +332,21 @@ func (c *echoConn) readLoop(deliver func(peer net.IP, msg []byte)) {
 	}
 }
 
+// dispatch hands a reply read from a shared raw socket to the flow holding
+// its identifier.
+func (s *echoSocket) dispatch(peer net.IP, msg []byte) {
+	id := binary.BigEndian.Uint16(msg[4:6])
+	rawEchoSockets.mu.RLock()
+	deliver := s.flows[id]
+	rawEchoSockets.mu.RUnlock()
+	if deliver != nil {
+		deliver(peer, msg)
+	}
+}
+
 // parse returns the sender and the ICMP message of a received packet, or
-// false for anything that is not an echo reply meant for this socket.
-func (c *echoConn) parse(from unix.Sockaddr, b []byte) (net.IP, []byte, bool) {
+// false for anything that cannot be an echo reply.
+func (s *echoSocket) parse(from unix.Sockaddr, b []byte) (net.IP, []byte, bool) {
 	var peer net.IP
 	switch sa := from.(type) {
 	case *unix.SockaddrInet4:
@@ -223,10 +356,7 @@ func (c *echoConn) parse(from unix.Sockaddr, b []byte) (net.IP, []byte, bool) {
 	default:
 		return nil, nil, false
 	}
-	if !c.raw {
-		return peer, b, true
-	}
-	if !c.ipv6 {
+	if s.raw && !s.ipv6 {
 		// A raw IPv4 socket receives the IP header, and its ICMP checksum is
 		// not verified by the kernel.
 		if len(b) < 20 || b[0]>>4 != 4 {
@@ -244,24 +374,39 @@ func (c *echoConn) parse(from unix.Sockaddr, b []byte) (net.IP, []byte, bool) {
 			return nil, nil, false
 		}
 	}
-	if len(b) < icmpecho.HeaderLen || binary.BigEndian.Uint16(b[4:6]) != c.wireID {
+	if len(b) < icmpecho.HeaderLen {
 		return nil, nil, false
 	}
 	return peer, b, true
 }
 
+// Close closes a datagram socket, or gives up the flow's identifier on a
+// shared raw socket and closes the socket when no flow holds it any more.
+// Its reader ends with the socket.
 func (c *echoConn) Close() error {
-	if c.raw {
-		rawEchoIDs.release(c.ipv6, c.wireID)
+	s := c.sock
+	if !s.raw {
+		return s.file.Close()
 	}
-	if c.file == nil {
+	r := &rawEchoSockets
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if c.closed {
 		return nil
 	}
-	return c.file.Close()
+	c.closed = true
+	delete(s.flows, c.wireID)
+	rawEchoIDs.release(c.ipv6, c.wireID)
+	if len(s.flows) == 0 && r.socks[s.key] == s {
+		delete(r.socks, s.key)
+		return s.file.Close()
+	}
+	return nil
 }
 
-// echoIDs hands out the identifiers of this process's raw echo sockets, one
-// per socket and family, so that no two flows can take each other's replies.
+// echoIDs hands out the identifiers of this process's raw echo flows, one
+// per flow and family, so that no two flows can take each other's replies.
+// maxEchoFlows keeps all but a few of them free.
 type echoIDs struct {
 	mu   sync.Mutex
 	used [2]map[uint16]struct{}

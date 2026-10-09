@@ -32,6 +32,9 @@ import (
 // It needs root (or a namespace whose net.ipv4.ping_group_range admits root)
 // for freedom's ICMP socket. ICMPECHO_TEST_PEER4 and ICMPECHO_TEST_PEER6 ping
 // a host on another namespace in place of the loopback addresses.
+// ICMPECHO_TEST_LONG=1 also waits out the client's UDP link (over a minute
+// per XUDP case) before reusing a source port, so that XUDP resumes the
+// server's flow.
 func TestICMPEchoThroughServer(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("freedom needs an ICMP socket: run as root")
@@ -128,6 +131,9 @@ func TestICMPEchoThroughServer(t *testing.T) {
 		},
 	}
 
+	udpEcho := startUDPEchoServer(t)
+	longWait := os.Getenv("ICMPECHO_TEST_LONG") != ""
+
 	for i, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			serverPort := int(tcp.PickPort())
@@ -143,7 +149,8 @@ func TestICMPEchoThroughServer(t *testing.T) {
 				mux = `{"enabled": false}`
 			}
 			// The server is set up as the panel sets one up: sniffing on, and
-			// routing that sends UDP to a freedom outbound.
+			// routing that sends UDP to a freedom outbound but blocks some
+			// addresses (127.0.0.2 standing for geoip:private).
 			server := startCore(t, fmt.Sprintf(`{
 				"log": {"loglevel": "warning"},
 				"inbounds": [{
@@ -157,6 +164,7 @@ func TestICMPEchoThroughServer(t *testing.T) {
 				],
 				"routing": {"rules": [
 					{"type": "field", "protocol": ["bittorrent"], "outboundTag": "blocked"},
+					{"type": "field", "ip": ["127.0.0.2/32"], "outboundTag": "blocked"},
 					{"type": "field", "network": "udp", "outboundTag": "direct"}
 				]}
 			}`, serverPort, c.protocol, c.inbound, stream(c.inboundStream)), false)
@@ -179,26 +187,74 @@ func TestICMPEchoThroughServer(t *testing.T) {
 				targets = append(targets, echoTarget{4, peer6, true})
 			}
 
-			// One association per target, as a client that keeps one per
-			// destination does.
+			// One association per target, as hev-socks5-tunnel keeps one per
+			// pinged address.
 			for _, tg := range targets {
-				ctrl, relay := socksUDPAssociate(t, clientPort)
+				ctrl, relay := socksUDPAssociate(t, clientPort, nil)
 				pingThroughSocks(t, relay, tg, echoID, c.name)
 				relay.Close()
 				ctrl.Close()
 			}
 
-			ctrl, relay := socksUDPAssociate(t, clientPort)
-			defer ctrl.Close()
-			defer relay.Close()
-			// With cone UDP (the default) one association reaches every
-			// target. Without it, Xray sends all of an association's datagrams
-			// to its first destination, pings or not.
-			if !c.coneDisabled {
-				for _, tg := range targets {
-					pingThroughSocks(t, relay, tg, echoID+0x80, c.name+", shared")
+			// Routing blocks 127.0.0.2.
+			blocked := echoTarget{1, "127.0.0.2", false}
+			ctrl, relay := socksUDPAssociate(t, clientPort, nil)
+			for seq := uint16(1); seq <= 2; seq++ {
+				if pingAnswered(t, relay, blocked, echoID, seq, 700*time.Millisecond) {
+					t.Fatalf("%s: a ping to a blocked address was answered", c.name)
 				}
 			}
+			relay.Close()
+			ctrl.Close()
+
+			// Without cone UDP, Xray sends all of an association's datagrams
+			// to its first destination, pings or not. With it (the default),
+			// an association's datagrams travel in one flow, which routing saw
+			// only the first destination of, so the server pings no other
+			// address in it: it ends the flow instead, and the next one is
+			// routed afresh -- to the association's first destination (the
+			// SOCKS inbound dispatches each of its flows there), or to the
+			// packet's (Shadowsocks 2022's server). A blocked address is never
+			// answered, and the first destination keeps working. (hev keeps
+			// an association per pinged address.)
+			if !c.coneDisabled {
+				ctrl, relay := socksUDPAssociate(t, clientPort, nil)
+				pingThroughSocks(t, relay, targets[0], echoID+0x80, c.name+", shared")
+				for seq := uint16(1); seq <= 3; seq++ {
+					if pingAnswered(t, relay, blocked, echoID+0x80, seq, 700*time.Millisecond) {
+						t.Fatalf("%s: a ping to a blocked address in a flow routed to %s was answered", c.name, targets[0].addr)
+					}
+				}
+				pingUntilAnswered(t, relay, targets[0], echoID+0x81, 10*time.Second, c.name+", shared after a blocked ping")
+				if pingAnswered(t, relay, targets[1], echoID+0x82, 1, 700*time.Millisecond) {
+					t.Fatalf("%s: a ping to %s in a flow routed to %s was answered", c.name, targets[1].addr, targets[0].addr)
+				}
+				pingUntilAnswered(t, relay, targets[0], echoID+0x83, 10*time.Second, c.name+", shared after a ping elsewhere")
+				relay.Close()
+				ctrl.Close()
+
+				// A new association from the source port of one that pinged
+				// inherits its flow (the client's link for the port, an XUDP
+				// session resumed): its UDP goes through all the same.
+				ctrl1, relay1 := socksUDPAssociate(t, clientPort, nil)
+				pingThroughSocks(t, relay1, targets[0], echoID+0x90, c.name+", before reuse")
+				local := relay1.LocalAddr().(*gonet.UDPAddr)
+				relay1.Close()
+				ctrl1.Close()
+				if longWait && strings.Contains(c.name, "XUDP") {
+					time.Sleep(75 * time.Second)
+				}
+				ctrl2, relay2 := socksUDPAssociate(t, clientPort, local)
+				udpUntilAnswered(t, relay2, udpEcho, 10*time.Second, c.name+", UDP from a reused port")
+				pingUntilAnswered(t, relay2, targets[0], echoID+0x91, 10*time.Second, c.name+", ping from a reused port")
+				relay2.Close()
+				ctrl2.Close()
+			}
+
+			ctrl, relay = socksUDPAssociate(t, clientPort, nil)
+			defer ctrl.Close()
+			defer relay.Close()
+			pingThroughSocks(t, relay, targets[0], echoID+0xa0, c.name+", fresh")
 
 			// A ping to a port-0 address of the wrong family is dropped,
 			// and the association keeps working.
@@ -257,6 +313,94 @@ func pingThroughSocks(t *testing.T, relay *gonet.UDPConn, tg echoTarget, id uint
 	}
 }
 
+// pingAnswered sends one ping to tg and reports whether it was answered
+// within wait. Datagrams that are not its reply are skipped.
+func pingAnswered(t *testing.T, relay *gonet.UDPConn, tg echoTarget, id, seq uint16, wait time.Duration) bool {
+	t.Helper()
+	data := []byte(fmt.Sprintf("to %s #%d", tg.addr, seq))
+	req := icmpecho.AppendRequest(nil, icmpecho.Echo{IPv6: tg.ipv6, ID: id, Seq: seq, Data: data})
+	if _, err := relay.Write(socksDatagram(tg.atyp, tg.addr, 0, req)); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(wait)
+	b := make([]byte, 65536)
+	for {
+		relay.SetReadDeadline(deadline)
+		n, err := relay.Read(b)
+		if err != nil {
+			return false
+		}
+		from, port, payload, err := parseSocksDatagram(b[:n])
+		if err != nil || port != 0 || !sameAddr(from, tg.addr) {
+			continue
+		}
+		if rep, ok := icmpecho.ParseReply(payload, tg.ipv6); ok && rep.ID == id && rep.Seq == seq && bytes.Equal(rep.Data, data) {
+			return true
+		}
+	}
+}
+
+// pingUntilAnswered pings tg until a ping is answered, for at most d.
+func pingUntilAnswered(t *testing.T, relay *gonet.UDPConn, tg echoTarget, id uint16, d time.Duration, label string) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for seq := uint16(1); time.Now().Before(deadline); seq++ {
+		if pingAnswered(t, relay, tg, id, seq, 500*time.Millisecond) {
+			return
+		}
+	}
+	t.Fatalf("%s: no ping to %s answered in %v", label, tg.addr, d)
+}
+
+// startUDPEchoServer runs a UDP server on 127.0.0.1 that answers each
+// datagram with "echo:" and the datagram, and returns its port.
+func startUDPEchoServer(t *testing.T) uint16 {
+	t.Helper()
+	srv, err := gonet.ListenUDP("udp4", &gonet.UDPAddr{IP: gonet.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { srv.Close() })
+	go func() {
+		b := make([]byte, 2048)
+		for {
+			n, from, err := srv.ReadFromUDP(b)
+			if err != nil {
+				return
+			}
+			srv.WriteToUDP(append([]byte("echo:"), b[:n]...), from)
+		}
+	}()
+	return uint16(srv.LocalAddr().(*gonet.UDPAddr).Port)
+}
+
+// udpUntilAnswered sends datagrams to 127.0.0.1:port until one is echoed
+// back, for at most d.
+func udpUntilAnswered(t *testing.T, relay *gonet.UDPConn, port uint16, d time.Duration, label string) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	b := make([]byte, 65536)
+	for i := 0; time.Now().Before(deadline); i++ {
+		probe := fmt.Sprintf("probe %d", i)
+		if _, err := relay.Write(socksDatagram(1, "127.0.0.1", port, []byte(probe))); err != nil {
+			t.Fatal(err)
+		}
+		wait := time.Now().Add(500 * time.Millisecond)
+		for {
+			relay.SetReadDeadline(wait)
+			n, err := relay.Read(b)
+			if err != nil {
+				break
+			}
+			from, fromPort, payload, err := parseSocksDatagram(b[:n])
+			if err == nil && from == "127.0.0.1" && fromPort == port && string(payload) == "echo:"+probe {
+				return
+			}
+		}
+	}
+	t.Fatalf("%s: no UDP answered in %v", label, d)
+}
+
 func envOr(name, def string) string {
 	if v := os.Getenv(name); v != "" {
 		return v
@@ -294,7 +438,9 @@ func startCore(t *testing.T, jsonConfig string, coneDisabled bool) *core.Instanc
 	return instance
 }
 
-func socksUDPAssociate(t *testing.T, port int) (gonet.Conn, *gonet.UDPConn) {
+// socksUDPAssociate opens a UDP association with the SOCKS server on port,
+// sending from local (an ephemeral port when nil).
+func socksUDPAssociate(t *testing.T, port int, local *gonet.UDPAddr) (gonet.Conn, *gonet.UDPConn) {
 	t.Helper()
 	var ctrl gonet.Conn
 	var err error
@@ -341,7 +487,7 @@ func socksUDPAssociate(t *testing.T, port int) (gonet.Conn, *gonet.UDPConn) {
 	_, err = io.ReadFull(ctrl, pb)
 	must(err)
 	ctrl.SetDeadline(time.Time{})
-	relay, err := gonet.DialUDP("udp", nil, &gonet.UDPAddr{IP: ip, Port: int(binary.BigEndian.Uint16(pb))})
+	relay, err := gonet.DialUDP("udp", local, &gonet.UDPAddr{IP: ip, Port: int(binary.BigEndian.Uint16(pb))})
 	must(err)
 	return ctrl, relay
 }

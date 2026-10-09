@@ -35,6 +35,7 @@ import (
 type testDialer struct {
 	sockopt *internet.SocketConfig
 	chained bool
+	gateway net.Address // sendThrough
 }
 
 func (d *testDialer) Dial(ctx context.Context, dest net.Destination) (stat.Connection, error) {
@@ -43,7 +44,11 @@ func (d *testDialer) Dial(ctx context.Context, dest net.Destination) (stat.Conne
 
 func (d *testDialer) DestIpAddress() net.IP { return nil }
 
-func (d *testDialer) SetOutboundGateway(context.Context, *session.Outbound) {}
+func (d *testDialer) SetOutboundGateway(_ context.Context, ob *session.Outbound) {
+	if d.gateway != nil {
+		ob.Gateway = d.gateway
+	}
+}
 
 func (d *testDialer) LocalSocketSettings() (*internet.SocketConfig, bool) {
 	return d.sockopt, !d.chained
@@ -55,13 +60,26 @@ func newTestHandler(config *Config) *Handler {
 	return h
 }
 
+// idlePolicy is the default policy with a short connection idle timeout.
+type idlePolicy struct {
+	policy.DefaultManager
+	idle time.Duration
+}
+
+func (p idlePolicy) ForLevel(uint32) policy.Session {
+	s := policy.SessionDefault()
+	s.Timeouts.ConnectionIdle = p.idle
+	return s
+}
+
 type testFlow struct {
-	t       *testing.T
-	up      *pipe.Writer
-	down    *pipe.Reader
-	pending buf.MultiBuffer
-	cancel  context.CancelFunc
-	done    chan error
+	t        *testing.T
+	up       *pipe.Writer
+	down     *pipe.Reader
+	pending  buf.MultiBuffer
+	cancel   context.CancelFunc
+	finished chan struct{}
+	result   error // set before finished is closed
 }
 
 func startFlow(t *testing.T, h *Handler, d internet.Dialer, target net.Destination) *testFlow {
@@ -70,12 +88,23 @@ func startFlow(t *testing.T, h *Handler, d internet.Dialer, target net.Destinati
 	downR, downW := pipe.New(pipe.WithoutSizeLimit())
 	ctx, cancel := context.WithCancel(context.Background())
 	ctx = session.ContextWithOutbounds(ctx, []*session.Outbound{{Target: target}})
-	f := &testFlow{t: t, up: upW, down: downR, cancel: cancel, done: make(chan error, 1)}
+	f := &testFlow{t: t, up: upW, down: downR, cancel: cancel, finished: make(chan struct{})}
 	go func() {
-		f.done <- h.Process(ctx, &transport.Link{Reader: upR, Writer: downW}, d)
+		f.result = h.Process(ctx, &transport.Link{Reader: upR, Writer: downW}, d)
+		close(f.finished)
 	}()
 	t.Cleanup(f.close)
 	return f
+}
+
+// ended reports whether the flow's Process returned within d, and its error.
+func (f *testFlow) ended(d time.Duration) (bool, error) {
+	select {
+	case <-f.finished:
+		return true, f.result
+	case <-time.After(d):
+		return false, nil
+	}
 }
 
 // send writes one datagram; to is nil for the flow's own target.
@@ -112,10 +141,62 @@ func (f *testFlow) close() {
 	f.cancel()
 	f.down.Interrupt()
 	select {
-	case <-f.done:
+	case <-f.finished:
 	case <-time.After(5 * time.Second):
 		f.t.Error("flow did not end")
 	}
+}
+
+// startUDPEcho runs a UDP server on 127.0.0.1 that answers each datagram
+// with "echo:" and the datagram, and returns its address.
+func startUDPEcho(t *testing.T) net.Destination {
+	t.Helper()
+	srv, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IP{127, 0, 0, 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { srv.Close() })
+	go func() {
+		b := make([]byte, 2048)
+		for {
+			n, from, err := srv.ReadFromUDP(b)
+			if err != nil {
+				return
+			}
+			srv.WriteToUDP(append([]byte("echo:"), b[:n]...), from)
+		}
+	}()
+	return net.UDPDestination(net.LocalHostIP, net.Port(srv.LocalAddr().(*net.UDPAddr).Port))
+}
+
+// expectUDP checks b is the datagram want from from.
+func expectUDP(t *testing.T, b *buf.Buffer, from net.Destination, want string) {
+	t.Helper()
+	if b == nil {
+		t.Fatalf("no answer %q from %v", want, from)
+	}
+	defer b.Release()
+	if string(b.Bytes()) != want {
+		t.Fatalf("got %q from %v, want %q", b.Bytes(), b.UDP, want)
+	}
+	if b.UDP == nil || *b.UDP != from {
+		t.Fatalf("answer from %v, want %v", b.UDP, from)
+	}
+}
+
+// openFDs counts the process's open file descriptors.
+func openFDs(t *testing.T) int {
+	t.Helper()
+	ents, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Skip("cannot count open files: ", err)
+	}
+	return len(ents)
+}
+
+func udpTo(s string, port net.Port) *net.Destination {
+	d := net.UDPDestination(net.ParseAddress(s), port)
+	return &d
 }
 
 // echoModes are the socket types the host can open for the family.
@@ -247,20 +328,12 @@ func TestEchoDomain(t *testing.T) {
 func TestEchoDrops(t *testing.T) {
 	withMode(t, false, func(t *testing.T) {
 		f := startFlow(t, newTestHandler(&Config{}), &testDialer{}, net.UDPDestination(net.LocalHostIP, 0))
-		to := func(s string) *net.Destination {
-			d := net.UDPDestination(net.ParseAddress(s), 0)
-			return &d
-		}
 		f.send(nil, request(true, 1, 1, nil))                    // IPv6 echo to an IPv4 address
 		f.send(nil, []byte{13, 0, 0, 0, 0, 1, 0, 1})             // timestamp request
 		f.send(nil, []byte{0, 0, 0, 0, 0, 1, 0, 1})              // echo reply
 		f.send(nil, []byte{8, 1, 0, 0, 0, 1, 0, 1})              // code 1
 		f.send(nil, []byte{8, 0, 0, 0, 0, 1, 0})                 // short
 		f.send(nil, make([]byte, 0))                             // empty
-		f.send(to("224.0.0.1"), request(false, 1, 1, nil))       // multicast
-		f.send(to("255.255.255.255"), request(false, 1, 1, nil)) // broadcast
-		f.send(to("0.0.0.0"), request(false, 1, 1, nil))         // unspecified
-		f.send(to("::1"), request(false, 1, 1, nil))             // IPv4 echo to an IPv6 address
 		f.send(nil, request(false, 2, 2, []byte("still alive"))) // the one to answer
 		expectReply(t, f.recv(3*time.Second), net.LocalHostIP, false, 2, 2, []byte("still alive"))
 		if b := f.recv(500 * time.Millisecond); b != nil {
@@ -269,25 +342,28 @@ func TestEchoDrops(t *testing.T) {
 	})
 }
 
-// A flow that opens with ordinary UDP still has its pings executed, and its
-// UDP keeps working around them.
-func TestEchoInsideUDPFlow(t *testing.T) {
-	srv, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IP{127, 0, 0, 1}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer srv.Close()
-	go func() {
-		b := make([]byte, 2048)
-		for {
-			n, from, err := srv.ReadFromUDP(b)
-			if err != nil {
-				return
+// Targets that reach no host or many are never pinged.
+func TestEchoDropsTargets(t *testing.T) {
+	withMode(t, false, func(t *testing.T) {
+		for _, target := range []string{
+			"224.0.0.1",       // multicast
+			"255.255.255.255", // broadcast
+			"0.0.0.0",         // unspecified
+			"::1",             // an IPv4 echo to an IPv6 address
+		} {
+			f := startFlow(t, newTestHandler(&Config{}), &testDialer{}, *udpTo(target, 0))
+			f.send(nil, request(false, 1, 1, []byte("nobody")))
+			if b := f.recv(300 * time.Millisecond); b != nil {
+				t.Fatalf("ping to %s answered: %v %x", target, b.UDP, b.Bytes())
 			}
-			srv.WriteToUDP(append([]byte("echo:"), b[:n]...), from)
 		}
-	}()
-	udpTarget := net.UDPDestination(net.LocalHostIP, net.Port(srv.LocalAddr().(*net.UDPAddr).Port))
+	})
+}
+
+// A flow that opens with ordinary UDP still has its pings to the flow's own
+// address executed, and its UDP keeps working around them.
+func TestEchoInsideUDPFlow(t *testing.T) {
+	udpTarget := startUDPEcho(t)
 	ping := net.UDPDestination(net.LocalHostIP, 0)
 
 	withMode(t, false, func(t *testing.T) {
@@ -311,6 +387,251 @@ func TestEchoInsideUDPFlow(t *testing.T) {
 		}
 		if !got["ping"] || !got["echo:one"] || !got["echo:two"] {
 			t.Fatalf("replies: %v", got)
+		}
+	})
+}
+
+// Routing saw only the flow's first destination, so a flow pings that
+// address alone. In a flow that opened with UDP a ping to any other address
+// is dropped and the UDP carries on; a flow that opened with a ping ends, so
+// that the client's next datagram is dispatched and routed afresh.
+func TestEchoStaysOnRoutedTarget(t *testing.T) {
+	udpTarget := startUDPEcho(t)
+	withMode(t, false, func(t *testing.T) {
+		t.Run("udp flow", func(t *testing.T) {
+			f := startFlow(t, newTestHandler(&Config{}), &testDialer{}, udpTarget)
+			f.send(udpTo("127.0.0.2", 0), request(false, 5, 1, []byte("elsewhere")))
+			f.send(udpTo("localhost", 0), request(false, 5, 2, []byte("by name")))
+			f.send(nil, []byte("after"))
+			expectUDP(t, f.recv(3*time.Second), udpTarget, "echo:after")
+			f.send(udpTo("127.0.0.1", 0), request(false, 5, 3, []byte("own address")))
+			expectReply(t, f.recv(3*time.Second), net.LocalHostIP, false, 5, 3, []byte("own address"))
+			if b := f.recv(500 * time.Millisecond); b != nil {
+				t.Fatalf("a ping to another address was answered: %v %x", b.UDP, b.Bytes())
+			}
+		})
+		t.Run("ping flow", func(t *testing.T) {
+			f := startFlow(t, newTestHandler(&Config{}), &testDialer{}, net.UDPDestination(net.LocalHostIP, 0))
+			f.send(nil, request(false, 6, 1, []byte("routed")))
+			expectReply(t, f.recv(3*time.Second), net.LocalHostIP, false, 6, 1, []byte("routed"))
+			// The same address spelt as an IPv4-mapped IPv6 one is the target.
+			f.send(udpTo("::ffff:127.0.0.1", 0), request(false, 6, 2, []byte("mapped")))
+			expectReply(t, f.recv(3*time.Second), net.LocalHostIP, false, 6, 2, []byte("mapped"))
+			f.send(udpTo("127.0.0.2", 0), request(false, 6, 3, []byte("elsewhere")))
+			if b := f.recv(500 * time.Millisecond); b != nil {
+				t.Fatalf("a ping to another address was answered: %v %x", b.UDP, b.Bytes())
+			}
+			if ended, err := f.ended(2 * time.Second); !ended || err == nil {
+				t.Fatalf("flow did not end on a ping to another address (ended %v, err %v)", ended, err)
+			}
+		})
+		t.Run("domain flow", func(t *testing.T) {
+			host := net.DomainAddress("localhost")
+			f := startFlow(t, newTestHandler(&Config{}), &testDialer{}, net.UDPDestination(host, 0))
+			f.send(udpTo("LocalHost", 0), request(false, 7, 1, []byte("same name")))
+			expectReply(t, f.recv(3*time.Second), net.DomainAddress("LocalHost"), false, 7, 1, []byte("same name"))
+			f.send(udpTo("127.0.0.1", 0), request(false, 7, 2, []byte("its address")))
+			if b := f.recv(500 * time.Millisecond); b != nil {
+				t.Fatalf("a ping to another address was answered: %v %x", b.UDP, b.Bytes())
+			}
+			if ended, _ := f.ended(2 * time.Second); !ended {
+				t.Fatal("flow did not end on a ping to another address")
+			}
+		})
+	})
+}
+
+// A flow that opened with a ping carries ordinary UDP that follows it, as a
+// flow that opened with UDP carries pings: a new association that inherits
+// the flow (a reused source port, an XUDP session resumed) is not blackholed.
+func TestEchoFlowThenUDP(t *testing.T) {
+	udpTarget := startUDPEcho(t)
+	withMode(t, false, func(t *testing.T) {
+		f := startFlow(t, newTestHandler(&Config{}), &testDialer{}, net.UDPDestination(net.LocalHostIP, 0))
+		f.send(nil, request(false, 8, 1, []byte("first")))
+		expectReply(t, f.recv(3*time.Second), net.LocalHostIP, false, 8, 1, []byte("first"))
+		for i, payload := range []string{"one", "two"} {
+			f.send(&udpTarget, []byte(payload))
+			expectUDP(t, f.recv(3*time.Second), udpTarget, "echo:"+payload)
+			f.send(nil, request(false, 8, uint16(2+i), []byte(payload)))
+			expectReply(t, f.recv(3*time.Second), net.LocalHostIP, false, 8, uint16(2+i), []byte(payload))
+		}
+	})
+}
+
+// Datagrams that are dropped do not keep a flow that opened with a ping
+// alive: it ends once no echo has been sent or answered for the idle time.
+func TestEchoDroppedDatagramsDoNotKeepFlowAlive(t *testing.T) {
+	withMode(t, false, func(t *testing.T) {
+		h := new(Handler)
+		h.Init(&Config{}, idlePolicy{idle: time.Second})
+		f := startFlow(t, h, &testDialer{}, net.UDPDestination(net.LocalHostIP, 0))
+		f.send(nil, request(false, 1, 1, []byte("hello")))
+		expectReply(t, f.recv(3*time.Second), net.LocalHostIP, false, 1, 1, []byte("hello"))
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			f.send(nil, []byte{13, 0, 0, 0, 0, 1, 0, 1}) // dropped: not an echo request
+			if ended, _ := f.ended(200 * time.Millisecond); ended {
+				return
+			}
+		}
+		t.Fatal("dropped datagrams kept the flow alive")
+	})
+}
+
+// withRaw runs fn with freedom forced to raw ICMP sockets, as root gets
+// them where net.ipv4.ping_group_range does not admit it.
+func withRaw(t *testing.T, ipv6 bool, fn func(t *testing.T)) {
+	typ, ok := echoModes(t, ipv6)["raw"]
+	if !ok {
+		t.Skip("no raw ICMP socket can be opened: run as root")
+	}
+	saved := echoSocketTypes
+	echoSocketTypes = []int{typ}
+	t.Cleanup(func() { echoSocketTypes = saved })
+	fn(t)
+}
+
+// Every ICMP packet the host receives is copied to each raw ICMP socket, so
+// flows share one raw socket per family instead of opening one each: what a
+// packet costs the kernel must not grow with the flows clients open.
+func TestEchoRawFlowsShareOneSocket(t *testing.T) {
+	withRaw(t, false, func(t *testing.T) {
+		h := newTestHandler(&Config{})
+		before := openFDs(t)
+		const flows = 200
+		fs := make([]*testFlow, flows)
+		for i := range fs {
+			fs[i] = startFlow(t, h, &testDialer{}, net.UDPDestination(net.LocalHostIP, 0))
+			fs[i].send(nil, request(false, uint16(i), 1, []byte(fmt.Sprintf("flow %d", i))))
+		}
+		for i, f := range fs {
+			expectReply(t, f.recv(5*time.Second), net.LocalHostIP, false, uint16(i), 1, []byte(fmt.Sprintf("flow %d", i)))
+		}
+		if opened := openFDs(t) - before; opened > 2 {
+			t.Fatalf("%d flows opened %d files, want one shared raw socket", flows, opened)
+		}
+		rawEchoSockets.mu.RLock()
+		socks := len(rawEchoSockets.socks)
+		rawEchoSockets.mu.RUnlock()
+		if socks != 1 {
+			t.Fatalf("%d shared raw sockets, want 1", socks)
+		}
+		for _, f := range fs {
+			f.close()
+		}
+		// The socket is closed with its last flow.
+		rawEchoSockets.mu.RLock()
+		socks = len(rawEchoSockets.socks)
+		rawEchoSockets.mu.RUnlock()
+		if socks != 0 {
+			t.Fatalf("%d shared raw sockets left after every flow ended", socks)
+		}
+		// The descriptor is released once the socket's reader lets go of it.
+		for deadline := time.Now().Add(time.Second); openFDs(t) > before; {
+			if time.Now().After(deadline) {
+				t.Fatalf("%d files left open after every flow ended", openFDs(t)-before)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
+}
+
+// The kernel hands a shared raw socket echo replies only: every other ICMP
+// type is rejected before it is copied for the socket.
+func TestEchoRawSocketFilter(t *testing.T) {
+	for _, ipv6 := range []bool{false, true} {
+		t.Run(fmt.Sprintf("ipv6=%v", ipv6), func(t *testing.T) {
+			if ipv6 && !hasIPv6Loopback() {
+				t.Skip("no IPv6 loopback")
+			}
+			withRaw(t, ipv6, func(t *testing.T) {
+				target := net.LocalHostIP
+				if ipv6 {
+					target = net.LocalHostIPv6
+				}
+				f := startFlow(t, newTestHandler(&Config{}), &testDialer{}, net.UDPDestination(target, 0))
+				f.send(nil, request(ipv6, 1, 1, []byte("filter")))
+				expectReply(t, f.recv(3*time.Second), target, ipv6, 1, 1, []byte("filter"))
+
+				rawEchoSockets.mu.RLock()
+				s := rawEchoSockets.socks[rawEchoKey{ipv6: ipv6}]
+				rawEchoSockets.mu.RUnlock()
+				if s == nil {
+					t.Fatal("no shared raw socket")
+				}
+				var ferr error
+				s.rc.Control(func(fd uintptr) {
+					if ipv6 {
+						var filter *unix.ICMPv6Filter
+						if filter, ferr = unix.GetsockoptICMPv6Filter(int(fd), unix.IPPROTO_ICMPV6, unix.ICMPV6_FILTER); ferr != nil {
+							return
+						}
+						for typ := 0; typ < 256; typ++ {
+							blocked := filter.Data[typ>>5]&(1<<(typ&31)) != 0
+							if blocked == (typ == icmpecho.TypeEchoReply6) {
+								ferr = fmt.Errorf("ICMPv6 type %d blocked: %v", typ, blocked)
+								return
+							}
+						}
+						return
+					}
+					var mask int
+					if mask, ferr = unix.GetsockoptInt(int(fd), unix.SOL_RAW, unix.ICMP_FILTER); ferr != nil {
+						return
+					}
+					if want := ^uint32(1 << icmpecho.TypeEchoReply4); uint32(mask) != want {
+						ferr = fmt.Errorf("ICMP_FILTER %#x, want %#x", uint32(mask), want)
+					}
+				})
+				if ferr != nil {
+					t.Fatal(ferr)
+				}
+			})
+		})
+	}
+}
+
+// At most maxEchoFlows flows ping at once; a flow over the cap has its pings
+// dropped until another flow ends.
+func TestEchoFlowCap(t *testing.T) {
+	withMode(t, false, func(t *testing.T) {
+		saved := maxEchoFlows
+		maxEchoFlows = echoFlowCount.Load() + 2
+		t.Cleanup(func() { maxEchoFlows = saved })
+
+		h := newTestHandler(&Config{})
+		ping := func(f *testFlow, seq uint16) *buf.Buffer {
+			f.send(nil, request(false, 1, seq, []byte("cap")))
+			return f.recv(time.Second)
+		}
+		a := startFlow(t, h, &testDialer{}, net.UDPDestination(net.LocalHostIP, 0))
+		b := startFlow(t, h, &testDialer{}, net.UDPDestination(net.LocalHostIP, 0))
+		c := startFlow(t, h, &testDialer{}, net.UDPDestination(net.LocalHostIP, 0))
+		expectReply(t, ping(a, 1), net.LocalHostIP, false, 1, 1, []byte("cap"))
+		expectReply(t, ping(b, 1), net.LocalHostIP, false, 1, 1, []byte("cap"))
+		if r := ping(c, 1); r != nil {
+			t.Fatalf("a flow over the cap was answered: %x", r.Bytes())
+		}
+		a.close()
+		expectReply(t, ping(c, 2), net.LocalHostIP, false, 1, 2, []byte("cap"))
+		expectReply(t, ping(b, 2), net.LocalHostIP, false, 1, 2, []byte("cap"))
+	})
+}
+
+// sendThrough is the source of every echo; an address that is not this
+// host's sends nothing.
+func TestEchoSendThrough(t *testing.T) {
+	withMode(t, false, func(t *testing.T) {
+		h := newTestHandler(&Config{})
+		f := startFlow(t, h, &testDialer{gateway: net.ParseAddress("127.0.0.3")}, net.UDPDestination(net.LocalHostIP, 0))
+		f.send(nil, request(false, 2, 1, []byte("from .3")))
+		expectReply(t, f.recv(3*time.Second), net.LocalHostIP, false, 2, 1, []byte("from .3"))
+
+		g := startFlow(t, h, &testDialer{gateway: net.ParseAddress("192.0.2.55")}, net.UDPDestination(net.LocalHostIP, 0))
+		g.send(nil, request(false, 2, 2, []byte("not ours")))
+		if r := g.recv(time.Second); r != nil {
+			t.Fatalf("a ping from an address not of this host was answered: %x", r.Bytes())
 		}
 	})
 }
