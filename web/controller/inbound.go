@@ -36,6 +36,7 @@ func (a *InboundController) initRouter(g *gin.RouterGroup) {
 	g.GET("/getClientTraffics/:email", a.getClientTraffics)
 	g.GET("/getClientTrafficsById/:id", a.getClientTrafficsById)
 	g.GET("/xrayInstances", a.getXrayInstances)
+	g.POST("/:id/multiInstance", a.multiInstance)
 
 	g.POST("/add", a.addInbound)
 	g.POST("/del/:id", a.delInbound)
@@ -396,6 +397,35 @@ func (a *InboundController) applyToCores(needRestart bool) {
 		// the periodic check looks once more.
 		a.xrayService.SetToNeedRestart()
 	}
+}
+
+// multiInstance copies an inbound, with all its clients, into new xray
+// instances on the following ports. With dryRun it only reports what it
+// would do: the ports, instance names, conflicts and how many copies fit.
+func (a *InboundController) multiInstance(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
+		return
+	}
+	count, _ := strconv.Atoi(c.PostForm("count"))
+	cores, _ := strconv.Atoi(c.PostForm("cores"))
+	useMax := c.PostForm("max") == "true"
+	if c.PostForm("dryRun") == "true" {
+		plan, _, err := a.inboundService.PlanMultiInstance(id, count, cores, useMax)
+		jsonObj(c, plan, err)
+		return
+	}
+	plan, created, err := a.inboundService.MultiInstance(id, count, cores, useMax)
+	if err != nil {
+		jsonMsgObj(c, I18nWeb(c, "somethingWentWrong"), plan, err)
+		return
+	}
+	a.applyToCores(false)
+	jsonMsgObj(c, I18nWeb(c, "pages.inbounds.multiInstanceDone"), gin.H{"plan": plan, "created": len(created)}, nil)
+	user := session.GetLoginUser(c)
+	inbounds, _ := a.inboundService.GetInbounds(user.Id)
+	websocket.BroadcastInbounds(inbounds)
 }
 
 // getXrayInstances lists the xray core instances with their CPU cores.

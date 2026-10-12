@@ -3,30 +3,31 @@
 
 {{ template "page/body_start" .}}
 <style>
-  .xi-cpus { display: flex; flex-wrap: wrap; gap: 4px 20px; font-size: 13px; padding-bottom: 12px; margin-bottom: 2px; border-bottom: 1px solid #f0f0f0; }
-  .dark .xi-cpus { border-bottom-color: var(--dark-color-stroke, #2c3950); }
-  .xi-row { display: flex; flex-wrap: wrap; gap: 12px 24px; padding: 14px 0; border-top: 1px solid #f0f0f0; }
-  .xi-cpus + .xi-row { border-top: 0; }
-  .dark .xi-row { border-top-color: var(--dark-color-stroke, #2c3950); }
-  .xi-main { flex: 1 1 260px; min-width: 0; }
-  .xi-title { display: flex; align-items: center; flex-wrap: wrap; }
-  .xi-title > * { margin-right: 8px; }
+  .xi-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 4px 16px; padding: 6px 4px 0; }
+  .xi-heading-title { font-size: 16px; font-weight: 600; }
+  .dark .xi-heading-title { color: var(--dark-color-text-primary, rgba(255, 255, 255, 0.85)); }
+  .xi-cpus { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; color: #595959; }
+  .dark .xi-cpus { color: #a9b3c7; }
+  .xi-card .ant-card-head-title { display: flex; align-items: center; gap: 8px; }
   .xi-name { font-weight: 600; font-size: 15px; }
-  .xi-title > .xi-state { margin: 0 8px 0 0; }
-  .xi-muted { color: #8c8c8c; font-size: 12px; }
-  .dark .xi-muted { color: #8d97ab; }
-  .xi-inbounds { margin-top: 6px; }
-  .xi-inbounds .ant-tag { margin: 0 4px 4px 0; }
-  .xi-error { color: #e04141; font-size: 12px; margin-top: 4px; word-break: break-word; }
-  .xi-stats { flex: 2 1 420px; display: grid; grid-template-columns: minmax(150px, 2fr) repeat(4, minmax(70px, 1fr)); gap: 12px; align-items: start; min-width: 0; }
+  .xi-state { margin: 0; }
+  .xi-body { display: flex; align-items: center; gap: 20px; }
+  .xi-gauge { flex: 0 0 auto; text-align: center; }
+  .xi-gauge-label { font-size: 13px; margin-top: 2px; }
+  .xi-facts { flex: 1 1 auto; min-width: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; }
   .xi-label { color: #8c8c8c; font-size: 12px; }
   .dark .xi-label { color: #8d97ab; }
-  .xi-value { font-size: 13px; white-space: nowrap; }
-  .xi-big { font-size: 18px; font-weight: 600; }
-  .xi-stat-cpu .ant-progress { margin: 2px 0; }
-  @media (max-width: 768px) {
-    .xi-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); flex-basis: 100%; }
-    .xi-stat-cpu { grid-column: 1 / -1; }
+  .xi-value { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .xi-coresline { font-weight: 600; font-size: 14px; margin-bottom: 10px; overflow-wrap: anywhere; }
+  .xi-big { font-size: 20px; font-weight: 600; line-height: 1.3; }
+  .xi-muted { color: #8c8c8c; font-size: 12px; }
+  .dark .xi-muted { color: #8d97ab; }
+  .xi-inbounds { margin-top: 14px; }
+  .xi-inbounds .ant-tag { margin: 0 4px 4px 0; }
+  .xi-error { color: #e04141; font-size: 12px; margin-top: 6px; word-break: break-word; }
+  @media (max-width: 480px) {
+    .xi-body { gap: 12px; }
+    .xi-gauge .ant-progress-inner { width: 84px !important; height: 84px !important; font-size: 18px !important; }
   }
   body.dark .custom-geo-section code.custom-geo-ext-code {
     color: var(--dark-color-text-primary, rgba(255, 255, 255, 0.85));
@@ -338,57 +339,63 @@
                 </a-card>
               </a-col>
               <a-col :span="24">
-                <a-card hoverable class="xi-card">
-                  <template #title>{{ i18n "pages.index.xrayInstances" }}</template>
-                  <div class="xi-cpus">
+                <div class="xi-heading">
+                  <span class="xi-heading-title">{{ i18n "pages.index.xrayInstances" }}</span>
+                  <span class="xi-cpus">
                     <span>{{ i18n "pages.index.xrayCpuTotal" }} <b>[[ status.xrayCpus.total ]]</b></span>
                     <span>{{ i18n "pages.index.xrayCpuReserved" }} <b>[[ status.xrayCpus.reserved ]]</b></span>
                     <span>{{ i18n "pages.index.xrayCpuAvailable" }} <b>[[ status.xrayCpus.available ]]</b></span>
-                  </div>
-                  <div v-if="status.xrayInstances.length === 0" class="xi-muted">{{ i18n "pages.index.xrayInstancesNone" }}</div>
-                  <div v-for="inst in status.xrayInstances" :key="inst.name" class="xi-row">
-                    <div class="xi-main">
-                      <div class="xi-title">
-                        <span class="xi-name">[[ inst.name ]]</span>
-                        <a-tag :color="xiColor(inst.state)" class="xi-state">[[ xiStateText(inst.state) ]]</a-tag>
-                        <a-tooltip v-if="inst.state !== 'idle'" :overlay-class-name="themeSwitcher.currentTheme">
-                          <template slot="title">{{ i18n "pages.index.xrayInstanceRestart" }}</template>
-                          <a-button size="small" shape="circle" icon="reload" class="xi-restart"
-                            :loading="!!xiRestarting[inst.name]" @click="restartXrayInstance(inst.name)"></a-button>
-                        </a-tooltip>
+                  </span>
+                </div>
+              </a-col>
+              <a-col v-if="status.xrayInstances.length === 0" :span="24">
+                <a-card hoverable><span class="xi-muted">{{ i18n "pages.index.xrayInstancesNone" }}</span></a-card>
+              </a-col>
+              <a-col v-for="inst in status.xrayInstances" :key="inst.name" :xs="24" :sm="24" :lg="12">
+                <a-card hoverable class="xi-card">
+                  <template #title>
+                    <span class="xi-name">[[ inst.name ]]</span>
+                    <a-tag :color="xiColor(inst.state)" class="xi-state">[[ xiStateText(inst.state) ]]</a-tag>
+                  </template>
+                  <template #extra>
+                    <a-tooltip v-if="inst.state !== 'idle'" :overlay-class-name="themeSwitcher.currentTheme">
+                      <template slot="title">{{ i18n "pages.index.xrayInstanceRestart" }}</template>
+                      <a-button size="small" shape="circle" icon="reload" class="xi-restart"
+                        :loading="!!xiRestarting[inst.name]" @click="restartXrayInstance(inst.name)"></a-button>
+                    </a-tooltip>
+                  </template>
+                  <div class="xi-coresline">[[ coresText(inst) ]]</div>
+                  <div class="xi-body">
+                    <div class="xi-gauge">
+                      <a-progress type="dashboard" status="normal" :width="104" :stroke-color="cpuColor(inst.cpuUsage)"
+                        :percent="Math.round(inst.cpuUsage)"></a-progress>
+                      <div class="xi-gauge-label">
+                        CPU <span class="xi-muted">[[ inst.cpuBusy.toFixed(2) ]] / [[ inst.cpus.length || '–' ]]</span>
                       </div>
-                      <div class="xi-muted">
-                        [[ inst.cores > 0 ? inst.cores + ' {{ i18n "pages.index.xrayInstanceCoresFixed" }}' : '{{ i18n "pages.index.xrayInstanceCoresAuto" }}' ]]<template v-if="inst.cpus.length"> &middot; CPU [[ cpuRanges(inst.cpus) ]]</template>
-                      </div>
-                      <div class="xi-inbounds">
-                        <a-tag v-for="ib in inst.inbounds" :key="ib.id" :color="ib.enable ? 'blue' : ''">[[ ib.remark || ('#' + ib.id) ]] : [[ ib.port ]]</a-tag>
-                      </div>
-                      <div v-if="inst.errorMsg" class="xi-error">[[ inst.errorMsg ]]</div>
                     </div>
-                    <div class="xi-stats">
-                      <div class="xi-stat xi-stat-cpu">
-                        <div class="xi-label">CPU</div>
-                        <a-progress :percent="Math.round(inst.cpuUsage)" :stroke-color="cpuColor(inst.cpuUsage)" size="small" :show-info="false"></a-progress>
-                        <div class="xi-value">[[ inst.cpuUsage.toFixed(1) ]]% <span class="xi-muted">&middot; [[ inst.cpuBusy.toFixed(2) ]] {{ i18n "pages.index.xrayInstanceCoresBusy" }}</span></div>
-                      </div>
-                      <div class="xi-stat">
+                    <div class="xi-facts">
+                      <div class="xi-fact">
                         <div class="xi-label">{{ i18n "pages.index.xrayInstanceTcp" }}</div>
-                        <div class="xi-value xi-big">[[ inst.tcpCount >= 0 ? inst.tcpCount.toLocaleString() : '–' ]]</div>
+                        <div class="xi-big">[[ inst.tcpCount >= 0 ? inst.tcpCount.toLocaleString() : '–' ]]</div>
                       </div>
-                      <div class="xi-stat">
+                      <div class="xi-fact">
                         <div class="xi-label">{{ i18n "pages.index.memory" }}</div>
-                        <div class="xi-value">[[ SizeFormatter.sizeFormat(inst.mem) ]]</div>
+                        <div class="xi-value">[[ inst.mem ? SizeFormatter.sizeFormat(inst.mem) : '–' ]]</div>
                       </div>
-                      <div class="xi-stat">
+                      <div class="xi-fact">
                         <div class="xi-label">{{ i18n "pages.index.threads" }}</div>
-                        <div class="xi-value">[[ inst.threads ]]</div>
+                        <div class="xi-value">[[ inst.threads || '–' ]]</div>
                       </div>
-                      <div class="xi-stat">
+                      <div class="xi-fact">
                         <div class="xi-label">{{ i18n "pages.index.operationHours" }}</div>
                         <div class="xi-value">[[ inst.uptime ? TimeFormatter.formatSecond(inst.uptime) : '–' ]]</div>
                       </div>
                     </div>
                   </div>
+                  <div class="xi-inbounds">
+                    <a-tag v-for="ib in inst.inbounds" :key="ib.id" :color="ib.enable ? 'blue' : ''">[[ ib.remark || ('#' + ib.id) ]] : [[ ib.port ]]</a-tag>
+                  </div>
+                  <div v-if="inst.errorMsg" class="xi-error">[[ inst.errorMsg ]]</div>
                 </a-card>
               </a-col>
             </a-row>
@@ -1361,6 +1368,15 @@
           i = j;
         }
         return out.join(', ');
+      },
+      // "Auto · 4 Core (0-3)" / "Fixed · 2 Core (4-5)"
+      coresText(inst) {
+        const mode = inst.cores > 0 ? '{{ i18n "pages.index.xrayInstanceCoresFixed" }}' : '{{ i18n "pages.index.xrayInstanceCoresAuto" }}';
+        const n = inst.cpus.length || inst.cores;
+        if (!n) return mode;
+        let text = mode + ' · ' + n + ' {{ i18n "pages.index.xrayInstanceCore" }}';
+        if (inst.cpus.length) text += ' (' + this.cpuRanges(inst.cpus) + ')';
+        return text;
       },
       cpuColor(p) {
         return p < 80 ? '#008771' : p < 90 ? '#f37b24' : '#cf3c3c';

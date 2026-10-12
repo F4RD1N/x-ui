@@ -300,6 +300,10 @@
                             <a-icon type="block"></a-icon> {{ i18n
                             "pages.inbounds.clone"}}
                           </a-menu-item>
+                          <a-menu-item key="multiInstance">
+                            <a-icon type="cluster"></a-icon> {{ i18n
+                            "pages.inbounds.multiInstance"}}
+                          </a-menu-item>
                           <a-menu-item key="delete">
                             <span :style="{ color: '#FF4D4F' }">
                               <a-icon type="delete"></a-icon> {{ i18n "delete"}}
@@ -786,6 +790,7 @@
 {{template "modals/inboundInfoModal"}}
 {{template "modals/clientsModal"}}
 {{template "modals/clientsBulkModal"}}
+{{template "modals/multiInstanceModal"}}
 <script>
   const columns = [{
     title: "ID",
@@ -1161,6 +1166,9 @@
             break;
           case "clone":
             this.openCloneInbound(dbInbound);
+            break;
+          case "multiInstance":
+            miModal.show(dbInbound, () => this.getDBInbounds());
             break;
           case "delete":
             this.delInbound(dbInbound.id);

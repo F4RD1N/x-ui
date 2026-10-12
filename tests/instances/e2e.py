@@ -92,6 +92,16 @@ def free_port():
     return p
 
 
+def free(port):
+    try:
+        l = socket.socket()
+        l.bind(("0.0.0.0", port))
+        l.close()
+        return True
+    except OSError:
+        return False
+
+
 def listening(port, timeout=8):
     end = time.time() + timeout
     while time.time() < end:
@@ -293,6 +303,59 @@ def main():
         check("global TCP count from sockstat", st["tcpCount"] >= 2 * N, st["tcpCount"])
         for c in conns:
             c.close()
+
+        # --- Multi Instance: copies of an inbound, with its clients, on the next ports
+        pc = free_port()
+        while not all(free(pc + i) for i in range(1, 4)):
+            pc = free_port()
+        cc, ec = str(uuid.uuid4()), f"e2e-c-{int(time.time())}"
+        res = api("POST", "/panel/api/inbounds/add", data=inbound_payload(pc, ec, cc))
+        c = res["obj"]
+        created.append(c["id"])
+        plan = api("POST", f"/panel/api/inbounds/{c['id']}/multiInstance", data={"count": 2, "cores": 1, "max": "false", "dryRun": "true"})["obj"]
+        check("multi instance preview", plan and not plan["error"] and [i["port"] for i in plan["items"]] == [pc + 1, pc + 2] and plan["clients"] == 1, plan)
+        mx = api("POST", f"/panel/api/inbounds/{c['id']}/multiInstance", data={"count": 0, "cores": 1, "max": "true", "dryRun": "true"})["obj"]
+        check("multi instance max fills the free cores", mx["max"] == mx["available"] and mx["count"] == mx["max"], mx)
+        old = procs()
+        res = api("POST", f"/panel/api/inbounds/{c['id']}/multiInstance", data={"count": 2, "cores": 1, "max": "false", "dryRun": "false"})
+        check("multi instance generate", res["success"] and res["obj"]["created"] == 2, res.get("msg"))
+        copies = [ib for ib in api("GET", "/panel/api/inbounds/list")["obj"] if ib["port"] in (pc + 1, pc + 2)]
+        created.extend(ib["id"] for ib in copies)
+        now = procs()
+        check("each copy runs in its own new core on 1 CPU", len(copies) == 2 and all(ib["xrayInstance"] in now and ncpus(now[ib["xrayInstance"]]) == 1 for ib in copies), [(ib["xrayInstance"], ib["port"]) for ib in copies])
+        check("copies did not restart running cores", all(now.get(n) == p for n, p in old.items()), (old, now))
+        check("copies listening", listening(pc + 1) and listening(pc + 2))
+        # The original client's id works on a copy; its traffic counts on the copy's client.
+        socks2 = free_port()
+        ccfg2 = dict(ccfg)
+        ccfg2["inbounds"] = [{"listen": "127.0.0.1", "port": socks2, "protocol": "socks", "settings": {"udp": False}}]
+        ccfg2["outbounds"] = [{"protocol": "vless", "settings": {"vnext": [{"address": "127.0.0.1", "port": pc + 2, "users": [{"id": cc, "encryption": "none"}]}]}, "streamSettings": {"network": "tcp"}}]
+        cpath2 = os.path.join(tmp, "client2.json")
+        json.dump(ccfg2, open(cpath2, "w"))
+        client2 = subprocess.Popen([XRAY, "-c", cpath2], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            listening(socks2)
+            dl = subprocess.run(["curl", "-s", "-o", "/dev/null", "-w", "%{size_download}", "--socks5-hostname",
+                                 f"127.0.0.1:{socks2}", f"http://{TARGET}:{hp}/blob"], capture_output=True, text=True, timeout=120)
+            check("original client id works on a copy", dl.stdout.strip() == str(20 * 1024 * 1024), dl.stdout)
+            want = f"{ec}-{pc + 2}"
+            def copy_traffic():
+                for ib in api("GET", "/panel/api/inbounds/list")["obj"]:
+                    for cs in ib.get("clientStats") or []:
+                        if cs["email"] == want:
+                            return cs["up"] + cs["down"]
+                return 0
+            end = time.time() + 40
+            while copy_traffic() < 20 * 1024 * 1024 and time.time() < end:
+                time.sleep(2)
+            check("traffic on the copy counts on the copy's client", copy_traffic() >= 20 * 1024 * 1024, copy_traffic())
+        finally:
+            client2.kill()
+        taken = api("POST", f"/panel/api/inbounds/{c['id']}/multiInstance", data={"count": 2, "cores": 0, "max": "false", "dryRun": "true"})["obj"]
+        check("ports already taken by copies are reported", taken["error"] and all(i["conflict"] for i in taken["items"]), taken)
+        for ib in copies + [c]:
+            api("POST", f"/panel/api/inbounds/del/{ib['id']}")
+            created.remove(ib["id"])
 
         # --- restart one instance only
         old = procs()

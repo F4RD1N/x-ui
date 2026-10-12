@@ -168,19 +168,7 @@ func (s *InboundService) checkEmailsExistForClients(clients []model.Client) (str
 	if err != nil {
 		return "", err
 	}
-	var emails []string
-	for _, client := range clients {
-		if client.Email != "" {
-			if s.contains(emails, client.Email) {
-				return client.Email, nil
-			}
-			if s.contains(allEmails, client.Email) {
-				return client.Email, nil
-			}
-			emails = append(emails, client.Email)
-		}
-	}
-	return "", nil
+	return firstTakenEmail(clients, allEmails), nil
 }
 
 func (s *InboundService) checkEmailExistForInbound(inbound *model.Inbound) (string, error) {
@@ -192,19 +180,30 @@ func (s *InboundService) checkEmailExistForInbound(inbound *model.Inbound) (stri
 	if err != nil {
 		return "", err
 	}
-	var emails []string
-	for _, client := range clients {
-		if client.Email != "" {
-			if s.contains(emails, client.Email) {
-				return client.Email, nil
-			}
-			if s.contains(allEmails, client.Email) {
-				return client.Email, nil
-			}
-			emails = append(emails, client.Email)
-		}
+	return firstTakenEmail(clients, allEmails), nil
+}
+
+// firstTakenEmail returns the first client email, compared without case,
+// that is in taken or repeats within clients. It uses sets: comparing every
+// client with every email took minutes on inbounds with thousands of
+// clients.
+func firstTakenEmail(clients []model.Client, taken []string) string {
+	all := make(map[string]bool, len(taken))
+	for _, e := range taken {
+		all[strings.ToLower(e)] = true
 	}
-	return "", nil
+	seen := make(map[string]bool, len(clients))
+	for _, client := range clients {
+		if client.Email == "" {
+			continue
+		}
+		e := strings.ToLower(client.Email)
+		if seen[e] || all[e] {
+			return client.Email
+		}
+		seen[e] = true
+	}
+	return ""
 }
 
 // AddInbound creates a new inbound configuration.

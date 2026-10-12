@@ -151,6 +151,15 @@ and a change of cores moves running processes to their new CPUs in place.
 On upgrade, each existing inbound gets its own instance. An imported inbound
 also gets a new one.
 
+**Multi Instance** (the inbound's ⋮ menu) copies an inbound, with every setting
+and every client, into new instances on the ports right after it — port+1,
+port+2, … — one inbound per instance. Choose the cores per instance (Auto or a
+number) and how many instances; **Max** makes as many as the free CPU cores
+allow. The dialog previews the ports and instance names and refuses ports that
+are taken. Client IDs, passwords, flows, limits and subscription IDs stay the
+same; client emails get the port appended (`alice` → `alice-444`) because the
+panel needs every email to be unique, so traffic limits count on each copy.
+
 Tests: `go test ./...` (the instance tests start real cores when one is
 installed or `XRAY_TEST_BINARY` points at one), and
 `tests/instances/run-isolated.sh`, which runs a throwaway panel in a network

@@ -1,0 +1,165 @@
+{{define "modals/multiInstanceModal"}}
+<a-modal id="multi-instance-modal" v-model="miModal.visible" :title="miModal.title" :closable="true"
+    :mask-closable="false" :class="themeSwitcher.currentTheme" :width="560">
+    <div v-if="miModal.inbound" class="mi-body">
+        <div class="mi-intro">
+            {{ i18n "pages.inbounds.multiInstanceIntro" }}
+            <b>[[ miModal.inbound.port + 1 ]]</b>.
+        </div>
+
+        <div class="mi-field">
+            <div class="mi-label">{{ i18n "pages.inbounds.multiInstanceCores" }}</div>
+            <div class="mi-row">
+                <a-radio-group v-model="miModal.coresMode" button-style="solid" size="small" @change="miModal.refresh()">
+                    <a-radio-button value="auto">{{ i18n "pages.inbounds.xrayCoresAuto" }}</a-radio-button>
+                    <a-radio-button value="fixed">{{ i18n "pages.inbounds.xrayCoresFixed" }}</a-radio-button>
+                </a-radio-group>
+                <a-input-number v-if="miModal.coresMode === 'fixed'" v-model.number="miModal.cores" :min="1"
+                    :max="Math.max(1, miModal.plan ? miModal.plan.available : 1)" :precision="0"
+                    :style="{ width: '90px' }" @change="miModal.refresh()"></a-input-number>
+            </div>
+        </div>
+
+        <div class="mi-field">
+            <div class="mi-label">{{ i18n "pages.inbounds.multiInstanceCount" }}</div>
+            <div class="mi-row">
+                <a-input-number class="mi-count" v-model.number="miModal.count" :min="1" :precision="0" :disabled="miModal.useMax"
+                    :style="{ width: '90px' }" @change="miModal.refresh()"></a-input-number>
+                <a-checkbox v-model="miModal.useMax" @change="miModal.refresh()">
+                    {{ i18n "pages.inbounds.multiInstanceMax" }}
+                    <template v-if="miModal.plan">([[ miModal.plan.max ]])</template>
+                </a-checkbox>
+            </div>
+            <div class="mi-hint" v-if="miModal.plan">
+                {{ i18n "pages.inbounds.xrayCoresTotal" }}: <b>[[ miModal.plan.totalCores ]]</b>
+                &middot; {{ i18n "pages.inbounds.xrayCoresAvailable" }}: <b>[[ miModal.plan.available ]]</b>
+                &middot; {{ i18n "pages.inbounds.multiInstanceMaxHint" }}
+            </div>
+        </div>
+
+        <a-spin :spinning="miModal.planning" size="small">
+            <div class="mi-preview" v-if="miModal.plan && miModal.plan.items && miModal.plan.items.length">
+                <div class="mi-preview-head">
+                    <span>[[ miModal.plan.items.length ]] {{ i18n "pages.inbounds.multiInstanceInbounds" }}</span>
+                    <span>{{ i18n "clients" }}: [[ miModal.plan.clients ]]</span>
+                </div>
+                <div class="mi-list">
+                    <div v-for="it in miModal.plan.items" :key="it.port" class="mi-item"
+                        :class="{ 'mi-bad': it.conflict }">
+                        <span class="mi-port">[[ it.port ]]</span>
+                        <span class="mi-inst">[[ it.instance ]]</span>
+                        <span class="mi-cores">[[ miModal.plan.cores > 0 ? miModal.plan.cores + ' {{ i18n "pages.index.xrayInstanceCore" }}' : '{{ i18n "pages.inbounds.xrayCoresAuto" }}' ]]</span>
+                        <span v-if="it.conflict" class="mi-conflict">[[ it.conflict ]]</span>
+                    </div>
+                </div>
+            </div>
+        </a-spin>
+        <div v-if="miModal.plan && miModal.plan.error" class="mi-error">[[ miModal.plan.error ]]</div>
+        <div class="mi-note">{{ i18n "pages.inbounds.multiInstanceNote" }}</div>
+    </div>
+    <template slot="footer">
+        <a-button @click="miModal.close()">{{ i18n "cancel" }}</a-button>
+        <a-button type="primary" icon="cluster" :loading="miModal.generating"
+            :disabled="!miModal.plan || !!miModal.plan.error || miModal.planning"
+            @click="miModal.generate()">{{ i18n "pages.inbounds.multiInstanceGenerate" }}</a-button>
+    </template>
+</a-modal>
+<style>
+    #multi-instance-modal .mi-intro { margin-bottom: 14px; }
+    .mi-field { margin-bottom: 14px; }
+    .mi-label { font-weight: 500; margin-bottom: 6px; }
+    .mi-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+    .mi-hint, .mi-note { color: #8c8c8c; font-size: 12px; line-height: 1.6; margin-top: 6px; }
+    .dark .mi-hint, .dark .mi-note { color: #8d97ab; }
+    .mi-preview { border: 1px solid #f0f0f0; border-radius: 8px; overflow: hidden; }
+    .dark .mi-preview { border-color: var(--dark-color-stroke, #2c3950); }
+    .mi-preview-head { display: flex; justify-content: space-between; padding: 6px 12px; font-size: 12px; font-weight: 500; background: #fafafa; }
+    .dark .mi-preview-head { background: var(--dark-color-surface-200, #222d42); }
+    .mi-list { max-height: 200px; overflow-y: auto; }
+    .mi-item { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 5px 12px; font-size: 13px; border-top: 1px solid #f0f0f0; }
+    .dark .mi-item { border-top-color: var(--dark-color-stroke, #2c3950); }
+    .mi-port { font-family: monospace; min-width: 52px; font-weight: 600; }
+    .mi-inst { min-width: 70px; }
+    .mi-cores { color: #8c8c8c; }
+    .dark .mi-cores { color: #8d97ab; }
+    .mi-conflict, .mi-error { color: #e04141; }
+    .mi-error { font-size: 13px; margin-top: 8px; }
+    .mi-bad .mi-port { color: #e04141; }
+</style>
+<script>
+    const miModal = (window.miModal = {
+        visible: false,
+        title: "",
+        inbound: null,
+        coresMode: "auto",
+        cores: 1,
+        count: 1,
+        useMax: false,
+        plan: null,
+        planning: false,
+        generating: false,
+        onDone: null,
+        seq: 0,
+        timer: null,
+        show(dbInbound, onDone) {
+            this.inbound = dbInbound;
+            this.title = '{{ i18n "pages.inbounds.multiInstance" }}: ' + (dbInbound.remark || "#" + dbInbound.id) + " (" + dbInbound.port + ")";
+            this.coresMode = "auto";
+            this.cores = 1;
+            this.count = 1;
+            this.useMax = false;
+            this.plan = null;
+            this.generating = false;
+            this.onDone = onDone;
+            this.visible = true;
+            this.refresh(true);
+        },
+        close() {
+            this.visible = false;
+        },
+        form(dryRun) {
+            return {
+                count: this.count || 0,
+                cores: this.coresMode === "fixed" ? (this.cores || 1) : 0,
+                max: this.useMax ? "true" : "false",
+                dryRun: dryRun ? "true" : "false",
+            };
+        },
+        // Ask the server what these choices would make: ports, instance
+        // names, conflicts and how many fit. Debounced; only the latest
+        // answer is kept.
+        refresh(now) {
+            clearTimeout(this.timer);
+            this.timer = setTimeout(async () => {
+                const seq = ++this.seq;
+                this.planning = true;
+                const msg = await HttpUtil.post(`/panel/api/inbounds/${this.inbound.id}/multiInstance`, this.form(true));
+                if (seq !== this.seq) return;
+                this.planning = false;
+                if (msg.success) this.plan = msg.obj;
+            }, now ? 0 : 250);
+        },
+        async generate() {
+            if (this.generating || !this.plan || this.plan.error) return;
+            this.generating = true;
+            try {
+                const msg = await HttpUtil.post(`/panel/api/inbounds/${this.inbound.id}/multiInstance`, this.form(false));
+                if (msg.success) {
+                    this.visible = false;
+                    if (this.onDone) await this.onDone();
+                } else if (msg.obj) {
+                    this.plan = msg.obj;
+                }
+            } finally {
+                this.generating = false;
+            }
+        },
+    });
+
+    new Vue({
+        delimiters: ["[[", "]]"],
+        el: "#multi-instance-modal",
+        data: { miModal },
+    });
+</script>
+{{end}}
