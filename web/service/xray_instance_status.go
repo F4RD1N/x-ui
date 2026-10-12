@@ -32,6 +32,7 @@ type XrayInstanceStatus struct {
 	Threads  int                   `json:"threads"`
 	Uptime   uint64                `json:"uptime"`
 	TcpCount int                   `json:"tcpCount"` // established client connections; -1 = unknown
+	RetryIn  int                   `json:"retryIn"`  // seconds until a failed core is tried again
 	Inbounds []XrayInstanceInbound `json:"inbounds"`
 }
 
@@ -96,6 +97,7 @@ func (s *XrayService) XrayInstancesStatus() ([]XrayInstanceStatus, XrayCpuSummar
 		case p.GetErr() != nil:
 			st.State = Error
 			st.ErrorMsg = p.GetResult()
+			st.RetryIn = int(retryIn(p.Name(), p).Seconds() + 0.5)
 		default:
 			st.State = Stop
 		}

@@ -143,6 +143,7 @@
 "xrayInstanceStopped" = "اینستنس خاموش شد"
 "xrayInstanceStarted" = "اینستنس روشن شد"
 "xrayInstanceRestarted" = "اینستنس ری‌استارت شد"
+"xrayInstanceRetry" = "تلاش دوباره تا"
 "xrayInstanceCoresFixed" = "ثابت"
 "xrayInstanceCore" = "هسته"
 "xrayInstanceCoresAuto" = "خودکار"

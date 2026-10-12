@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/util/json_util"
@@ -352,10 +353,67 @@ func TestInstanceCores(t *testing.T) {
 	got := instanceCores([]*model.Inbound{
 		{Id: 1, XrayInstance: "xray-1", XrayCores: 4},
 		{Id: 2, XrayInstance: "xray-1", XrayCores: 9}, // disagrees: the oldest wins
-		{Id: 3, XrayInstance: "", XrayCores: 0},        // unnamed counts as xray-1
+		{Id: 3, XrayInstance: "", XrayCores: 0},       // unnamed counts as xray-1
 		{Id: 4, XrayInstance: "big", XrayCores: 0},
 	})
 	if !reflect.DeepEqual(got, map[string]int{"xray-1": 4, "big": 0}) {
 		t.Fatalf("cores: %v", got)
+	}
+}
+
+func TestParseGoMemLimit(t *testing.T) {
+	for in, want := range map[string]int64{
+		"72GiB": 72 << 30, "512MiB": 512 << 20, "1024": 1024, "2048B": 2048, "1TiB": 1 << 40,
+		"": 0, "off": 0, "-5": 0, "12XB": 0,
+	} {
+		if got := parseGoMemLimit(in); got != want {
+			t.Errorf("%q: %d, want %d", in, got, want)
+		}
+	}
+	// 72 GiB over 56 CPUs: a 2-CPU core gets 2/56 of it.
+	if got := shareMemLimit(72<<30, 2, 56); got != (72<<30)*2/56 {
+		t.Fatalf("share: %d", got)
+	}
+	if got := shareMemLimit(1<<30, 1, 56); got != 256<<20 {
+		t.Fatalf("floor: %d", got)
+	}
+	if got := shareMemLimit(1<<30, 56, 56); got != 1<<30 {
+		t.Fatalf("all CPUs: %d", got)
+	}
+}
+
+func TestCrashBackoff(t *testing.T) {
+	want := []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 32 * time.Second, time.Minute, time.Minute, time.Minute}
+	for i, w := range want {
+		if got := crashBackoff(i); got != w {
+			t.Fatalf("fails %d: %v", i, got)
+		}
+	}
+	if crashBackoff(1000) != time.Minute {
+		t.Fatal("cap")
+	}
+}
+
+func TestFillShadowsocksClientMethod(t *testing.T) {
+	settings := map[string]any{"method": "chacha20-ietf-poly1305"}
+	c := map[string]any{"password": "x", "method": ""}
+	fillShadowsocksClientMethod(model.Shadowsocks, settings, c)
+	if c["method"] != "chacha20-ietf-poly1305" {
+		t.Fatalf("empty method not filled: %v", c)
+	}
+	c = map[string]any{"password": "x", "method": "aes-128-gcm"}
+	fillShadowsocksClientMethod(model.Shadowsocks, settings, c)
+	if c["method"] != "aes-128-gcm" {
+		t.Fatal("a client's own method was replaced")
+	}
+	c = map[string]any{"password": "x"}
+	fillShadowsocksClientMethod(model.Shadowsocks, map[string]any{"method": "2022-blake3-aes-128-gcm"}, c)
+	if _, ok := c["method"]; ok {
+		t.Fatal("2022 clients take no method")
+	}
+	c = map[string]any{"id": "x"}
+	fillShadowsocksClientMethod(model.VLESS, settings, c)
+	if _, ok := c["method"]; ok {
+		t.Fatal("vless client touched")
 	}
 }

@@ -143,6 +143,7 @@
 "xrayInstanceStopped" = "Instance stopped"
 "xrayInstanceStarted" = "Instance started"
 "xrayInstanceRestarted" = "Instance restarted"
+"xrayInstanceRetry" = "trying again in"
 "xrayInstanceCoresFixed" = "Fixed"
 "xrayInstanceCore" = "Core"
 "xrayInstanceCoresAuto" = "Auto"

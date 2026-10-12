@@ -166,6 +166,10 @@ type process struct {
 	name  string // instance name; "" for test runs
 	cpuMu sync.Mutex
 	cpus  []int // CPUs the core is pinned to; empty = not pinned
+
+	memLimit int64     // GOMEMLIMIT for the core in bytes; 0 = inherit the panel's
+	exitTime time.Time // when the core exited
+	stopped  bool      // Stop was called: the exit was asked for, not a crash
 }
 
 // newProcess creates a new internal process struct for Xray.
@@ -204,8 +208,16 @@ func (p *process) IsRunning() bool {
 	}
 }
 
-// GetErr returns the last error encountered by the Xray process.
+// GetErr returns the error the core exited with, or the error that kept
+// it from starting.
 func (p *process) GetErr() error {
+	if p.cmd != nil && p.cmd.Process != nil {
+		select {
+		case <-p.done:
+		default:
+			return nil // still running
+		}
+	}
 	return p.exitErr
 }
 
@@ -236,6 +248,37 @@ func (p *Process) GetConfig() *Config {
 // changes applied to it through the API.
 func (p *process) SetConfig(c *Config) {
 	p.config = c
+}
+
+// SetMemoryLimit gives the core its own GOMEMLIMIT, in bytes, instead of
+// the panel's. It takes effect at Start.
+func (p *process) SetMemoryLimit(bytes int64) {
+	p.memLimit = bytes
+}
+
+// StartTime returns when the core was started.
+func (p *process) StartTime() time.Time {
+	return p.startTime
+}
+
+// Crashed reports whether the core exited without being asked to.
+func (p *process) Crashed() bool {
+	select {
+	case <-p.done:
+		return !p.stopped
+	default:
+		return false
+	}
+}
+
+// ExitTime returns when the core exited, or the zero time while it runs.
+func (p *process) ExitTime() time.Time {
+	select {
+	case <-p.done:
+		return p.exitTime
+	default:
+		return time.Time{}
+	}
 }
 
 // Name returns the instance name.
@@ -325,7 +368,11 @@ func (p *process) Start() (err error) {
 	defer func() {
 		if err != nil {
 			logger.Error("Failure in running xray-core process: ", err)
-			p.exitErr = err
+			select {
+			case <-p.done: // the start goroutine recorded it
+			default:
+				p.exitErr = err
+			}
 		}
 	}()
 
@@ -350,6 +397,16 @@ func (p *process) Start() (err error) {
 
 	cmd := exec.Command(GetBinaryPath(), "-c", configPath)
 	p.cmd = cmd
+	if p.memLimit > 0 {
+		env := make([]string, 0, len(os.Environ())+1)
+		for _, kv := range os.Environ() {
+			if !strings.HasPrefix(kv, "GOMEMLIMIT=") {
+				env = append(env, kv)
+			}
+		}
+		cmd.Env = append(env, fmt.Sprintf("GOMEMLIMIT=%d", p.memLimit))
+	}
+	p.startTime = time.Now()
 
 	cmd.Stdout = p.logWriter
 	cmd.Stderr = p.logWriter
@@ -375,26 +432,26 @@ func (p *process) Start() (err error) {
 			}
 		}
 		if err := cmd.Start(); err != nil {
+			p.exitErr = err
+			p.exitTime = time.Now()
 			started <- err
 			close(p.done)
 			return
 		}
 		started <- nil
 		err := cmd.Wait()
-		close(p.done)
+		// Everything about the exit is recorded before done is closed:
+		// readers check done first, so these writes are then visible.
 		if err != nil {
 			// On Windows, killing the process results in "exit status 1" which isn't an error for us
-			if runtime.GOOS == "windows" {
-				errStr := strings.ToLower(err.Error())
-				if strings.Contains(errStr, "exit status 1") {
-					// Suppress noisy log on graceful stop
-					p.exitErr = err
-					return
-				}
+			quiet := runtime.GOOS == "windows" && strings.Contains(strings.ToLower(err.Error()), "exit status 1")
+			if !quiet {
+				logger.Error("Failure in running xray-core:", err)
 			}
-			logger.Error("Failure in running xray-core:", err)
 			p.exitErr = err
 		}
+		p.exitTime = time.Now()
+		close(p.done)
 	}()
 	if err := <-started; err != nil {
 		return common.NewErrorf("Failed to start xray-core: %v", err)
@@ -411,6 +468,7 @@ func (p *process) Stop() error {
 	if !p.IsRunning() {
 		return errors.New("xray is not running")
 	}
+	p.stopped = true
 
 	// Remove temporary config file used for test runs so main config is never touched
 	if p.configPath != "" && p.removeConfig {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 
 	"github.com/mhsanaei/3x-ui/v2/database/model"
@@ -180,6 +181,7 @@ func (s *XrayService) buildXrayConfigAndInbounds(templateConfig string) (*xray.C
 						c["flow"] = "xtls-rprx-vision"
 					}
 				}
+				fillShadowsocksClientMethod(inbound.Protocol, settings, c)
 				final_clients = append(final_clients, any(c))
 			}
 
@@ -257,6 +259,23 @@ func (s *XrayService) GetXrayTraffic() ([]*xray.Traffic, []*xray.ClientTraffic, 
 		return nil, nil, lastErr
 	}
 	return mergeTraffic(traffics), mergeClientTraffic(clientTraffics), nil
+}
+
+// fillShadowsocksClientMethod gives a shadowsocks client with no cipher the
+// inbound's. With a classic (non-2022) cipher every client must name one,
+// and a client saved without it made the core refuse the whole config --
+// "unsupported cipher method:" -- taking down every inbound in it.
+func fillShadowsocksClientMethod(protocol model.Protocol, settings map[string]any, client map[string]any) {
+	if protocol != model.Shadowsocks {
+		return
+	}
+	method, _ := settings["method"].(string)
+	if method == "" || strings.HasPrefix(method, "2022-") {
+		return
+	}
+	if m, _ := client["method"].(string); m == "" {
+		client["method"] = method
+	}
 }
 
 // mergeTraffic sums entries for the same inbound or outbound reported by
@@ -355,7 +374,12 @@ func (s *XrayService) DidXrayCrash() bool {
 	}
 	for _, p := range list {
 		if !p.IsRunning() {
-			return true
+			instMu.RLock()
+			due := restartDueLocked(p.Name(), p)
+			instMu.RUnlock()
+			if due {
+				return true
+			}
 		}
 	}
 	return false

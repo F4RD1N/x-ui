@@ -73,7 +73,7 @@ func vlessInbound(t *testing.T, instance string, cores int) *model.Inbound {
 		UserId: 1, Enable: true, Remark: fmt.Sprintf("in-%d", port), Port: port,
 		Protocol: model.VLESS, Tag: fmt.Sprintf("inbound-%d", port),
 		XrayInstance: instance, XrayCores: cores,
-		Settings: fmt.Sprintf(`{"clients":[{"id":"6b0e9c1c-2d6f-4c6e-9b8a-%012d","email":"u%d@test","enable":true,"flow":""}],"decryption":"none","fallbacks":[]}`, uuidN, uuidN),
+		Settings:       fmt.Sprintf(`{"clients":[{"id":"6b0e9c1c-2d6f-4c6e-9b8a-%012d","email":"u%d@test","enable":true,"flow":""}],"decryption":"none","fallbacks":[]}`, uuidN, uuidN),
 		StreamSettings: `{"network":"tcp","security":"none","tcpSettings":{"header":{"type":"none"}}}`,
 		Sniffing:       `{"enabled":false}`,
 	}
@@ -474,5 +474,126 @@ func TestStopStartInstance(t *testing.T) {
 	}
 	if err := xs.StartInstance("nope"); err == nil {
 		t.Fatal("start of an unknown instance")
+	}
+}
+
+func TestFailingInstanceBacksOff(t *testing.T) {
+	integrationCore(t)
+	t.Setenv("GOMEMLIMIT", "8GiB")
+	var xs XrayService
+	var is InboundService
+	if err := xs.RestartXray(true); err != nil {
+		t.Fatal(err)
+	}
+	good, _, err := is.AddInbound(vlessInbound(t, "", 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Another program holds the port: this instance cannot start.
+	blocked := vlessInbound(t, "", 0)
+	l, err := net.Listen("tcp", fmt.Sprintf(":%d", blocked.Port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	bad, _, err := is.AddInbound(blocked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	xs.ApplyInboundChanges()
+	pGood := pidOf(t, good.XrayInstance)
+
+	// The memory limit is shared out by CPUs.
+	env, _ := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pGood))
+	n := len(procOf(good.XrayInstance).CPUs())
+	want := fmt.Sprintf("GOMEMLIMIT=%d", shareMemLimit(8<<30, n, len(xray.AvailableCPUs())))
+	if !strings.Contains(string(env), want+"\x00") {
+		t.Fatalf("core environment lacks %s", want)
+	}
+
+	waitDead := func() *xray.Process {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if p := procOf(bad.XrayInstance); p != nil && !p.IsRunning() {
+				return p
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatal("the blocked core did not fail")
+		return nil
+	}
+	first := waitDead()
+	// Straight away: not due yet, so a restart check leaves it.
+	if xs.DidXrayCrash() {
+		t.Fatal("restart due immediately after a failure")
+	}
+	xs.RestartXray(false)
+	if procOf(bad.XrayInstance) != first {
+		t.Fatal("restarted before the back-off")
+	}
+	// After 2s it is retried; the next wait is 4s.
+	time.Sleep(2100 * time.Millisecond)
+	if !xs.DidXrayCrash() {
+		t.Fatal("restart not due after 2s")
+	}
+	xs.RestartXray(false)
+	second := waitDead()
+	if second == first {
+		t.Fatal("not retried after 2s")
+	}
+	time.Sleep(2100 * time.Millisecond)
+	if xs.DidXrayCrash() {
+		t.Fatal("second retry came after 2s instead of 4s")
+	}
+	st, _ := xs.XrayInstancesStatus()
+	for _, s := range st {
+		if s.Name == bad.XrayInstance && (s.State != Error || s.RetryIn < 1 || s.RetryIn > 2) {
+			t.Fatalf("status of the failing core: %+v", s)
+		}
+	}
+	// The other core never noticed.
+	if pidOf(t, good.XrayInstance) != pGood {
+		t.Fatal("a healthy core restarted")
+	}
+	// Fixing the inbound starts it at once, back-off or not.
+	bad.Port = freeTCPPort(t)
+	bad.Tag = fmt.Sprintf("inbound-%d", bad.Port)
+	if _, _, err := is.UpdateInbound(bad); err != nil {
+		t.Fatal(err)
+	}
+	if err := xs.ApplyInboundChanges(); err != nil {
+		t.Fatal(err)
+	}
+	if !listening(bad.Port) {
+		t.Fatal("fixed inbound not started at once")
+	}
+}
+
+// The inbound that kept the single core down on a live server: a
+// shadowsocks client saved with an empty cipher.
+func TestShadowsocksClientWithoutCipherStarts(t *testing.T) {
+	integrationCore(t)
+	var xs XrayService
+	var is InboundService
+	if err := xs.RestartXray(true); err != nil {
+		t.Fatal(err)
+	}
+	port := freeTCPPort(t)
+	in := &model.Inbound{
+		UserId: 1, Enable: true, Port: port, Protocol: model.Shadowsocks, Tag: fmt.Sprintf("inbound-%d", port),
+		Settings:       `{"clients":[{"email":"uaj3hfu8","enable":true,"method":"","password":"MjQ5ZTQyNjktNDkzZi00ZTRmLTlhNDEtNjg0ZDlkYTA1OWQz"}],"ivCheck":true,"method":"chacha20-ietf-poly1305","network":"tcp"}`,
+		StreamSettings: `{"network":"tcp","security":"none","tcpSettings":{"header":{"type":"none"}}}`,
+		Sniffing:       `{"enabled":false}`,
+	}
+	in, _, err := is.AddInbound(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := xs.ApplyInboundChanges(); err != nil {
+		t.Fatal(err)
+	}
+	if !listening(port) {
+		p := procOf(in.XrayInstance)
+		t.Fatalf("shadowsocks core not up: %v", p.GetResult())
 	}
 }

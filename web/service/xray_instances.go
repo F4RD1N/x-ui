@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mhsanaei/3x-ui/v2/config"
 	"github.com/mhsanaei/3x-ui/v2/database"
@@ -57,6 +58,9 @@ var (
 	// stopped through inbound changes and crash checks until started again,
 	// a full Xray restart, or a panel restart.
 	stoppedInst = map[string]bool{}
+	// crashFails counts the quick failures in a row of each instance, for
+	// the back-off between its restarts.
+	crashFails = map[string]int{}
 
 	onlineMu      sync.RWMutex
 	onlineClients []string
@@ -680,6 +684,23 @@ func (s *XrayService) applyInstances(force bool) error {
 		p := procs[name]
 		switch {
 		case p == nil || !p.IsRunning():
+			if p != nil && !force && !dirty[name] {
+				failedFast := p.Crashed() && p.ExitTime().Sub(p.StartTime()) < crashQuietPeriod
+				sameConfig := sameRunning(p.GetConfig(), plan.configs[name], nil)
+				if failedFast && sameConfig && !restartDueLocked(name, p) {
+					// A core that keeps failing on the same config waits
+					// before its next try instead of being rebuilt every
+					// two seconds. A changed config is tried at once.
+					continue
+				}
+				if failedFast && sameConfig {
+					crashFails[name]++
+				} else {
+					delete(crashFails, name)
+				}
+			} else {
+				delete(crashFails, name)
+			}
 			start = append(start, name)
 		case force || dirty[name] || !sameRunning(p.GetConfig(), plan.configs[name], touched[name]):
 			stop = append(stop, p)
@@ -721,8 +742,12 @@ func (s *XrayService) applyInstances(force bool) error {
 	instMu.Unlock()
 
 	var errs []string
+	parentLimit := goMemLimit()
 	for _, name := range start {
 		p := xray.NewInstanceProcess(name, plan.configs[name], instanceConfigPath(name), alloc[name])
+		if parentLimit > 0 {
+			p.SetMemoryLimit(shareMemLimit(parentLimit, len(alloc[name]), len(xray.AvailableCPUs())))
+		}
 		err := p.Start()
 		instMu.Lock()
 		procs[name] = p
@@ -753,6 +778,90 @@ func (s *XrayService) applyInstances(force bool) error {
 		return errors.New(strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+// Restart back-off for a core that fails soon after starting: 2s, 4s, 8s,
+// ... up to a minute. A core that ran crashQuietPeriod is restarted at once.
+const (
+	crashQuietPeriod = 30 * time.Second
+	crashMaxBackoff  = time.Minute
+)
+
+func crashBackoff(fails int) time.Duration {
+	if fails > 5 {
+		return crashMaxBackoff
+	}
+	d := 2 * time.Second << fails
+	if d > crashMaxBackoff {
+		d = crashMaxBackoff
+	}
+	return d
+}
+
+// restartDueLocked reports whether the exited core of name may be started
+// again now. The caller holds instMu.
+func restartDueLocked(name string, p *xray.Process) bool {
+	exit := p.ExitTime()
+	if !p.Crashed() || exit.IsZero() || exit.Sub(p.StartTime()) >= crashQuietPeriod {
+		return true
+	}
+	return time.Since(exit) >= crashBackoff(crashFails[name])
+}
+
+// retryIn returns how long until a failed core is tried again, or 0.
+func retryIn(name string, p *xray.Process) time.Duration {
+	instMu.RLock()
+	defer instMu.RUnlock()
+	exit := p.ExitTime()
+	if exit.IsZero() || exit.Sub(p.StartTime()) >= crashQuietPeriod {
+		return 0
+	}
+	left := crashBackoff(crashFails[name]) - time.Since(exit)
+	if left < 0 {
+		return 0
+	}
+	return left
+}
+
+// goMemLimit returns the panel's GOMEMLIMIT in bytes, or 0 when unset.
+// The cores inherit the panel's environment, so a limit meant for one core
+// would let every core grow to it.
+func goMemLimit() int64 {
+	return parseGoMemLimit(os.Getenv("GOMEMLIMIT"))
+}
+
+// parseGoMemLimit parses GOMEMLIMIT: bytes with an optional B, KiB, MiB,
+// GiB or TiB suffix; "off" or anything unparsable is 0.
+func parseGoMemLimit(v string) int64 {
+	v = strings.TrimSpace(v)
+	mult := int64(1)
+	for _, u := range []struct {
+		suffix string
+		mult   int64
+	}{{"TiB", 1 << 40}, {"GiB", 1 << 30}, {"MiB", 1 << 20}, {"KiB", 1 << 10}, {"B", 1}} {
+		if strings.HasSuffix(v, u.suffix) {
+			v, mult = strings.TrimSuffix(v, u.suffix), u.mult
+			break
+		}
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n * mult
+}
+
+// shareMemLimit is a core's part of the panel's memory limit: in proportion
+// to its CPUs, and never below 256 MiB.
+func shareMemLimit(total int64, cpus, allCPUs int) int64 {
+	if allCPUs <= 0 || cpus <= 0 {
+		return total
+	}
+	share := total * int64(cpus) / int64(allCPUs)
+	if share < 256<<20 {
+		share = 256 << 20
+	}
+	return share
 }
 
 // recordTagsLocked notes which core runs each inbound of cfg.
@@ -895,6 +1004,7 @@ func (s *XrayService) StartInstance(name string) error {
 		}
 	}
 	delete(stoppedInst, name)
+	dirty[name] = true // start it now, whatever its restart back-off says
 	instMu.Unlock()
 	isManuallyStopped.Store(false)
 	return s.applyInstances(false)
