@@ -27,7 +27,7 @@ TARGET = os.environ.get("BENCH_TARGET", "76.164.201.34")
 ECHO_PORTS = "41001-41016"
 CLIENT_CPUS = os.environ.get("BENCH_CLIENT_CPUS", "16-21,44-49")
 ECHO_CPUS = os.environ.get("BENCH_ECHO_CPUS", "22-27,50-55")
-PHASES = os.environ.get("BENCH_PHASES", "idle:0:40,light:10s:60,heavy:2s:60")
+PHASES = os.environ.get("BENCH_PHASES", "idle:0:30,light:10s:60,medium:5s:60,heavy:2s:60")
 XLOAD = os.path.join(HERE, "xload")
 HZ = os.sysconf("SC_CLK_TCK")
 
@@ -307,7 +307,7 @@ def run(mode, conns, profile=False):
             ph = json.loads(line[6:])
             gc_marks[ph["name"]] = {n: gc_stats(inst[n][1]) for n in names}
         if profile and prof is None and "phase=2" in line:
-            # CPU profile of one core in the heavy phase
+            # CPU profile of one core in the third phase
             prof = threading.Thread(target=lambda: subprocess.run(
                 ["curl", "-s", "-o", os.path.join(RESULTS, f"{mode}-{conns}.cpu.pprof"),
                  f"http://127.0.0.1:{inst[names[0]][1]}/debug/pprof/profile?seconds=20"]), daemon=True)
@@ -349,7 +349,8 @@ def report():
                              ph["rttMs"]["p99"], ph["rttMs"]["p999"], ph["timeouts"] + ph["errors"],
                              s.get("coreCPU", 0), 100 * s.get("coreCPU", 0) / max(1, r["cores"]), s.get("benchCPUsBusy", 0),
                              s.get("rssGB", 0), s.get("gcRuns", 0), s.get("gcPauseMs", 0), s.get("genCPU", 0)))
-    rows.sort(key=lambda x: (x[0], ["idle", "light", "heavy", "burst"].index(x[1]) if x[1] in ("idle", "light", "heavy", "burst") else 9, x[2]))
+    order = ["idle", "light", "medium", "heavy"]
+    rows.sort(key=lambda x: (x[0], order.index(x[1]) if x[1] in order else 9, x[2]))
     hdr = ("conns", "phase", "mode", "estab", "msg/s", "p50ms", "p99ms", "p999ms", "lost", "cores used", "%of16", "cpus busy%", "RSS GB", "GCs", "GC pause ms", "gen cores")
     print(" | ".join(hdr))
     for r in rows:
