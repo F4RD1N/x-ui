@@ -389,3 +389,90 @@ func TestXrayInstancesIntegration(t *testing.T) {
 		}
 	})
 }
+
+func TestStopStartInstance(t *testing.T) {
+	integrationCore(t)
+	var xs XrayService
+	var is InboundService
+	total := len(xray.AvailableCPUs())
+	if err := xs.RestartXray(true); err != nil {
+		t.Fatal(err)
+	}
+	add := func(in *model.Inbound) *model.Inbound {
+		in, _, err := is.AddInbound(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		xs.ApplyInboundChanges()
+		return in
+	}
+	a := add(vlessInbound(t, "", 0))
+	b := add(vlessInbound(t, "", 0))
+	p1 := pidOf(t, "xray-1")
+
+	if err := xs.StopInstance("xray-2"); err != nil {
+		t.Fatal(err)
+	}
+	if procOf("xray-2") != nil || listening(b.Port) {
+		t.Fatal("xray-2 still running")
+	}
+	if pidOf(t, "xray-1") != p1 || len(xray.ProcessCPUs(p1)) != total {
+		t.Fatalf("xray-1 should keep running and take every CPU: %v", xray.ProcessCPUs(p1))
+	}
+	if xs.DidXrayCrash() {
+		t.Fatal("a stopped instance counts as a crash")
+	}
+	// Neither inbound edits nor the restart check bring it back.
+	b.Remark = "edited"
+	if _, _, err := is.UpdateInbound(b); err != nil {
+		t.Fatal(err)
+	}
+	xs.ApplyInboundChanges()
+	xs.RestartXray(false)
+	if procOf("xray-2") != nil {
+		t.Fatal("stopped instance started by an edit or a restart check")
+	}
+	st, _ := xs.XrayInstancesStatus()
+	for _, s := range st {
+		if s.Name == "xray-2" && s.State != Stop {
+			t.Fatalf("status of a stopped instance: %s", s.State)
+		}
+	}
+	if err := xs.RestartInstance("xray-2"); err == nil {
+		t.Fatal("restart of a stopped instance")
+	}
+
+	if err := xs.StartInstance("xray-2"); err != nil {
+		t.Fatal(err)
+	}
+	if !listening(b.Port) || pidOf(t, "xray-1") != p1 {
+		t.Fatal("start")
+	}
+	if n1, n2 := len(xray.ProcessCPUs(p1)), len(procOf("xray-2").CPUs()); n1+n2 != total {
+		t.Fatalf("CPUs not shared again: %d + %d", n1, n2)
+	}
+
+	// After a full stop, starting one instance starts that one only.
+	if err := xs.StopXray(); err != nil {
+		t.Fatal(err)
+	}
+	if err := xs.StartInstance("xray-1"); err != nil {
+		t.Fatal(err)
+	}
+	if !listening(a.Port) || procOf("xray-2") != nil {
+		t.Fatalf("running: %v", running())
+	}
+	if xs.DidXrayCrash() {
+		t.Fatal("the stopped one counts as a crash")
+	}
+	// A full restart brings everything back.
+	if err := xs.RestartXray(true); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(running(), ",") != "xray-1,xray-2" {
+		t.Fatalf("after a full restart: %v", running())
+	}
+	if err := xs.StartInstance("nope"); err == nil {
+		t.Fatal("start of an unknown instance")
+	}
+}

@@ -51,6 +51,8 @@ func (a *ServerController) initRouter(g *gin.RouterGroup) {
 	g.POST("/stopXrayService", a.stopXrayService)
 	g.POST("/restartXrayService", a.restartXrayService)
 	g.POST("/restartXrayInstance", a.restartXrayInstance)
+	g.POST("/stopXrayInstance", a.stopXrayInstance)
+	g.POST("/startXrayInstance", a.startXrayInstance)
 	g.POST("/updatePanel", a.updatePanel)
 	g.POST("/updateGeofile", a.updateGeofile)
 	g.POST("/updateGeofile/:fileName", a.updateGeofile)
@@ -166,7 +168,27 @@ func (a *ServerController) restartXrayInstance(c *gin.Context) {
 		jsonMsg(c, I18nWeb(c, "pages.xray.restartError"), err)
 		return
 	}
-	jsonMsg(c, I18nWeb(c, "pages.xray.restartSuccess"), nil)
+	jsonMsg(c, I18nWeb(c, "pages.index.xrayInstanceRestarted"), nil)
+}
+
+// stopXrayInstance stops one xray core; the others keep running.
+func (a *ServerController) stopXrayInstance(c *gin.Context) {
+	err := a.serverService.StopXrayInstance(c.PostForm("name"))
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.xray.stopError"), err)
+		return
+	}
+	jsonMsg(c, I18nWeb(c, "pages.index.xrayInstanceStopped"), nil)
+}
+
+// startXrayInstance starts one stopped xray core.
+func (a *ServerController) startXrayInstance(c *gin.Context) {
+	err := a.serverService.StartXrayInstance(c.PostForm("name"))
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.xray.restartError"), err)
+		return
+	}
+	jsonMsg(c, I18nWeb(c, "pages.index.xrayInstanceStarted"), nil)
 }
 
 // getLogs retrieves the application logs based on count, level, and syslog filters.

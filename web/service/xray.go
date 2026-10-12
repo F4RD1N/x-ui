@@ -309,6 +309,12 @@ func (s *XrayService) RestartXray(isForce bool) error {
 	defer lock.Unlock()
 	logger.Debug("restart Xray, force:", isForce)
 	isManuallyStopped.Store(false)
+	if isForce {
+		// A full restart brings back the instances stopped one by one.
+		instMu.Lock()
+		stoppedInst = map[string]bool{}
+		instMu.Unlock()
+	}
 	return s.applyInstances(isForce)
 }
 
@@ -342,7 +348,10 @@ func (s *XrayService) DidXrayCrash() bool {
 	}
 	list := snapshotProcs()
 	if len(list) == 0 {
-		return true
+		// Nothing runs: a crash, unless every instance was stopped by hand.
+		instMu.RLock()
+		defer instMu.RUnlock()
+		return len(stoppedInst) == 0
 	}
 	for _, p := range list {
 		if !p.IsRunning() {

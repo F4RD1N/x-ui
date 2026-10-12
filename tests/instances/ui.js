@@ -27,23 +27,36 @@ const check = (name, ok, detail) => {
     await page.waitForTimeout(4500); // two status ticks, so CPU use has a value
     const names = await page.$$eval('.xi-card .xi-name', (els) => els.map((e) => e.textContent.trim()));
     check(label + ': overview has a card per instance', names.includes('xray-1') && names.includes('xray-2') && names.length === new Set(names).size, names.join(','));
-    const heading = await page.textContent('.xi-heading');
-    check(label + ': overview shows the CPU summary', /CPU cores:\s*\d+/.test(heading), heading);
+    const summary = await page.textContent('.xi-summary');
+    check(label + ': summary card shows CPU cores, fixed, for auto', /Xray instances/.test(summary) && /CPU cores\s*\d+/.test(summary) && /Fixed\s*\d+/.test(summary) && /For auto\s*\d+/.test(summary), summary);
     const cores = await page.$$eval('.xi-card .xi-coresline', (els) => els.map((e) => e.textContent.trim()));
     check(label + ': cores read like "Auto · 4 Core (0-3)"', cores.length > 0 && cores.every((t) => /^(Auto|Fixed) · \d+ Core \([\d,\- ]+\)$/.test(t)), cores.join(' | '));
     const cardText = await page.textContent('.xi-card');
     check(label + ': card shows CPU, TCP, RAM, threads, uptime', /CPU/.test(cardText) && /TCP connections/.test(cardText) && /RAM/.test(cardText) && /Threads/.test(cardText), cardText.slice(0, 200));
     // The panel scrolls an inner element, so shoot the viewport with the
     // section scrolled to the top of it.
-    await page.$eval('.xi-heading', (e) => e.scrollIntoView({ block: 'start' }));
+    await page.$eval('.xi-summary', (e) => e.scrollIntoView({ block: 'start' }));
     await page.waitForTimeout(300);
     await page.screenshot({ path: `${SHOTS}/${label}-overview-instances.png` });
     const overlap = await page.evaluate(() => {
-      const h = document.querySelector('.xi-heading').getBoundingClientRect();
+      const h = document.querySelector('.xi-summary').getBoundingClientRect();
       const c = document.querySelector('.xi-card').getBoundingClientRect();
       return h.bottom - c.top;
     });
-    check(label + ': the first card sits below the heading', overlap <= 0, overlap + 'px overlap');
+    check(label + ': the first card sits below the summary', overlap <= 0, overlap + 'px overlap');
+    if (label === 'desktop') {
+      // Stop and start one instance from its card.
+      const card = '.xi-card:has(.xi-name:text-is("xray-2"))';
+      await page.click(`${card} .xi-stop`);
+      await page.waitForSelector(`${card} .xi-start`, { timeout: 15000 });
+      const stopped = await page.textContent(`${card} .xi-state`);
+      check('desktop: Stop turns the card to Stopped with a Start button', /Stop/i.test(stopped), stopped);
+      check('desktop: a stopped card has no Stop or Restart', !(await page.$(`${card} .xi-stop`)) && !(await page.$(`${card} .xi-restart`)));
+      await page.click(`${card} .xi-start`);
+      await page.waitForSelector(`${card} .xi-stop`, { timeout: 15000 });
+      const started = await page.textContent(`${card} .xi-state`);
+      check('desktop: Start brings it back to Running', /Running/.test(started), started);
+    }
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
     check(label + ': overview has no horizontal scroll', overflow <= 0, overflow + 'px');
 
@@ -109,6 +122,11 @@ const check = (name, ok, detail) => {
     await (await page.$('#multi-instance-modal .ant-modal-content')).screenshot({ path: `${SHOTS}/${label}-multi-instance.png` });
     if (label === 'desktop') {
       const before = await page.$$eval('.ant-table-row', (els) => els.length);
+      const off = await page.$eval('#multi-instance-modal .ant-modal-footer .ant-btn-primary', (b) => b.disabled);
+      if (off) {
+        const why = await page.textContent('#multi-instance-modal .mi-body');
+        throw new Error('Generate is off: ' + why.replace(/\s+/g, ' ').slice(0, 400));
+      }
       await page.click('#multi-instance-modal .ant-modal-footer .ant-btn-primary');
       await page.waitForSelector('#multi-instance-modal .ant-modal-wrap', { state: 'hidden', timeout: 20000 });
       await page.waitForTimeout(1500);

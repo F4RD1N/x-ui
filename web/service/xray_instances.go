@@ -53,6 +53,10 @@ var (
 	// dirty marks a core whose API change failed: only a restart brings it
 	// back in line with the database.
 	dirty = map[string]bool{}
+	// stoppedInst holds the instances stopped from the overview. They stay
+	// stopped through inbound changes and crash checks until started again,
+	// a full Xray restart, or a panel restart.
+	stoppedInst = map[string]bool{}
 
 	onlineMu      sync.RWMutex
 	onlineClients []string
@@ -643,10 +647,20 @@ func (s *XrayService) applyInstances(force bool) error {
 	if err != nil {
 		return err
 	}
+	instMu.Lock()
+	for name := range stoppedInst {
+		if _, ok := plan.configs[name]; !ok {
+			delete(stoppedInst, name) // the instance is gone
+		}
+	}
+	// Stopped instances get no CPUs: the auto ones share theirs.
 	var reqs []coreRequest
 	for _, name := range plan.order {
-		reqs = append(reqs, coreRequest{Name: name, Cores: plan.cores[name]})
+		if !stoppedInst[name] {
+			reqs = append(reqs, coreRequest{Name: name, Cores: plan.cores[name]})
+		}
 	}
+	instMu.Unlock()
 	alloc := allocateCPUs(xray.AvailableCPUs(), reqs)
 
 	// Decide.
@@ -654,12 +668,15 @@ func (s *XrayService) applyInstances(force bool) error {
 	var start []string
 	instMu.Lock()
 	for name, p := range procs {
-		if _, ok := plan.configs[name]; !ok {
+		if _, ok := plan.configs[name]; !ok || stoppedInst[name] {
 			stop = append(stop, p)
 			delete(procs, name)
 		}
 	}
 	for _, name := range plan.order {
+		if stoppedInst[name] {
+			continue
+		}
 		p := procs[name]
 		switch {
 		case p == nil || !p.IsRunning():
@@ -838,11 +855,81 @@ func stopAllInstances() error {
 	return nil
 }
 
+// StopInstance stops one core; the others keep running and the auto ones
+// take over its CPUs. It stays stopped until StartInstance.
+func (s *XrayService) StopInstance(name string) error {
+	lock.Lock()
+	defer lock.Unlock()
+	instMu.Lock()
+	_, running := procs[name]
+	if !running && !stoppedInst[name] {
+		instMu.Unlock()
+		return fmt.Errorf("no xray core named %s is running", name)
+	}
+	stoppedInst[name] = true
+	instMu.Unlock()
+	if isManuallyStopped.Load() {
+		return nil // everything is stopped already
+	}
+	return s.applyInstances(false)
+}
+
+// StartInstance starts a core stopped with StopInstance. After a full stop
+// it starts this core alone; the others stay stopped.
+func (s *XrayService) StartInstance(name string) error {
+	lock.Lock()
+	defer lock.Unlock()
+	names, err := enabledInstanceNames()
+	if err != nil {
+		return err
+	}
+	if !names[name] {
+		return fmt.Errorf("%s has no enabled inbound to run", name)
+	}
+	instMu.Lock()
+	if isManuallyStopped.Load() {
+		for n := range names {
+			if n != name {
+				stoppedInst[n] = true
+			}
+		}
+	}
+	delete(stoppedInst, name)
+	instMu.Unlock()
+	isManuallyStopped.Store(false)
+	return s.applyInstances(false)
+}
+
+// enabledInstanceNames returns the instances that have an enabled inbound.
+func enabledInstanceNames() (map[string]bool, error) {
+	var inbounds []*model.Inbound
+	if err := database.GetDB().Model(model.Inbound{}).Select("id", "xray_instance").
+		Where("enable = ?", true).Find(&inbounds).Error; err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	for _, in := range inbounds {
+		out[instanceName(in)] = true
+	}
+	return out, nil
+}
+
+// isInstanceStopped reports whether name was stopped from the overview.
+func isInstanceStopped(name string) bool {
+	instMu.RLock()
+	defer instMu.RUnlock()
+	return stoppedInst[name]
+}
+
 // RestartInstance restarts one core with the current config.
 func (s *XrayService) RestartInstance(name string) error {
 	lock.Lock()
 	defer lock.Unlock()
 	instMu.Lock()
+	if stoppedInst[name] {
+		instMu.Unlock()
+		return fmt.Errorf("%s is stopped; start it instead", name)
+	}
 	if _, ok := procs[name]; !ok {
 		instMu.Unlock()
 		return fmt.Errorf("no xray core named %s is running", name)

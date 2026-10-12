@@ -84,6 +84,17 @@ def ncpus(pid):
     return expand(masks.pop())
 
 
+def quiet_port(span=12):
+    """A port below the ephemeral range with the next span ports free too,
+    so copies on port+1, port+2, ... do not run into client connections."""
+    import random
+    for _ in range(500):
+        p = random.randint(20000, 30000)
+        if all(free(p + i) for i in range(span)):
+            return p
+    return free_port()
+
+
 def free_port():
     l = socket.socket()
     l.bind(("127.0.0.1", 0))
@@ -151,7 +162,7 @@ def main():
         # A fresh panel: give it two inbounds of its own to stand for the
         # ones a real server already runs.
         for _ in range(2):
-            res = api("POST", "/panel/api/inbounds/add", data=inbound_payload(free_port(), f"base-{uuid.uuid4().hex[:8]}", str(uuid.uuid4())))
+            res = api("POST", "/panel/api/inbounds/add", data=inbound_payload(quiet_port(), f"base-{uuid.uuid4().hex[:8]}", str(uuid.uuid4())))
             created.append(res["obj"]["id"])
         time.sleep(1)
     info = api("GET", "/panel/api/inbounds/xrayInstances")["obj"]
@@ -305,9 +316,7 @@ def main():
             c.close()
 
         # --- Multi Instance: copies of an inbound, with its clients, on the next ports
-        pc = free_port()
-        while not all(free(pc + i) for i in range(1, 4)):
-            pc = free_port()
+        pc = quiet_port(4)
         cc, ec = str(uuid.uuid4()), f"e2e-c-{int(time.time())}"
         res = api("POST", "/panel/api/inbounds/add", data=inbound_payload(pc, ec, cc))
         c = res["obj"]
@@ -364,6 +373,23 @@ def main():
         now = procs()
         check("only e2e-big restarted", now["e2e-big"] != old["e2e-big"] and all(now[n] == p for n, p in old.items() if n != "e2e-big"), (old, now))
         check("restarted core back on 4 CPUs", ncpus(now["e2e-big"]) == 4 and listening(pb))
+
+        # --- stop and start one instance
+        old = procs()
+        res = api("POST", "/panel/api/server/stopXrayInstance", data={"name": "e2e-big"})
+        check("stop e2e-big", res["success"], res.get("msg"))
+        now = procs()
+        check("only e2e-big stopped", "e2e-big" not in now and all(now.get(n) == p for n, p in old.items() if n != "e2e-big"), now)
+        check("its port is closed", not listening(pb, 2))
+        st = status()
+        big = next(i for i in st["xrayInstances"] if i["name"] == "e2e-big")
+        check("overview shows it stopped", big["state"] == "stop", big["state"])
+        time.sleep(3)  # the crash check runs every second: it must leave it stopped
+        check("the crash check leaves it stopped", "e2e-big" not in procs())
+        res = api("POST", "/panel/api/server/startXrayInstance", data={"name": "e2e-big"})
+        check("start e2e-big", res["success"], res.get("msg"))
+        now = procs()
+        check("e2e-big back on its 4 CPUs, listening", "e2e-big" in now and ncpus(now["e2e-big"]) == 4 and listening(pb))
 
         # --- move A into e2e-big
         old = procs()

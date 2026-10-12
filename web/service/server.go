@@ -526,6 +526,16 @@ func (s *ServerService) StopXrayService() error {
 	return nil
 }
 
+// StopXrayInstance stops one xray core.
+func (s *ServerService) StopXrayInstance(name string) error {
+	return s.xrayService.StopInstance(name)
+}
+
+// StartXrayInstance starts one stopped xray core.
+func (s *ServerService) StartXrayInstance(name string) error {
+	return s.xrayService.StartInstance(name)
+}
+
 // RestartXrayInstance restarts one xray core.
 func (s *ServerService) RestartXrayInstance(name string) error {
 	return s.xrayService.RestartInstance(name)

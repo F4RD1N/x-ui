@@ -82,6 +82,9 @@ func (s *XrayService) XrayInstancesStatus() ([]XrayInstanceStatus, XrayCpuSummar
 	for _, in := range inbounds {
 		st := add(instanceName(in))
 		st.Inbounds = append(st.Inbounds, XrayInstanceInbound{Id: in.Id, Remark: in.Remark, Port: in.Port, Protocol: string(in.Protocol), Enable: in.Enable})
+		if in.Enable && isInstanceStopped(st.Name) {
+			st.State = Stop
+		}
 	}
 	running := map[string]*xray.Process{}
 	for _, p := range snapshotProcs() {

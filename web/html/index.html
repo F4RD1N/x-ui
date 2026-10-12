@@ -3,11 +3,7 @@
 
 {{ template "page/body_start" .}}
 <style>
-  .xi-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 4px 16px; padding: 6px 4px 0; }
-  .xi-heading-title { font-size: 16px; font-weight: 600; }
-  .dark .xi-heading-title { color: var(--dark-color-text-primary, rgba(255, 255, 255, 0.85)); }
-  .xi-cpus { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; color: #595959; }
-  .dark .xi-cpus { color: #a9b3c7; }
+  .xi-actions { display: inline-flex; gap: 6px; }
   .xi-card .ant-card-head-title { display: flex; align-items: center; gap: 8px; }
   .xi-name { font-weight: 600; font-size: 15px; }
   .xi-state { margin: 0; }
@@ -339,14 +335,25 @@
                 </a-card>
               </a-col>
               <a-col :span="24">
-                <div class="xi-heading">
-                  <span class="xi-heading-title">{{ i18n "pages.index.xrayInstances" }}</span>
-                  <span class="xi-cpus">
-                    <span>{{ i18n "pages.index.xrayCpuTotal" }} <b>[[ status.xrayCpus.total ]]</b></span>
-                    <span>{{ i18n "pages.index.xrayCpuReserved" }} <b>[[ status.xrayCpus.reserved ]]</b></span>
-                    <span>{{ i18n "pages.index.xrayCpuAvailable" }} <b>[[ status.xrayCpus.available ]]</b></span>
-                  </span>
-                </div>
+                <a-card hoverable class="xi-summary" title='{{ i18n "pages.index.xrayInstances" }}'>
+                  <a-row :gutter="isMobile ? [8,8] : 0">
+                    <a-col :span="8">
+                      <a-custom-statistic title='{{ i18n "pages.index.xrayCpuTotal" }}' :value="String(status.xrayCpus.total)">
+                        <template #prefix><a-icon type="dashboard" /></template>
+                      </a-custom-statistic>
+                    </a-col>
+                    <a-col :span="8">
+                      <a-custom-statistic title='{{ i18n "pages.index.xrayCpuReserved" }}' :value="String(status.xrayCpus.reserved)">
+                        <template #prefix><a-icon type="lock" /></template>
+                      </a-custom-statistic>
+                    </a-col>
+                    <a-col :span="8">
+                      <a-custom-statistic title='{{ i18n "pages.index.xrayCpuAvailable" }}' :value="String(status.xrayCpus.available)">
+                        <template #prefix><a-icon type="sync" /></template>
+                      </a-custom-statistic>
+                    </a-col>
+                  </a-row>
+                </a-card>
               </a-col>
               <a-col v-if="status.xrayInstances.length === 0" :span="24">
                 <a-card hoverable><span class="xi-muted">{{ i18n "pages.index.xrayInstancesNone" }}</span></a-card>
@@ -358,11 +365,28 @@
                     <a-tag :color="xiColor(inst.state)" class="xi-state">[[ xiStateText(inst.state) ]]</a-tag>
                   </template>
                   <template #extra>
-                    <a-tooltip v-if="inst.state !== 'idle'" :overlay-class-name="themeSwitcher.currentTheme">
-                      <template slot="title">{{ i18n "pages.index.xrayInstanceRestart" }}</template>
-                      <a-button size="small" shape="circle" icon="reload" class="xi-restart"
-                        :loading="!!xiRestarting[inst.name]" @click="restartXrayInstance(inst.name)"></a-button>
-                    </a-tooltip>
+                    <span class="xi-actions">
+                      <a-tooltip v-if="inst.state === 'stop'" :overlay-class-name="themeSwitcher.currentTheme">
+                        <template slot="title">{{ i18n "pages.index.xrayInstanceStart" }}</template>
+                        <a-button size="small" shape="circle" icon="caret-right" class="xi-start"
+                          :loading="!!xiBusy[inst.name + ':start']" :disabled="xiAnyBusy(inst.name)"
+                          @click="xrayInstanceAction(inst.name, 'start')"></a-button>
+                      </a-tooltip>
+                      <template v-if="inst.state === 'running' || inst.state === 'error'">
+                        <a-tooltip :overlay-class-name="themeSwitcher.currentTheme">
+                          <template slot="title">{{ i18n "pages.index.xrayInstanceStop" }}</template>
+                          <a-button size="small" shape="circle" icon="poweroff" class="xi-stop"
+                            :loading="!!xiBusy[inst.name + ':stop']" :disabled="xiAnyBusy(inst.name)"
+                            @click="xrayInstanceAction(inst.name, 'stop')"></a-button>
+                        </a-tooltip>
+                        <a-tooltip :overlay-class-name="themeSwitcher.currentTheme">
+                          <template slot="title">{{ i18n "pages.index.xrayInstanceRestart" }}</template>
+                          <a-button size="small" shape="circle" icon="reload" class="xi-restart"
+                            :loading="!!xiBusy[inst.name + ':restart']" :disabled="xiAnyBusy(inst.name)"
+                            @click="xrayInstanceAction(inst.name, 'restart')"></a-button>
+                        </a-tooltip>
+                      </template>
+                    </span>
                   </template>
                   <div class="xi-coresline">[[ coresText(inst) ]]</div>
                   <div class="xi-body">
@@ -1033,7 +1057,7 @@
     mixins: [MediaQueryMixin],
     data: {
       themeSwitcher,
-      xiRestarting: {},
+      xiBusy: {},
       loadingStates: {
         fetched: false,
         spinning: false
@@ -1337,15 +1361,20 @@
           return;
         }
       },
-      // Restarts one xray core; the others keep their connections.
-      async restartXrayInstance(name) {
-        if (this.xiRestarting[name]) return;
-        this.$set(this.xiRestarting, name, true);
+      // Stops, starts or restarts one xray core; the others keep their
+      // connections. The status feed shows the result within two seconds.
+      async xrayInstanceAction(name, action) {
+        if (this.xiAnyBusy(name)) return;
+        const key = name + ':' + action;
+        this.$set(this.xiBusy, key, true);
         try {
-          await HttpUtil.post('/panel/api/server/restartXrayInstance', { name });
+          await HttpUtil.post(`/panel/api/server/${action}XrayInstance`, { name });
         } finally {
-          this.$set(this.xiRestarting, name, false);
+          this.$set(this.xiBusy, key, false);
         }
+      },
+      xiAnyBusy(name) {
+        return ['start', 'stop', 'restart'].some((a) => this.xiBusy[name + ':' + a]);
       },
       xiColor(state) {
         return { running: 'green', stop: 'orange', error: 'red', idle: '' }[state] || '';

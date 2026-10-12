@@ -140,8 +140,11 @@ instance**, and every instance is its own xray process:
 
 Each process runs the template (routing, outbounds, DNS, …) plus its own
 inbounds and its own API port, and is pinned to its cores. The overview page
-lists every instance with its state, cores and CPUs, CPU use, TCP connections,
-memory, threads and uptime, and can restart one instance on its own.
+shows the CPU split in a card of its own, then a card per instance with its
+state, cores and CPUs, CPU use, TCP connections, memory, threads and uptime. Each
+instance can be stopped, started and restarted on its own: a stopped instance
+stays stopped through inbound edits and crash checks, and its CPUs go to the auto
+instances, until you start it again, restart Xray as a whole or restart the panel.
 
 Changes still apply without restarting anything that does not need it: adding,
 editing or removing an inbound or client goes through the API of the process
