@@ -3,7 +3,9 @@
 report: summary table, then charts of messages/s, CPU and p99 latency per
 connection count for one core and for several.
 
-  report.py RESULTS_DIR OUT.html [title]
+  report.py RESULTS_DIR OUT.html [title] [notes.html]
+
+notes.html, if given, is inserted above the charts (findings, setup).
 """
 import html, json, os, re, sys
 
@@ -49,7 +51,8 @@ def chart(title, unit, series, xs, logy=False):
     for i in range(5):
         y = ymax * i / 4
         parts.append(f'<line x1="{L}" x2="{W-R}" y1="{Y(y):.1f}" y2="{Y(y):.1f}" class="grid"/>')
-        parts.append(f'<text x="{L-6}" y="{Y(y)+4:.1f}" class="ax" text-anchor="end">{fmt(y, 0 if ymax > 20 else 1)}</text>')
+        digits = 0 if ymax > 20 else 1 if ymax > 2 else 2
+        parts.append(f'<text x="{L-6}" y="{Y(y)+4:.1f}" class="ax" text-anchor="end">{fmt(y, digits)}</text>')
     for x in xs:
         parts.append(f'<text x="{X(x):.1f}" y="{H-B+18}" class="ax" text-anchor="middle">{x//1000}k</text>')
     parts.append(f'<text x="{W-R}" y="{H-6}" class="ax" text-anchor="end">connections · {html.escape(unit)}</text>')
@@ -68,6 +71,7 @@ def chart(title, unit, series, xs, logy=False):
 def main():
     d, out = sys.argv[1], sys.argv[2]
     title = sys.argv[3] if len(sys.argv) > 3 else "One xray core vs several"
+    notes = open(sys.argv[4]).read() if len(sys.argv) > 4 else ""
     res = load(d)
     xs = sorted({c for _, c in res})
     rows = []
@@ -115,10 +119,14 @@ th {{ color:var(--muted); font-weight:600; }}
 .chart {{ width:100%; height:auto; }} .ct {{ font-size:13px; font-weight:600; fill:var(--text); }}
 .ax {{ font-size:11px; fill:var(--muted); }} .grid {{ stroke:var(--line); }} .ln {{ fill:none; stroke-width:2.5; }}
 .legend span {{ margin-right:16px; }}
+.notes {{ margin:0 0 18px; }} .notes h2 {{ margin-top:18px; }} .notes li {{ margin:4px 0; }}
+.notes .tbl {{ margin-top:10px; }} .notes table {{ width:auto; }} .notes td, .notes th {{ text-align:right; }} .notes td:first-child, .notes th:first-child {{ text-align:left; }}
+.good {{ color:#1f8a70; font-weight:600; }}
 </style></head><body><main>
 <h1>{html.escape(title)}</h1>
 <p class="sub">VLESS over TCP with the HTTP header, 1,000 clients, 64-byte messages echoed back. Same 16 CPUs for both setups; load generator on other CPUs.
 Phases: idle (connections held), light (each connection sends every 10 s), medium (every 5 s), heavy (every 2 s).</p>
+{notes}
 <p class="legend"><span><span class="dot" style="background:{COLORS['single']}"></span>{LABEL['single']}</span><span><span class="dot" style="background:{COLORS['multi']}"></span>{LABEL['multi']}</span></p>
 <div class="grid2">{''.join(f'<div class="card">{c}</div>' for c in charts if c)}</div>
 <h2>All numbers</h2>
