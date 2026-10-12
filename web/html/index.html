@@ -3,16 +3,16 @@
 
 {{ template "page/body_start" .}}
 <style>
-  .xi-card .ant-card-extra { padding: 12px 0; }
-  .xi-cpus { font-size: 13px; }
+  .xi-cpus { display: flex; flex-wrap: wrap; gap: 4px 20px; font-size: 13px; padding-bottom: 12px; margin-bottom: 2px; border-bottom: 1px solid #f0f0f0; }
+  .dark .xi-cpus { border-bottom-color: var(--dark-color-stroke, #2c3950); }
   .xi-row { display: flex; flex-wrap: wrap; gap: 12px 24px; padding: 14px 0; border-top: 1px solid #f0f0f0; }
-  .xi-row:first-of-type { border-top: 0; padding-top: 0; }
+  .xi-cpus + .xi-row { border-top: 0; }
   .dark .xi-row { border-top-color: var(--dark-color-stroke, #2c3950); }
   .xi-main { flex: 1 1 260px; min-width: 0; }
-  .xi-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .xi-title { display: flex; align-items: center; flex-wrap: wrap; }
+  .xi-title > * { margin-right: 8px; }
   .xi-name { font-weight: 600; font-size: 15px; }
-  .xi-state { margin: 0; }
-  .xi-restart { margin-left: auto; }
+  .xi-title > .xi-state { margin: 0 8px 0 0; }
   .xi-muted { color: #8c8c8c; font-size: 12px; }
   .dark .xi-muted { color: #8d97ab; }
   .xi-inbounds { margin-top: 6px; }
@@ -27,7 +27,6 @@
   @media (max-width: 768px) {
     .xi-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); flex-basis: 100%; }
     .xi-stat-cpu { grid-column: 1 / -1; }
-    .xi-card .ant-card-extra { float: none; display: block; padding-top: 0; }
   }
   body.dark .custom-geo-section code.custom-geo-ext-code {
     color: var(--dark-color-text-primary, rgba(255, 255, 255, 0.85));
@@ -341,18 +340,15 @@
               <a-col :span="24">
                 <a-card hoverable class="xi-card">
                   <template #title>{{ i18n "pages.index.xrayInstances" }}</template>
-                  <template #extra>
-                    <span class="xi-cpus">
-                      {{ i18n "pages.index.xrayCpuTotal" }} <b>[[ status.xrayCpus.total ]]</b>
-                      &middot; {{ i18n "pages.index.xrayCpuReserved" }} <b>[[ status.xrayCpus.reserved ]]</b>
-                      &middot; {{ i18n "pages.index.xrayCpuAvailable" }} <b>[[ status.xrayCpus.available ]]</b>
-                    </span>
-                  </template>
+                  <div class="xi-cpus">
+                    <span>{{ i18n "pages.index.xrayCpuTotal" }} <b>[[ status.xrayCpus.total ]]</b></span>
+                    <span>{{ i18n "pages.index.xrayCpuReserved" }} <b>[[ status.xrayCpus.reserved ]]</b></span>
+                    <span>{{ i18n "pages.index.xrayCpuAvailable" }} <b>[[ status.xrayCpus.available ]]</b></span>
+                  </div>
                   <div v-if="status.xrayInstances.length === 0" class="xi-muted">{{ i18n "pages.index.xrayInstancesNone" }}</div>
                   <div v-for="inst in status.xrayInstances" :key="inst.name" class="xi-row">
                     <div class="xi-main">
                       <div class="xi-title">
-                        <a-badge :color="xiColor(inst.state)" />
                         <span class="xi-name">[[ inst.name ]]</span>
                         <a-tag :color="xiColor(inst.state)" class="xi-state">[[ xiStateText(inst.state) ]]</a-tag>
                         <a-tooltip v-if="inst.state !== 'idle'" :overlay-class-name="themeSwitcher.currentTheme">

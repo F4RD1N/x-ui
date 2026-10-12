@@ -353,8 +353,18 @@ func checkCoreRequest(total int, cores map[string]int, instance string) error {
 		}
 		return fmt.Errorf("%s cannot have %d CPU cores: this server has %d and only %d are available", instance, n, total, avail)
 	}
-	if n == 0 && avail < 1 {
-		return fmt.Errorf("%s is set to auto, but the other instances reserve all %d CPU cores", instance, total)
+	if n == 0 {
+		// Auto instances share what the fixed ones leave; there just has
+		// to be something left.
+		reserved := 0
+		for name, c := range cores {
+			if name != instance && c > 0 {
+				reserved += c
+			}
+		}
+		if total-reserved < 1 {
+			return fmt.Errorf("%s is set to auto, but the other instances reserve all %d CPU cores", instance, total)
+		}
 	}
 	return nil
 }

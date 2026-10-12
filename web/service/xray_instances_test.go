@@ -115,6 +115,10 @@ func TestAvailableCoresAndCheck(t *testing.T) {
 	if err := checkCoreRequest(28, map[string]int{"xray-1": -1}, "xray-1"); err == nil {
 		t.Fatal("negative must fail")
 	}
+	// Two auto instances on one core share it.
+	if err := checkCoreRequest(1, map[string]int{"xray-1": 0, "xray-2": 0}, "xray-2"); err != nil {
+		t.Fatalf("2 autos on 1 core: %v", err)
+	}
 	// Many auto instances on few cores are fine: they share.
 	many := map[string]int{}
 	for i := 1; i <= 40; i++ {

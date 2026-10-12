@@ -123,8 +123,39 @@ settings and an inbound's TLS certificates — you may enter an
 `http(s)://` link instead. On save the file is downloaded to `/etc/x-ui/certs`
 and the field is replaced with the local path.
 
+## Xray instances
+
+A single xray process carrying hundreds of thousands of TCP connections runs out
+of steam long before the machine does. So every inbound runs in a named **Xray
+instance**, and every instance is its own xray process:
+
+- **Xray instance** (inbound form): `xray-1`, `xray-2`, … by default, one per
+  inbound. Give several inbounds the same name to put them in one process.
+- **CPU cores** (inbound form): `Auto` by default, or a fixed number. Fixed
+  instances get that many cores of their own; the auto instances split the rest
+  evenly. On 28 cores, two auto instances get 14 each; with one fixed at 10, the
+  auto one gets 18. The form shows the server's total cores and how many this
+  instance can have, and more than that is refused. The value belongs to the
+  instance, so it applies to all of its inbounds.
+
+Each process runs the template (routing, outbounds, DNS, …) plus its own
+inbounds and its own API port, and is pinned to its cores. The overview page
+lists every instance with its state, cores and CPUs, CPU use, TCP connections,
+memory, threads and uptime, and can restart one instance on its own.
+
+Changes still apply without restarting anything that does not need it: adding,
+editing or removing an inbound or client goes through the API of the process
+that runs it, a new instance only starts its own process, an emptied one stops,
+and a change of cores moves running processes to their new CPUs in place.
+
+On upgrade, each existing inbound gets its own instance. An imported inbound
+also gets a new one.
+
 ## Other changes
 
+- **Connection counts are cheap.** The overview's TCP and UDP totals come from
+  `/proc/net/sockstat` instead of printing `/proc/net/tcp` every two seconds,
+  which on a busy server cost seconds of CPU each time.
 - **Restarting Xray no longer races itself.** Stopping the core now waits for it
   to exit (escalating to `SIGKILL`) before the new one starts, which is what
   caused `address already in use` on a port the previous core still held. The
