@@ -743,10 +743,16 @@ func (s *XrayService) applyInstances(force bool) error {
 
 	var errs []string
 	parentLimit := goMemLimit()
+	// The limit is shared by the cores that run, by their CPUs: a lone
+	// core keeps all of it, eight equal ones get an eighth each.
+	allocated := 0
+	for _, r := range reqs {
+		allocated += len(alloc[r.Name])
+	}
 	for _, name := range start {
 		p := xray.NewInstanceProcess(name, plan.configs[name], instanceConfigPath(name), alloc[name])
 		if parentLimit > 0 {
-			p.SetMemoryLimit(shareMemLimit(parentLimit, len(alloc[name]), len(xray.AvailableCPUs())))
+			p.SetMemoryLimit(shareMemLimit(parentLimit, len(alloc[name]), allocated))
 		}
 		err := p.Start()
 		instMu.Lock()
@@ -851,8 +857,8 @@ func parseGoMemLimit(v string) int64 {
 	return n * mult
 }
 
-// shareMemLimit is a core's part of the panel's memory limit: in proportion
-// to its CPUs, and never below 256 MiB.
+// shareMemLimit is a core's part of the panel's memory limit: its CPUs out
+// of all the CPUs given to running cores, and never below 256 MiB.
 func shareMemLimit(total int64, cpus, allCPUs int) int64 {
 	if allCPUs <= 0 || cpus <= 0 {
 		return total

@@ -505,6 +505,7 @@ func TestFailingInstanceBacksOff(t *testing.T) {
 
 	// The memory limit is shared out by CPUs.
 	env, _ := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pGood))
+	// Two auto instances share every CPU: each gets its half of the limit.
 	n := len(procOf(good.XrayInstance).CPUs())
 	want := fmt.Sprintf("GOMEMLIMIT=%d", shareMemLimit(8<<30, n, len(xray.AvailableCPUs())))
 	if !strings.Contains(string(env), want+"\x00") {
