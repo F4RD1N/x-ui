@@ -92,6 +92,8 @@ type Status struct {
 		Mem     uint64 `json:"mem"`
 		Uptime  uint64 `json:"uptime"`
 	} `json:"appStats"`
+	XrayInstances []XrayInstanceStatus `json:"xrayInstances"`
+	XrayCpus      XrayCpuSummary       `json:"xrayCpus"`
 }
 
 // ServerService provides business logic for server monitoring and management.
@@ -383,30 +385,33 @@ func (s *ServerService) GetStatus(lastStatus *Status) *Status {
 	status.PublicIP.IPv4 = s.cachedIPv4
 	status.PublicIP.IPv6 = s.cachedIPv6
 
-	// Xray status
-	if s.xrayService.IsXrayRunning() {
+	// Xray status: an error in any core shows, even while the others run.
+	if err := s.xrayService.GetXrayErr(); err != nil && !isManuallyStopped.Load() {
+		status.Xray.State = Error
+		status.Xray.ErrorMsg = s.xrayService.GetXrayResult()
+		if status.Xray.ErrorMsg == "" {
+			status.Xray.ErrorMsg = err.Error()
+		}
+	} else if s.xrayService.IsXrayRunning() {
 		status.Xray.State = Running
 		status.Xray.ErrorMsg = ""
 	} else {
-		err := s.xrayService.GetXrayErr()
-		if err != nil {
-			status.Xray.State = Error
-		} else {
-			status.Xray.State = Stop
-		}
-		status.Xray.ErrorMsg = s.xrayService.GetXrayResult()
+		status.Xray.State = Stop
+		status.Xray.ErrorMsg = ""
 	}
 	status.Xray.Version = s.xrayService.GetXrayVersion()
+	status.XrayInstances, status.XrayCpus = s.xrayService.XrayInstancesStatus()
 
 	// Application stats
 	var rtm runtime.MemStats
 	runtime.ReadMemStats(&rtm)
 	status.AppStats.Mem = rtm.Sys
 	status.AppStats.Threads = uint32(runtime.NumGoroutine())
-	if p != nil && p.IsRunning() {
-		status.AppStats.Uptime = p.GetUptime()
-	} else {
-		status.AppStats.Uptime = 0
+	status.AppStats.Uptime = 0
+	for _, p := range snapshotProcs() {
+		if p.IsRunning() && p.GetUptime() > status.AppStats.Uptime {
+			status.AppStats.Uptime = p.GetUptime()
+		}
 	}
 
 	return status
@@ -519,6 +524,11 @@ func (s *ServerService) StopXrayService() error {
 		return err
 	}
 	return nil
+}
+
+// RestartXrayInstance restarts one xray core.
+func (s *ServerService) RestartXrayInstance(name string) error {
+	return s.xrayService.RestartInstance(name)
 }
 
 func (s *ServerService) RestartXrayService() error {

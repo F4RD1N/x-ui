@@ -49,6 +49,33 @@ func initModels() error {
 	return nil
 }
 
+// assignXrayInstances gives every inbound without an Xray instance its own,
+// xray-1, xray-2, ... in creation order, so an upgraded panel runs each
+// inbound in its own core process. Inbounds that already have one keep it.
+func assignXrayInstances() error {
+	var inbounds []model.Inbound
+	if err := db.Model(&model.Inbound{}).Select("id", "xray_instance").Order("id").Find(&inbounds).Error; err != nil {
+		return err
+	}
+	used := map[string]bool{}
+	for _, in := range inbounds {
+		if in.XrayInstance != "" {
+			used[in.XrayInstance] = true
+		}
+	}
+	for _, in := range inbounds {
+		if in.XrayInstance != "" {
+			continue
+		}
+		name := model.NextXrayInstanceName(used)
+		used[name] = true
+		if err := db.Model(&model.Inbound{}).Where("id = ?", in.Id).Update("xray_instance", name).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // initUser creates a default admin user if the users table is empty.
 func initUser() error {
 	empty, err := isTableEmpty("users")
@@ -145,6 +172,9 @@ func InitDB(dbPath string) error {
 	}
 
 	if err := initModels(); err != nil {
+		return err
+	}
+	if err := assignXrayInstances(); err != nil {
 		return err
 	}
 

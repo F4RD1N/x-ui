@@ -21,6 +21,8 @@ class DBInbound {
         this.tag = "";
         this.sniffing = "";
         this.clientStats = ""
+        this.xrayInstance = "";
+        this.xrayCores = 0;
         if (data == null) {
             return;
         }

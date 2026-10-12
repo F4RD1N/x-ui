@@ -3,9 +3,11 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"runtime"
 	"sync"
 
+	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/logger"
 	"github.com/mhsanaei/3x-ui/v2/xray"
 
@@ -13,11 +15,9 @@ import (
 )
 
 var (
-	p                 *xray.Process
-	lock              sync.Mutex
+	lock              sync.Mutex  // serialises starting and stopping the cores
 	isNeedXrayRestart atomic.Bool // Indicates that restart was requested for Xray
 	isManuallyStopped atomic.Bool // Indicates that Xray was stopped manually from the panel
-	result            string
 )
 
 // XrayService provides business logic for Xray process management.
@@ -25,63 +25,70 @@ var (
 type XrayService struct {
 	inboundService InboundService
 	settingService SettingService
-	xrayAPI        xray.XrayAPI
 }
 
-// IsXrayRunning checks if the Xray process is currently running.
+// IsXrayRunning reports whether at least one core is running.
 func (s *XrayService) IsXrayRunning() bool {
-	return p != nil && p.IsRunning()
+	for _, p := range snapshotProcs() {
+		if p.IsRunning() {
+			return true
+		}
+	}
+	return false
 }
 
-// GetXrayErr returns the error from the Xray process, if any.
+// failedProc returns the first core that stopped with an error.
+func failedProc() *xray.Process {
+	for _, p := range snapshotProcs() {
+		if p.IsRunning() {
+			continue
+		}
+		err := p.GetErr()
+		if err == nil {
+			continue
+		}
+		if runtime.GOOS == "windows" && err.Error() == "exit status 1" {
+			// exit status 1 on Windows means that Xray process was killed
+			// as we kill process to stop in on Windows, this is not an error
+			continue
+		}
+		return p
+	}
+	return nil
+}
+
+// GetXrayErr returns the error of the first core that failed, if any.
 func (s *XrayService) GetXrayErr() error {
-	if p == nil {
-		return nil
+	if p := failedProc(); p != nil {
+		return fmt.Errorf("%s: %w", p.Name(), p.GetErr())
 	}
-
-	err := p.GetErr()
-	if err == nil {
-		return nil
-	}
-
-	if runtime.GOOS == "windows" && err.Error() == "exit status 1" {
-		// exit status 1 on Windows means that Xray process was killed
-		// as we kill process to stop in on Windows, this is not an error
-		return nil
-	}
-
-	return err
+	return nil
 }
 
-// GetXrayResult returns the result string from the Xray process.
+// GetXrayResult returns what the first failed core last said.
 func (s *XrayService) GetXrayResult() string {
-	if result != "" {
-		return result
-	}
-	if s.IsXrayRunning() {
-		return ""
-	}
+	p := failedProc()
 	if p == nil {
 		return ""
 	}
-
-	result = p.GetResult()
-
+	result := p.GetResult()
 	if runtime.GOOS == "windows" && result == "exit status 1" {
-		// exit status 1 on Windows means that Xray process was killed
-		// as we kill process to stop in on Windows, this is not an error
 		return ""
 	}
-
-	return result
+	if result == "" {
+		return ""
+	}
+	return p.Name() + ": " + result
 }
 
-// GetXrayVersion returns the version of the running Xray process.
+// GetXrayVersion returns the version of the cores.
 func (s *XrayService) GetXrayVersion() string {
-	if p == nil {
-		return "Unknown"
+	for _, p := range snapshotProcs() {
+		if v := p.GetVersion(); v != "" && v != "Unknown" {
+			return v
+		}
 	}
-	return p.GetVersion()
+	return "Unknown"
 }
 
 // RemoveIndex removes an element at the specified index from a slice.
@@ -108,17 +115,24 @@ func (s *XrayService) GetXrayConfigFor(templateConfig string) (*xray.Config, err
 }
 
 func (s *XrayService) buildXrayConfig(templateConfig string) (*xray.Config, error) {
+	c, _, err := s.buildXrayConfigAndInbounds(templateConfig)
+	return c, err
+}
+
+// buildXrayConfigAndInbounds builds the whole config and also returns the
+// inbounds it was built from.
+func (s *XrayService) buildXrayConfigAndInbounds(templateConfig string) (*xray.Config, []*model.Inbound, error) {
 	xrayConfig := &xray.Config{}
 	err := json.Unmarshal([]byte(templateConfig), xrayConfig)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	s.inboundService.AddTraffic(nil, nil)
 
 	inbounds, err := s.inboundService.GetAllInbounds()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for _, inbound := range inbounds {
 		if !inbound.Enable {
@@ -172,7 +186,7 @@ func (s *XrayService) buildXrayConfig(templateConfig string) (*xray.Config, erro
 			settings["clients"] = final_clients
 			modifiedSettings, err := json.MarshalIndent(settings, "", "  ")
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 
 			inbound.Settings = string(modifiedSettings)
@@ -198,7 +212,7 @@ func (s *XrayService) buildXrayConfig(templateConfig string) (*xray.Config, erro
 
 			newStream, err := json.MarshalIndent(stream, "", "  ")
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			inbound.StreamSettings = string(newStream)
 		}
@@ -206,68 +220,108 @@ func (s *XrayService) buildXrayConfig(templateConfig string) (*xray.Config, erro
 		inboundConfig := inbound.GenXrayInboundConfig()
 		xrayConfig.InboundConfigs = append(xrayConfig.InboundConfigs, *inboundConfig)
 	}
-	return xrayConfig, nil
+	return xrayConfig, inbounds, nil
 }
 
-// GetXrayTraffic fetches the current traffic statistics from the running Xray process.
+// GetXrayTraffic collects, and resets, the traffic counters of every running
+// core, summed per inbound, outbound and client.
 func (s *XrayService) GetXrayTraffic() ([]*xray.Traffic, []*xray.ClientTraffic, error) {
-	if !s.IsXrayRunning() {
-		err := errors.New("xray is not running")
-		logger.Debug("Attempted to fetch Xray traffic, but Xray is not running:", err)
-		return nil, nil, err
+	var traffics []*xray.Traffic
+	var clientTraffics []*xray.ClientTraffic
+	ran := false
+	var lastErr error
+	for _, p := range snapshotProcs() {
+		if !p.IsRunning() {
+			continue
+		}
+		var api xray.XrayAPI
+		if err := api.Init(p.GetAPIPort()); err != nil {
+			lastErr = err
+			continue
+		}
+		t, c, err := api.GetTraffic(true)
+		api.Close()
+		if err != nil {
+			logger.Debug("Failed to fetch Xray traffic of", p.Name(), ":", err)
+			lastErr = err
+			continue
+		}
+		ran = true
+		traffics = append(traffics, t...)
+		clientTraffics = append(clientTraffics, c...)
 	}
-	apiPort := p.GetAPIPort()
-	s.xrayAPI.Init(apiPort)
-	defer s.xrayAPI.Close()
-
-	traffic, clientTraffic, err := s.xrayAPI.GetTraffic(true)
-	if err != nil {
-		logger.Debug("Failed to fetch Xray traffic:", err)
-		return nil, nil, err
+	if !ran {
+		if lastErr == nil {
+			lastErr = errors.New("xray is not running")
+		}
+		return nil, nil, lastErr
 	}
-	return traffic, clientTraffic, nil
+	return mergeTraffic(traffics), mergeClientTraffic(clientTraffics), nil
 }
 
-// RestartXray restarts the Xray process, optionally forcing a restart even if config unchanged.
+// mergeTraffic sums entries for the same inbound or outbound reported by
+// several cores (every core has the template's outbounds).
+func mergeTraffic(in []*xray.Traffic) []*xray.Traffic {
+	type key struct {
+		inbound, outbound bool
+		tag               string
+	}
+	idx := map[key]*xray.Traffic{}
+	out := make([]*xray.Traffic, 0, len(in))
+	for _, t := range in {
+		k := key{t.IsInbound, t.IsOutbound, t.Tag}
+		if m, ok := idx[k]; ok {
+			m.Up += t.Up
+			m.Down += t.Down
+			continue
+		}
+		c := *t
+		idx[k] = &c
+		out = append(out, &c)
+	}
+	return out
+}
+
+// mergeClientTraffic sums entries of the same client, which two cores can
+// both report while an inbound moves between them.
+func mergeClientTraffic(in []*xray.ClientTraffic) []*xray.ClientTraffic {
+	idx := map[string]*xray.ClientTraffic{}
+	out := make([]*xray.ClientTraffic, 0, len(in))
+	for _, t := range in {
+		if m, ok := idx[t.Email]; ok {
+			m.Up += t.Up
+			m.Down += t.Down
+			continue
+		}
+		c := *t
+		idx[t.Email] = &c
+		out = append(out, &c)
+	}
+	return out
+}
+
+// RestartXray brings the cores in line with the stored config. With isForce
+// every core restarts; otherwise only the cores whose config changed in a
+// way their API could not apply restart, and the rest keep their
+// connections.
 func (s *XrayService) RestartXray(isForce bool) error {
 	lock.Lock()
 	defer lock.Unlock()
 	logger.Debug("restart Xray, force:", isForce)
 	isManuallyStopped.Store(false)
-
-	xrayConfig, err := s.GetXrayConfig()
-	if err != nil {
-		return err
-	}
-
-	if s.IsXrayRunning() {
-		if !isForce && p.GetConfig().Equals(xrayConfig) && !isNeedXrayRestart.Load() {
-			logger.Debug("It does not need to restart Xray")
-			return nil
-		}
-		p.Stop()
-	}
-
-	p = xray.NewProcess(xrayConfig)
-	result = ""
-	err = p.Start()
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return s.applyInstances(isForce)
 }
 
-// StopXray stops the running Xray process.
+// StopXray stops every core.
 func (s *XrayService) StopXray() error {
 	lock.Lock()
 	defer lock.Unlock()
 	isManuallyStopped.Store(true)
 	logger.Debug("Attempting to stop Xray...")
-	if s.IsXrayRunning() {
-		return p.Stop()
+	if !s.IsXrayRunning() {
+		return errors.New("xray is not running")
 	}
-	return errors.New("xray is not running")
+	return stopAllInstances()
 }
 
 // SetToNeedRestart marks that Xray needs to be restarted.
@@ -280,7 +334,20 @@ func (s *XrayService) IsNeedRestartAndSetFalse() bool {
 	return isNeedXrayRestart.CompareAndSwap(true, false)
 }
 
-// DidXrayCrash checks if Xray crashed by verifying it's not running and wasn't manually stopped.
+// DidXrayCrash reports whether a core that should run is not running, and
+// the cores were not stopped by hand.
 func (s *XrayService) DidXrayCrash() bool {
-	return !s.IsXrayRunning() && !isManuallyStopped.Load()
+	if isManuallyStopped.Load() {
+		return false
+	}
+	list := snapshotProcs()
+	if len(list) == 0 {
+		return true
+	}
+	for _, p := range list {
+		if !p.IsRunning() {
+			return true
+		}
+	}
+	return false
 }

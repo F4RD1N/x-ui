@@ -6,6 +6,7 @@ package xray
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"regexp"
@@ -28,6 +29,10 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+// errAPINotConnected is returned when the API of a core that is not running
+// is used: the change then reaches the core when it starts.
+var errAPINotConnected = errors.New("xray API is not connected")
 
 // XrayAPI is a gRPC client for managing Xray core configuration, inbounds, outbounds, and statistics.
 type XrayAPI struct {
@@ -73,6 +78,9 @@ func (x *XrayAPI) Close() {
 
 // AddInbound adds a new inbound configuration to the Xray core via gRPC.
 func (x *XrayAPI) AddInbound(inbound []byte) error {
+	if x.HandlerServiceClient == nil {
+		return errAPINotConnected
+	}
 	client := *x.HandlerServiceClient
 
 	conf := new(conf.InboundDetourConfig)
@@ -95,6 +103,9 @@ func (x *XrayAPI) AddInbound(inbound []byte) error {
 
 // DelInbound removes an inbound configuration from the Xray core by tag.
 func (x *XrayAPI) DelInbound(tag string) error {
+	if x.HandlerServiceClient == nil {
+		return errAPINotConnected
+	}
 	client := *x.HandlerServiceClient
 	_, err := client.RemoveInbound(context.Background(), &command.RemoveInboundRequest{
 		Tag: tag,
@@ -104,6 +115,9 @@ func (x *XrayAPI) DelInbound(tag string) error {
 
 // AddUser adds a user to an inbound in the Xray core using the specified protocol and user data.
 func (x *XrayAPI) AddUser(Protocol string, inboundTag string, user map[string]any) error {
+	if x.HandlerServiceClient == nil {
+		return errAPINotConnected
+	}
 	var account *serial.TypedMessage
 	switch Protocol {
 	case "vmess":
@@ -192,6 +206,9 @@ func (x *XrayAPI) AddUser(Protocol string, inboundTag string, user map[string]an
 
 // RemoveUser removes a user from an inbound in the Xray core by email.
 func (x *XrayAPI) RemoveUser(inboundTag, email string) error {
+	if x.HandlerServiceClient == nil {
+		return errAPINotConnected
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 

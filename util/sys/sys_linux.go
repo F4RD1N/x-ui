@@ -48,9 +48,14 @@ func getLinesNum(filename string) (int, error) {
 	return sum, nil
 }
 
-// GetTCPCount returns the number of active TCP connections by reading
-// /proc/net/tcp and /proc/net/tcp6 when available.
+// GetTCPCount returns the number of TCP sockets. It reads the kernel's
+// counters in /proc/net/sockstat; /proc/net/tcp, the fallback, prints every
+// socket as a line of text and costs seconds of CPU per read on a server with
+// hundreds of thousands of connections.
 func GetTCPCount() (int, error) {
+	if tcp, _, err := sockstatCounts(); err == nil {
+		return tcp, nil
+	}
 	root := HostProc()
 
 	tcp4, err := safeGetLinesNum(fmt.Sprintf("%v/net/tcp", root))
@@ -65,7 +70,12 @@ func GetTCPCount() (int, error) {
 	return tcp4 + tcp6, nil
 }
 
+// GetUDPCount returns the number of UDP sockets, from /proc/net/sockstat
+// like GetTCPCount.
 func GetUDPCount() (int, error) {
+	if _, udp, err := sockstatCounts(); err == nil {
+		return udp, nil
+	}
 	root := HostProc()
 
 	udp4, err := safeGetLinesNum(fmt.Sprintf("%v/net/udp", root))

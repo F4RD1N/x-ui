@@ -2711,7 +2711,7 @@ func (t *Tgbot) prepareServerUsageInfo() string {
 		t.lastStatus = t.serverService.GetStatus(t.lastStatus)
 		t.setCachedStatus(t.lastStatus)
 	}
-	onlines := p.GetOnlineClients()
+	onlines := getOnlineClients()
 
 	info += t.I18nBot("tgbot.messages.hostname", "Hostname=="+hostname)
 	info += t.I18nBot("tgbot.messages.version", "Version=="+config.GetVersion())
@@ -3064,8 +3064,8 @@ func (t *Tgbot) clientInfoMsg(
 
 	status := t.I18nBot("tgbot.offline")
 	isOnline := false
-	if p.IsRunning() {
-		if slices.Contains(p.GetOnlineClients(), traffic.Email) {
+	if t.xrayService.IsXrayRunning() {
+		if slices.Contains(getOnlineClients(), traffic.Email) {
 			status = t.I18nBot("tgbot.online")
 			isOnline = true
 		}
@@ -3592,11 +3592,11 @@ func int64Contains(slice []int64, item int64) bool {
 
 // onlineClients retrieves and sends information about online clients.
 func (t *Tgbot) onlineClients(chatId int64, messageID ...int) {
-	if !p.IsRunning() {
+	if !t.xrayService.IsXrayRunning() {
 		return
 	}
 
-	onlines := p.GetOnlineClients()
+	onlines := getOnlineClients()
 	onlinesCount := len(onlines)
 	output := t.I18nBot("tgbot.messages.onlinesCount", "Count=="+fmt.Sprint(onlinesCount))
 	keyboard := tu.InlineKeyboard(tu.InlineKeyboardRow(

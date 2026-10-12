@@ -16,6 +16,14 @@ func NewLogWriter() *LogWriter {
 // LogWriter processes and filters log output from the Xray process, handling crash detection and message filtering.
 type LogWriter struct {
 	lastLine string
+	prefix   string // instance name shown in the panel log
+}
+
+func (lw *LogWriter) tag() string {
+	if lw.prefix == "" {
+		return "XRAY: "
+	}
+	return "XRAY[" + lw.prefix + "]: "
 }
 
 // Write processes and filters log output from the Xray process, handling crash detection and message filtering.
@@ -55,25 +63,25 @@ func (lw *LogWriter) Write(m []byte) (n int, err error) {
 
 			if strings.Contains(msgBodyLower, "tls handshake error") ||
 				strings.Contains(msgBodyLower, "connection ends") {
-				logger.Debug("XRAY: " + msgBody)
+				logger.Debug(lw.tag() + msgBody)
 				lw.lastLine = ""
 				continue
 			}
 
 			if strings.Contains(msgBodyLower, "failed") {
-				logger.Error("XRAY: " + msgBody)
+				logger.Error(lw.tag() + msgBody)
 			} else {
 				switch level {
 				case "Debug":
-					logger.Debug("XRAY: " + msgBody)
+					logger.Debug(lw.tag() + msgBody)
 				case "Info":
-					logger.Info("XRAY: " + msgBody)
+					logger.Info(lw.tag() + msgBody)
 				case "Warning":
-					logger.Warning("XRAY: " + msgBody)
+					logger.Warning(lw.tag() + msgBody)
 				case "Error":
-					logger.Error("XRAY: " + msgBody)
+					logger.Error(lw.tag() + msgBody)
 				default:
-					logger.Debug("XRAY: " + msg)
+					logger.Debug(lw.tag() + msg)
 				}
 			}
 			lw.lastLine = ""
@@ -82,15 +90,15 @@ func (lw *LogWriter) Write(m []byte) (n int, err error) {
 
 			if strings.Contains(msgLower, "tls handshake error") ||
 				strings.Contains(msgLower, "connection ends") {
-				logger.Debug("XRAY: " + msg)
+				logger.Debug(lw.tag() + msg)
 				lw.lastLine = msg
 				continue
 			}
 
 			if strings.Contains(msgLower, "failed") {
-				logger.Error("XRAY: " + msg)
+				logger.Error(lw.tag() + msg)
 			} else {
-				logger.Debug("XRAY: " + msg)
+				logger.Debug(lw.tag() + msg)
 			}
 			lw.lastLine = msg
 		}

@@ -16,6 +16,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/database"
 	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/logger"
+	"github.com/mhsanaei/3x-ui/v2/web/service"
 	"github.com/mhsanaei/3x-ui/v2/xray"
 )
 
@@ -390,7 +391,11 @@ func (j *CheckClientIpJob) updateInboundClientIps(inboundClientIps *model.Inboun
 // disconnectClientTemporarily removes and re-adds a client to force disconnect banned connections
 func (j *CheckClientIpJob) disconnectClientTemporarily(inbound *model.Inbound, clientEmail string, clients []model.Client) {
 	var xrayAPI xray.XrayAPI
-	apiPort := j.resolveXrayAPIPort()
+	// The client lives in the core that runs its inbound.
+	apiPort := service.XrayAPIPortForTag(inbound.Tag)
+	if apiPort == 0 {
+		apiPort = j.resolveXrayAPIPort()
+	}
 
 	err := xrayAPI.Init(apiPort)
 	if err != nil {

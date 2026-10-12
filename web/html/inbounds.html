@@ -316,6 +316,10 @@
                     <template slot="protocol" slot-scope="text, dbInbound">
                       <a-tag :style="{ margin: '0' }" color="purple">[[
                         dbInbound.protocol ]]</a-tag>
+                      <a-tooltip v-if="dbInbound.xrayInstance" :overlay-class-name="themeSwitcher.currentTheme">
+                        <template slot="title">{{ i18n "pages.inbounds.xrayInstance" }}: [[ dbInbound.xrayInstance ]] &middot; {{ i18n "pages.inbounds.xrayCores" }}: [[ dbInbound.xrayCores > 0 ? dbInbound.xrayCores : '{{ i18n "pages.inbounds.xrayCoresAuto" }}' ]]</template>
+                        <a-tag :style="{ margin: '0' }" color="orange">[[ dbInbound.xrayInstance ]]</a-tag>
+                      </a-tooltip>
                       <template
                         v-if="dbInbound.isVMess || dbInbound.isVLess || dbInbound.isTrojan || dbInbound.isSS">
                         <a-tag :style="{ margin: '0' }" color="green">[[
@@ -531,6 +535,11 @@
                             <tr>
                               <td>{{ i18n "pages.inbounds.port" }}</td>
                               <td><a-tag>[[ dbInbound.port ]]</a-tag></td>
+                            </tr>
+                            <tr v-if="dbInbound.xrayInstance">
+                              <td>{{ i18n "pages.inbounds.xrayInstance" }}</td>
+                              <td><a-tag color="orange">[[ dbInbound.xrayInstance ]]</a-tag>
+                                [[ dbInbound.xrayCores > 0 ? dbInbound.xrayCores + ' {{ i18n "pages.inbounds.xrayCoresUnit" }}' : '{{ i18n "pages.inbounds.xrayCoresAuto" }}' ]]</td>
                             </tr>
                             <tr v-if="clientCount[dbInbound.id]">
                               <td>{{ i18n "clients" }}</td>
@@ -1232,6 +1241,8 @@
           expiryTime: dbInbound.expiryTime,
           trafficReset: dbInbound.trafficReset,
           lastTrafficResetTime: dbInbound.lastTrafficResetTime,
+          xrayInstance: (dbInbound.xrayInstance || '').trim(),
+          xrayCores: dbInbound.xrayCores || 0,
 
           listen: inbound.listen,
           port: inbound.port,
@@ -1257,6 +1268,8 @@
           expiryTime: dbInbound.expiryTime,
           trafficReset: dbInbound.trafficReset,
           lastTrafficResetTime: dbInbound.lastTrafficResetTime,
+          xrayInstance: (dbInbound.xrayInstance || '').trim(),
+          xrayCores: dbInbound.xrayCores || 0,
 
           listen: inbound.listen,
           port: inbound.port,
@@ -1477,6 +1490,8 @@
           expiryTime: dbInbound.expiryTime,
           trafficReset: dbInbound.trafficReset,
           lastTrafficResetTime: dbInbound.lastTrafficResetTime,
+          xrayInstance: (dbInbound.xrayInstance || '').trim(),
+          xrayCores: dbInbound.xrayCores || 0,
 
           listen: inbound.listen,
           port: inbound.port,

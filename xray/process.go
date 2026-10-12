@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -21,6 +22,15 @@ import (
 // GetBinaryName returns the Xray binary filename for the current OS and architecture.
 func GetBinaryName() string {
 	return fmt.Sprintf("xray-%s-%s", runtime.GOOS, runtime.GOARCH)
+}
+
+// sequentialCPUs is the CPU list when the affinity mask cannot be read.
+func sequentialCPUs() []int {
+	cpus := make([]int, runtime.NumCPU())
+	for i := range cpus {
+		cpus[i] = i
+	}
+	return cpus
 }
 
 // GetBinaryPath returns the full path to the Xray binary executable.
@@ -110,6 +120,19 @@ func NewProcess(xrayConfig *Config) *Process {
 	return p
 }
 
+// NewInstanceProcess creates the process of one named core instance. It
+// writes its config to configPath and, when cpus is not empty, runs only on
+// those CPUs.
+func NewInstanceProcess(name string, xrayConfig *Config, configPath string, cpus []int) *Process {
+	p := &Process{newProcess(xrayConfig)}
+	p.name = name
+	p.configPath = configPath
+	p.cpus = append([]int(nil), cpus...)
+	p.logWriter.prefix = name
+	runtime.SetFinalizer(p, stopProcess)
+	return p
+}
+
 // NewTestProcess creates a new Xray process that uses a specific config file path.
 // Used for test runs (e.g. outbound test) so the main config.json is not overwritten.
 // The config file at configPath is removed when the process is stopped.
@@ -133,11 +156,16 @@ type process struct {
 
 	onlineClients []string
 
-	config     *Config
-	configPath string // if set, use this path instead of GetConfigPath() and remove on Stop
-	logWriter  *LogWriter
-	exitErr    error
-	startTime  time.Time
+	config       *Config
+	configPath   string // if set, use this path instead of GetConfigPath()
+	removeConfig bool   // remove configPath on Stop (test runs)
+	logWriter    *LogWriter
+	exitErr      error
+	startTime    time.Time
+
+	name  string // instance name; "" for test runs
+	cpuMu sync.Mutex
+	cpus  []int // CPUs the core is pinned to; empty = not pinned
 }
 
 // newProcess creates a new internal process struct for Xray.
@@ -155,6 +183,7 @@ func newProcess(config *Config) *process {
 func newTestProcess(config *Config, configPath string) *process {
 	p := newProcess(config)
 	p.configPath = configPath
+	p.removeConfig = true
 	return p
 }
 
@@ -201,6 +230,49 @@ func (p *Process) GetAPIPort() int {
 // GetConfig returns the configuration used by the Xray process.
 func (p *Process) GetConfig() *Config {
 	return p.config
+}
+
+// SetConfig records the configuration the running core now has, after
+// changes applied to it through the API.
+func (p *process) SetConfig(c *Config) {
+	p.config = c
+}
+
+// Name returns the instance name.
+func (p *process) Name() string {
+	return p.name
+}
+
+// Pid returns the core's process id, or 0 when it never started.
+func (p *process) Pid() int {
+	if p.cmd == nil || p.cmd.Process == nil {
+		return 0
+	}
+	return p.cmd.Process.Pid
+}
+
+// CPUs returns the CPUs the core is pinned to (empty when not pinned).
+func (p *process) CPUs() []int {
+	p.cpuMu.Lock()
+	defer p.cpuMu.Unlock()
+	return append([]int(nil), p.cpus...)
+}
+
+// SetCPUs moves the running core onto cpus. The core keeps running and keeps
+// its connections; its Go runtime notices the new mask within about a second
+// and resizes GOMAXPROCS to match.
+func (p *process) SetCPUs(cpus []int) error {
+	p.cpuMu.Lock()
+	defer p.cpuMu.Unlock()
+	if !p.IsRunning() {
+		p.cpus = append([]int(nil), cpus...)
+		return nil
+	}
+	if err := pinProcess(p.Pid(), cpus); err != nil {
+		return err
+	}
+	p.cpus = append([]int(nil), cpus...)
+	return nil
 }
 
 // GetOnlineClients returns the list of online clients for the Xray process.
@@ -287,8 +359,28 @@ func (p *process) Start() (err error) {
 	// orphaned core holding the inbound ports.
 	setSysProcAttr(cmd)
 
+	cpus := p.CPUs()
+	started := make(chan error, 1)
 	go func() {
-		err := cmd.Run()
+		if len(cpus) > 0 {
+			// Fork from a thread pinned to the core's CPUs so the core
+			// inherits the mask. The thread stays locked, and alive, until
+			// the core exits: the core's Pdeathsig is tied to the thread
+			// that forked it, and a locked goroutine that returns takes its
+			// thread down with it -- which must only happen after the core
+			// is gone.
+			runtime.LockOSThread()
+			if err := pinCurrentThread(cpus); err != nil {
+				logger.Warning("Could not pin xray-core to its CPUs:", err)
+			}
+		}
+		if err := cmd.Start(); err != nil {
+			started <- err
+			close(p.done)
+			return
+		}
+		started <- nil
+		err := cmd.Wait()
 		close(p.done)
 		if err != nil {
 			// On Windows, killing the process results in "exit status 1" which isn't an error for us
@@ -304,6 +396,9 @@ func (p *process) Start() (err error) {
 			p.exitErr = err
 		}
 	}()
+	if err := <-started; err != nil {
+		return common.NewErrorf("Failed to start xray-core: %v", err)
+	}
 
 	p.refreshVersion()
 	p.refreshAPIPort()
@@ -318,7 +413,7 @@ func (p *process) Stop() error {
 	}
 
 	// Remove temporary config file used for test runs so main config is never touched
-	if p.configPath != "" {
+	if p.configPath != "" && p.removeConfig {
 		if p.configPath != GetConfigPath() {
 			// Check if file exists before removing
 			if _, err := os.Stat(p.configPath); err == nil {

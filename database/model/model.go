@@ -54,6 +54,73 @@ type Inbound struct {
 	StreamSettings string   `json:"streamSettings" form:"streamSettings"`
 	Tag            string   `json:"tag" form:"tag" gorm:"unique"`
 	Sniffing       string   `json:"sniffing" form:"sniffing"`
+
+	// XrayInstance names the Xray core process this inbound runs in; inbounds
+	// with the same name share one process. XrayCores is how many CPU cores
+	// that process may use, 0 meaning an automatic share of the cores left
+	// over. It belongs to the instance, so all its inbounds carry the same
+	// value.
+	XrayInstance string `json:"xrayInstance" form:"xrayInstance" gorm:"default:''"`
+	XrayCores    int    `json:"xrayCores" form:"xrayCores" gorm:"default:0"`
+}
+
+// XrayInstancePrefix is how default instance names start: xray-1, xray-2, ...
+const XrayInstancePrefix = "xray-"
+
+// NextXrayInstanceName returns the first default instance name not in used.
+func NextXrayInstanceName(used map[string]bool) string {
+	for n := 1; ; n++ {
+		name := fmt.Sprintf("%s%d", XrayInstancePrefix, n)
+		if !used[name] {
+			return name
+		}
+	}
+}
+
+// LessInstanceName orders instance names naturally, so xray-2 comes before
+// xray-10.
+func LessInstanceName(a, b string) bool {
+	for a != "" && b != "" {
+		ad, bd := isDigit(a[0]), isDigit(b[0])
+		if ad && bd {
+			na, ra := splitDigits(a)
+			nb, rb := splitDigits(b)
+			ta, tb := trimZeros(na), trimZeros(nb)
+			if len(ta) != len(tb) {
+				return len(ta) < len(tb)
+			}
+			if ta != tb {
+				return ta < tb
+			}
+			if len(na) != len(nb) {
+				return len(na) < len(nb)
+			}
+			a, b = ra, rb
+			continue
+		}
+		if a[0] != b[0] {
+			return a[0] < b[0]
+		}
+		a, b = a[1:], b[1:]
+	}
+	return len(a) < len(b)
+}
+
+func isDigit(c byte) bool { return c >= '0' && c <= '9' }
+
+func splitDigits(s string) (string, string) {
+	i := 0
+	for i < len(s) && isDigit(s[i]) {
+		i++
+	}
+	return s[:i], s[i:]
+}
+
+func trimZeros(s string) string {
+	for len(s) > 1 && s[0] == '0' {
+		s = s[1:]
+	}
+	return s
 }
 
 // OutboundTraffics tracks traffic statistics for Xray outbound connections.

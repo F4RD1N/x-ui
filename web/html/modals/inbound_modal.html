@@ -4,6 +4,11 @@
     :class="themeSwitcher.currentTheme" :ok-text="inModal.okText" cancel-text='{{ i18n "close" }}'>
     {{template "form/inbound"}}
 </a-modal>
+<style>
+    .xray-instance-hint { color: #8c8c8c; font-size: 12px; line-height: 1.6; margin-top: 2px; }
+    .dark .xray-instance-hint { color: #8d97ab; }
+    .xray-instance-error { color: #e04141; font-size: 12px; line-height: 1.6; }
+</style>
 <script>
     // Make inModal globally available to ensure it works with any base path
     const inModal = (window.inModal = {
@@ -15,7 +20,43 @@
         confirm: null,
         inbound: new Inbound(),
         dbInbound: new DBInbound(),
+        // Xray core instances and the CPU cores they have, for the instance
+        // and cores fields.
+        xrayInfo: { totalCores: 0, nextName: "", instances: [] },
+        async loadXrayInfo() {
+            const msg = await HttpUtil.get("/panel/api/inbounds/xrayInstances");
+            if (!msg || !msg.success || !msg.obj) return;
+            inModal.xrayInfo = msg.obj;
+            if (!inModal.isEdit && !inModal.dbInbound.xrayInstance) {
+                inModal.dbInbound.xrayInstance = msg.obj.nextName;
+            }
+        },
+        // cores the other instances have, leaving out this inbound
+        xrayOtherCores() {
+            const id = inModal.dbInbound.id;
+            const name = (inModal.dbInbound.xrayInstance || "").trim();
+            const out = {};
+            for (const it of inModal.xrayInfo.instances || []) {
+                if (it.name === name) continue;
+                if (!it.inbounds.some((i) => i.id !== id)) continue;
+                out[it.name] = it.cores;
+            }
+            return out;
+        },
+        xrayCoresAvailable() {
+            const others = inModal.xrayOtherCores();
+            let reserved = 0, autos = 0;
+            for (const n of Object.values(others)) {
+                if (n > 0) reserved += n; else autos++;
+            }
+            return inModal.xrayInfo.totalCores - reserved - (autos > 0 ? 1 : 0);
+        },
         ok() {
+            const cores = inModal.dbInbound.xrayCores || 0;
+            if (inModal.xrayInfo.totalCores > 0 && cores > inModal.xrayCoresAvailable()) {
+                Vue.prototype.$message.error('{{ i18n "pages.inbounds.xrayCoresTooMany" }}');
+                return;
+            }
             ObjectUtil.execute(inModal.confirm, inModal.inbound, inModal.dbInbound);
         },
         show({
@@ -53,6 +94,8 @@
             this.confirm = confirm;
             this.visible = true;
             this.isEdit = isEdit;
+            this.xrayInfo = { totalCores: 0, nextName: "", instances: [] };
+            this.loadXrayInfo();
         },
         close() {
             inModal.visible = false;
@@ -134,6 +177,47 @@
             get datepicker() {
                 return app.datepicker;
             },
+            get xrayInstanceNames() {
+                return (inModal.xrayInfo.instances || []).map((it) => it.name);
+            },
+            get xrayNextName() {
+                return inModal.xrayInfo.nextName || "xray-1";
+            },
+            get xrayTotalCores() {
+                return inModal.xrayInfo.totalCores;
+            },
+            get xrayCoresAvailable() {
+                return inModal.xrayCoresAvailable();
+            },
+            // what this instance gets while on auto, roughly: the cores left
+            // after fixed instances, split between the auto instances
+            get xrayAutoShare() {
+                const others = inModal.xrayOtherCores();
+                let reserved = 0, autos = 1;
+                for (const n of Object.values(others)) {
+                    if (n > 0) reserved += n; else autos++;
+                }
+                const left = inModal.xrayInfo.totalCores - reserved;
+                return left > 0 ? Math.max(1, Math.floor(left / autos)) : 0;
+            },
+            get xraySharedWith() {
+                const name = (inModal.dbInbound.xrayInstance || "").trim();
+                const it = (inModal.xrayInfo.instances || []).find((i) => i.name === name);
+                if (!it) return [];
+                return it.inbounds
+                    .filter((i) => i.id !== inModal.dbInbound.id)
+                    .map((i) => (i.remark ? i.remark : "#" + i.id) + " (" + i.port + ")");
+            },
+            get xrayCoresMode() {
+                return inModal.dbInbound.xrayCores > 0 ? "fixed" : "auto";
+            },
+            set xrayCoresMode(mode) {
+                if (mode === "auto") {
+                    inModal.dbInbound.xrayCores = 0;
+                } else if (!(inModal.dbInbound.xrayCores > 0)) {
+                    inModal.dbInbound.xrayCores = Math.max(1, inModal.xrayCoresAvailable());
+                }
+            },
             get delayedExpireDays() {
                 return this.client && this.client.expiryTime < 0
                     ? this.client.expiryTime / -86400000
@@ -199,6 +283,15 @@
             },
         },
         methods: {
+            // Cores belong to the instance: picking an existing instance
+            // takes over its cores.
+            xrayInstanceChanged(value) {
+                const name = (value || "").trim();
+                const it = (inModal.xrayInfo.instances || []).find((i) => i.name === name);
+                if (it && it.inbounds.some((i) => i.id !== inModal.dbInbound.id)) {
+                    inModal.dbInbound.xrayCores = it.cores;
+                }
+            },
             streamNetworkChange() {
                 if (!inModal.inbound.canEnableTls()) {
                     this.inModal.inbound.stream.security = "none";

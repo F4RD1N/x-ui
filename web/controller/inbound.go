@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mhsanaei/3x-ui/v2/database/model"
+	"github.com/mhsanaei/3x-ui/v2/logger"
 	"github.com/mhsanaei/3x-ui/v2/web/service"
 	"github.com/mhsanaei/3x-ui/v2/web/session"
 	"github.com/mhsanaei/3x-ui/v2/web/websocket"
@@ -34,6 +35,7 @@ func (a *InboundController) initRouter(g *gin.RouterGroup) {
 	g.GET("/get/:id", a.getInbound)
 	g.GET("/getClientTraffics/:email", a.getClientTraffics)
 	g.GET("/getClientTrafficsById/:id", a.getClientTrafficsById)
+	g.GET("/xrayInstances", a.getXrayInstances)
 
 	g.POST("/add", a.addInbound)
 	g.POST("/del/:id", a.delInbound)
@@ -124,9 +126,7 @@ func (a *InboundController) addInbound(c *gin.Context) {
 		return
 	}
 	jsonMsgObj(c, I18nWeb(c, "pages.inbounds.toasts.inboundCreateSuccess"), inbound, nil)
-	if needRestart {
-		a.xrayService.SetToNeedRestart()
-	}
+	a.applyToCores(needRestart)
 	// Broadcast inbounds update via WebSocket
 	inbounds, _ := a.inboundService.GetInbounds(user.Id)
 	websocket.BroadcastInbounds(inbounds)
@@ -145,9 +145,7 @@ func (a *InboundController) delInbound(c *gin.Context) {
 		return
 	}
 	jsonMsgObj(c, I18nWeb(c, "pages.inbounds.toasts.inboundDeleteSuccess"), id, nil)
-	if needRestart {
-		a.xrayService.SetToNeedRestart()
-	}
+	a.applyToCores(needRestart)
 	// Broadcast inbounds update via WebSocket
 	user := session.GetLoginUser(c)
 	inbounds, _ := a.inboundService.GetInbounds(user.Id)
@@ -175,9 +173,7 @@ func (a *InboundController) updateInbound(c *gin.Context) {
 		return
 	}
 	jsonMsgObj(c, I18nWeb(c, "pages.inbounds.toasts.inboundUpdateSuccess"), inbound, nil)
-	if needRestart {
-		a.xrayService.SetToNeedRestart()
-	}
+	a.applyToCores(needRestart)
 	// Broadcast inbounds update via WebSocket
 	user := session.GetLoginUser(c)
 	inbounds, _ := a.inboundService.GetInbounds(user.Id)
@@ -373,13 +369,43 @@ func (a *InboundController) importInbound(c *gin.Context) {
 		inbound.ClientStats[index].Id = 0
 		inbound.ClientStats[index].Enable = true
 	}
+	// Instance names are local to a server: an imported inbound gets its
+	// own core here, like a new one.
+	inbound.XrayInstance = ""
+	inbound.XrayCores = 0
 
 	needRestart := false
 	inbound, needRestart, err = a.inboundService.AddInbound(inbound)
 	jsonMsgObj(c, I18nWeb(c, "pages.inbounds.toasts.inboundCreateSuccess"), inbound, err)
-	if err == nil && needRestart {
+	if err == nil {
+		a.applyToCores(needRestart)
+	}
+}
+
+// applyToCores brings the xray cores in line right after an inbound was
+// added, edited or deleted, so a new instance starts, an emptied one stops
+// and every core gets its new CPU share at once. Cores whose inbounds
+// changed through the API keep running. If that fails the regular restart
+// check retries.
+func (a *InboundController) applyToCores(needRestart bool) {
+	if err := a.xrayService.ApplyInboundChanges(); err != nil {
+		logger.Warning("apply inbound change to the xray cores:", err)
+		a.xrayService.SetToNeedRestart()
+	} else if needRestart {
+		// The apply already restarted what had to be; keep the flag so
+		// the periodic check looks once more.
 		a.xrayService.SetToNeedRestart()
 	}
+}
+
+// getXrayInstances lists the xray core instances with their CPU cores.
+func (a *InboundController) getXrayInstances(c *gin.Context) {
+	info, err := a.inboundService.GetXrayInstancesInfo()
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.obtain"), err)
+		return
+	}
+	jsonObj(c, info, nil)
 }
 
 // delDepletedClients deletes clients in an inbound who have exhausted their traffic limits.

@@ -3,6 +3,32 @@
 
 {{ template "page/body_start" .}}
 <style>
+  .xi-card .ant-card-extra { padding: 12px 0; }
+  .xi-cpus { font-size: 13px; }
+  .xi-row { display: flex; flex-wrap: wrap; gap: 12px 24px; padding: 14px 0; border-top: 1px solid #f0f0f0; }
+  .xi-row:first-of-type { border-top: 0; padding-top: 0; }
+  .dark .xi-row { border-top-color: var(--dark-color-stroke, #2c3950); }
+  .xi-main { flex: 1 1 260px; min-width: 0; }
+  .xi-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .xi-name { font-weight: 600; font-size: 15px; }
+  .xi-state { margin: 0; }
+  .xi-restart { margin-left: auto; }
+  .xi-muted { color: #8c8c8c; font-size: 12px; }
+  .dark .xi-muted { color: #8d97ab; }
+  .xi-inbounds { margin-top: 6px; }
+  .xi-inbounds .ant-tag { margin: 0 4px 4px 0; }
+  .xi-error { color: #e04141; font-size: 12px; margin-top: 4px; word-break: break-word; }
+  .xi-stats { flex: 2 1 420px; display: grid; grid-template-columns: minmax(150px, 2fr) repeat(4, minmax(70px, 1fr)); gap: 12px; align-items: start; min-width: 0; }
+  .xi-label { color: #8c8c8c; font-size: 12px; }
+  .dark .xi-label { color: #8d97ab; }
+  .xi-value { font-size: 13px; white-space: nowrap; }
+  .xi-big { font-size: 18px; font-weight: 600; }
+  .xi-stat-cpu .ant-progress { margin: 2px 0; }
+  @media (max-width: 768px) {
+    .xi-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); flex-basis: 100%; }
+    .xi-stat-cpu { grid-column: 1 / -1; }
+    .xi-card .ant-card-extra { float: none; display: block; padding-top: 0; }
+  }
   body.dark .custom-geo-section code.custom-geo-ext-code {
     color: var(--dark-color-text-primary, rgba(255, 255, 255, 0.85));
     background: var(--dark-color-surface-200, #222d42);
@@ -310,6 +336,63 @@
                       </a-custom-statistic>
                     </a-col>
                   </a-row>
+                </a-card>
+              </a-col>
+              <a-col :span="24">
+                <a-card hoverable class="xi-card">
+                  <template #title>{{ i18n "pages.index.xrayInstances" }}</template>
+                  <template #extra>
+                    <span class="xi-cpus">
+                      {{ i18n "pages.index.xrayCpuTotal" }} <b>[[ status.xrayCpus.total ]]</b>
+                      &middot; {{ i18n "pages.index.xrayCpuReserved" }} <b>[[ status.xrayCpus.reserved ]]</b>
+                      &middot; {{ i18n "pages.index.xrayCpuAvailable" }} <b>[[ status.xrayCpus.available ]]</b>
+                    </span>
+                  </template>
+                  <div v-if="status.xrayInstances.length === 0" class="xi-muted">{{ i18n "pages.index.xrayInstancesNone" }}</div>
+                  <div v-for="inst in status.xrayInstances" :key="inst.name" class="xi-row">
+                    <div class="xi-main">
+                      <div class="xi-title">
+                        <a-badge :color="xiColor(inst.state)" />
+                        <span class="xi-name">[[ inst.name ]]</span>
+                        <a-tag :color="xiColor(inst.state)" class="xi-state">[[ xiStateText(inst.state) ]]</a-tag>
+                        <a-tooltip v-if="inst.state !== 'idle'" :overlay-class-name="themeSwitcher.currentTheme">
+                          <template slot="title">{{ i18n "pages.index.xrayInstanceRestart" }}</template>
+                          <a-button size="small" shape="circle" icon="reload" class="xi-restart"
+                            :loading="!!xiRestarting[inst.name]" @click="restartXrayInstance(inst.name)"></a-button>
+                        </a-tooltip>
+                      </div>
+                      <div class="xi-muted">
+                        [[ inst.cores > 0 ? inst.cores + ' {{ i18n "pages.index.xrayInstanceCoresFixed" }}' : '{{ i18n "pages.index.xrayInstanceCoresAuto" }}' ]]<template v-if="inst.cpus.length"> &middot; CPU [[ cpuRanges(inst.cpus) ]]</template>
+                      </div>
+                      <div class="xi-inbounds">
+                        <a-tag v-for="ib in inst.inbounds" :key="ib.id" :color="ib.enable ? 'blue' : ''">[[ ib.remark || ('#' + ib.id) ]] : [[ ib.port ]]</a-tag>
+                      </div>
+                      <div v-if="inst.errorMsg" class="xi-error">[[ inst.errorMsg ]]</div>
+                    </div>
+                    <div class="xi-stats">
+                      <div class="xi-stat xi-stat-cpu">
+                        <div class="xi-label">CPU</div>
+                        <a-progress :percent="Math.round(inst.cpuUsage)" :stroke-color="cpuColor(inst.cpuUsage)" size="small" :show-info="false"></a-progress>
+                        <div class="xi-value">[[ inst.cpuUsage.toFixed(1) ]]% <span class="xi-muted">&middot; [[ inst.cpuBusy.toFixed(2) ]] {{ i18n "pages.index.xrayInstanceCoresBusy" }}</span></div>
+                      </div>
+                      <div class="xi-stat">
+                        <div class="xi-label">{{ i18n "pages.index.xrayInstanceTcp" }}</div>
+                        <div class="xi-value xi-big">[[ inst.tcpCount >= 0 ? inst.tcpCount.toLocaleString() : '–' ]]</div>
+                      </div>
+                      <div class="xi-stat">
+                        <div class="xi-label">{{ i18n "pages.index.memory" }}</div>
+                        <div class="xi-value">[[ SizeFormatter.sizeFormat(inst.mem) ]]</div>
+                      </div>
+                      <div class="xi-stat">
+                        <div class="xi-label">{{ i18n "pages.index.threads" }}</div>
+                        <div class="xi-value">[[ inst.threads ]]</div>
+                      </div>
+                      <div class="xi-stat">
+                        <div class="xi-label">{{ i18n "pages.index.operationHours" }}</div>
+                        <div class="xi-value">[[ inst.uptime ? TimeFormatter.formatSecond(inst.uptime) : '–' ]]</div>
+                      </div>
+                    </div>
+                  </div>
                 </a-card>
               </a-col>
             </a-row>
@@ -744,10 +827,14 @@
       this.appStats = { threads: 0, mem: 0, uptime: 0 };
 
       this.xray = { state: 'stop', stateMsg: "", errorMsg: "", version: "", color: "" };
+      this.xrayInstances = [];
+      this.xrayCpus = { total: 0, reserved: 0, available: 0 };
 
       if (data == null) {
         return;
       }
+      this.xrayInstances = data.xrayInstances || [];
+      this.xrayCpus = data.xrayCpus || this.xrayCpus;
 
       this.cpu = new CurTotal(data.cpu, 100);
       this.cpuCores = data.cpuCores;
@@ -943,6 +1030,7 @@
     mixins: [MediaQueryMixin],
     data: {
       themeSwitcher,
+      xiRestarting: {},
       loadingStates: {
         fetched: false,
         spinning: false
@@ -1245,6 +1333,41 @@
         if (!msg.success) {
           return;
         }
+      },
+      // Restarts one xray core; the others keep their connections.
+      async restartXrayInstance(name) {
+        if (this.xiRestarting[name]) return;
+        this.$set(this.xiRestarting, name, true);
+        try {
+          await HttpUtil.post('/panel/api/server/restartXrayInstance', { name });
+        } finally {
+          this.$set(this.xiRestarting, name, false);
+        }
+      },
+      xiColor(state) {
+        return { running: 'green', stop: 'orange', error: 'red', idle: '' }[state] || '';
+      },
+      xiStateText(state) {
+        return {
+          running: '{{ i18n "pages.index.xrayStatusRunning" }}',
+          stop: '{{ i18n "pages.index.xrayStatusStop" }}',
+          error: '{{ i18n "pages.index.xrayStatusError" }}',
+          idle: '{{ i18n "pages.index.xrayInstanceIdle" }}',
+        }[state] || state;
+      },
+      // 0,1,2,3,8 -> "0-3, 8"
+      cpuRanges(cpus) {
+        const out = [];
+        for (let i = 0; i < cpus.length; i++) {
+          let j = i;
+          while (j + 1 < cpus.length && cpus[j + 1] === cpus[j] + 1) j++;
+          out.push(i === j ? String(cpus[i]) : cpus[i] + '-' + cpus[j]);
+          i = j;
+        }
+        return out.join(', ');
+      },
+      cpuColor(p) {
+        return p < 80 ? '#008771' : p < 90 ? '#f37b24' : '#cf3c3c';
       },
       async restartXrayService() {
         this.loading(true);

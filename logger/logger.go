@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/mhsanaei/3x-ui/v2/config"
@@ -23,7 +24,9 @@ var (
 	logger  *logging.Logger
 	logFile *os.File
 
-	// logBuffer maintains recent log entries in memory for web UI retrieval
+	// logBuffer maintains recent log entries in memory for web UI retrieval.
+	// Every xray core logs from its own goroutine, so it is locked.
+	bufMu     sync.Mutex
 	logBuffer []struct {
 		time  string
 		level logging.Level
@@ -188,11 +191,13 @@ func Errorf(format string, args ...any) {
 // addToBuffer adds a log entry to the in-memory ring buffer for web UI retrieval.
 func addToBuffer(level string, newLog string) {
 	t := time.Now()
+	logLevel, _ := logging.LogLevel(level)
+	bufMu.Lock()
+	defer bufMu.Unlock()
 	if len(logBuffer) >= maxLogBufferSize {
 		logBuffer = logBuffer[1:]
 	}
 
-	logLevel, _ := logging.LogLevel(level)
 	logBuffer = append(logBuffer, struct {
 		time  string
 		level logging.Level
@@ -208,6 +213,8 @@ func addToBuffer(level string, newLog string) {
 func GetLogs(c int, level string) []string {
 	var output []string
 	logLevel, _ := logging.LogLevel(level)
+	bufMu.Lock()
+	defer bufMu.Unlock()
 
 	for i := len(logBuffer) - 1; i >= 0 && len(output) <= c; i-- {
 		if logBuffer[i].level <= logLevel {
