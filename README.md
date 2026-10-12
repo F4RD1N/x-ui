@@ -151,6 +151,12 @@ and a change of cores moves running processes to their new CPUs in place.
 On upgrade, each existing inbound gets its own instance. An imported inbound
 also gets a new one.
 
+Tests: `go test ./...` (the instance tests start real cores when one is
+installed or `XRAY_TEST_BINARY` points at one), and
+`tests/instances/run-isolated.sh`, which runs a throwaway panel in a network
+namespace and checks instances, CPU pinning under load, traffic counting, TCP
+counts and, with `UI=1`, the pages in a browser.
+
 ## Other changes
 
 - **Connection counts are cheap.** The overview's TCP and UDP totals come from
