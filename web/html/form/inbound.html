@@ -65,7 +65,7 @@
             <a-radio-button value="fixed" :disabled="xrayCoresAvailable < 1">{{ i18n "pages.inbounds.xrayCoresFixed" }}</a-radio-button>
         </a-radio-group>
         <a-input-number v-if="xrayCoresMode === 'fixed'" v-model.number="dbInbound.xrayCores" :min="1"
-            :max="Math.max(1, xrayCoresAvailable)" :precision="0" :style="{ marginLeft: '8px', width: '90px' }"></a-input-number>
+            :precision="0" :style="{ marginLeft: '8px', width: '90px' }"></a-input-number>
         <div class="xray-instance-hint">
             {{ i18n "pages.inbounds.xrayCoresTotal" }}: <b>[[ xrayTotalCores ]]</b>
             &middot; {{ i18n "pages.inbounds.xrayCoresAvailable" }}: <b>[[ Math.max(0, xrayCoresAvailable) ]]</b>
@@ -73,7 +73,14 @@
                 &middot; {{ i18n "pages.inbounds.xrayCoresAutoGets" }} <b>[[ xrayAutoShare ]]</b>
             </template>
         </div>
-        <div v-if="xrayCoresMode === 'fixed' && dbInbound.xrayCores > xrayCoresAvailable" class="xray-instance-error">
+        <div v-if="isEdit && dbInbound.subs.length" class="xray-instance-hint">
+            {{ i18n "pages.inbounds.subInbounds" }}: <b>[[ dbInbound.subs.length ]]</b>
+            ([[ dbInbound.subs.map((s) => s.port).join(', ') ]]) &middot; {{ i18n "pages.inbounds.subInboundsInForm" }}
+        </div>
+        <div v-if="xrayCoresMode === 'fixed' && !(dbInbound.xrayCores >= 1)" class="xray-instance-error">
+            {{ i18n "pages.inbounds.xrayCoresEmpty" }}
+        </div>
+        <div v-else-if="xrayCoresMode === 'fixed' && xrayTotalCores > 0 && dbInbound.xrayCores > xrayCoresAvailable" class="xray-instance-error">
             {{ i18n "pages.inbounds.xrayCoresTooMany" }}
         </div>
     </a-form-item>

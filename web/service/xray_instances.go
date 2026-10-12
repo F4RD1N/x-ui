@@ -182,9 +182,35 @@ func (c *coreAPI) AddInbound(instance, tag string, inboundJSON []byte) error {
 	return nil
 }
 
-// DelInbound removes an inbound from whichever core runs it. An inbound no
-// core runs is already gone.
+// tagsOf returns tag and the tags of its sub-inbounds that a core runs.
+func tagsOf(tag string) []string {
+	instMu.RLock()
+	defer instMu.RUnlock()
+	out := []string{tag}
+	prefix := tag + model.SubTagSep
+	var subs []string
+	for t := range tagOwner {
+		if strings.HasPrefix(t, prefix) {
+			subs = append(subs, t)
+		}
+	}
+	sort.Strings(subs)
+	return append(out, subs...)
+}
+
+// DelInbound removes an inbound, and its sub-inbounds, from whichever cores
+// run them. An inbound no core runs is already gone.
 func (c *coreAPI) DelInbound(tag string) error {
+	var first error
+	for _, t := range tagsOf(tag) {
+		if err := c.delOne(t); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+func (c *coreAPI) delOne(tag string) error {
 	owner := ownerOf(tag)
 	if owner == "" {
 		return nil
@@ -205,37 +231,78 @@ func (c *coreAPI) DelInbound(tag string) error {
 	return nil
 }
 
-// AddUser adds a client to the core running tag.
+// AddUser adds a client to the cores running tag and its sub-inbounds.
 func (c *coreAPI) AddUser(protocol, tag string, user map[string]any) error {
-	owner := ownerOf(tag)
-	if owner == "" {
-		return errInboundNotRunning
-	}
-	a, err := c.conn(owner)
-	if err != nil {
-		return err
-	}
-	markTouched(owner, tag)
-	if err := a.AddUser(protocol, tag, user); err != nil {
-		markDirtyTag(tag)
-		return err
-	}
-	return nil
+	return c.eachTag(tag, func(a *xray.XrayAPI, t string) error {
+		if err := a.AddUser(protocol, t, user); err != nil {
+			markDirtyTag(t)
+			return err
+		}
+		return nil
+	})
 }
 
-// RemoveUser removes a client from the core running tag. "User not found"
-// is left to the caller, which treats it as already done.
+// RemoveUser removes a client from the cores running tag and its
+// sub-inbounds. "User not found" is left to the caller, which treats it as
+// already done.
 func (c *coreAPI) RemoveUser(tag, email string) error {
-	owner := ownerOf(tag)
-	if owner == "" {
+	return c.eachTag(tag, func(a *xray.XrayAPI, t string) error {
+		return a.RemoveUser(t, email)
+	})
+}
+
+// eachTag runs fn for tag and each of its sub-inbounds on the core that runs
+// it. It fails with errInboundNotRunning when no core runs any of them, and
+// otherwise with the first error, preferring one that is not "not found".
+func (c *coreAPI) eachTag(tag string, fn func(*xray.XrayAPI, string) error) error {
+	ran := false
+	var first, notFound error
+	for _, t := range tagsOf(tag) {
+		owner := ownerOf(t)
+		if owner == "" {
+			continue
+		}
+		a, err := c.conn(owner)
+		if err != nil {
+			continue
+		}
+		ran = true
+		markTouched(owner, t)
+		if err := fn(a, t); err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				if notFound == nil {
+					notFound = err
+				}
+			} else if first == nil {
+				first = err
+			}
+		}
+	}
+	if !ran {
 		return errInboundNotRunning
 	}
-	a, err := c.conn(owner)
-	if err != nil {
-		return err
+	if first != nil {
+		return first
 	}
-	markTouched(owner, tag)
-	return a.RemoveUser(tag, email)
+	return notFound
+}
+
+// XrayAPITarget is a tag and the API port of the core that runs it.
+type XrayAPITarget struct {
+	Tag  string
+	Port int
+}
+
+// XrayAPITargetsForTag returns, for tag and each of its sub-inbounds, the
+// API port of the core that runs it.
+func XrayAPITargetsForTag(tag string) []XrayAPITarget {
+	var out []XrayAPITarget
+	for _, t := range tagsOf(tag) {
+		if p := XrayAPIPortForTag(t); p != 0 {
+			out = append(out, XrayAPITarget{Tag: t, Port: p})
+		}
+	}
+	return out
 }
 
 // XrayAPIPortForTag returns the API port of the core that runs tag, or 0.
@@ -1034,13 +1101,15 @@ func (s *XrayService) StartInstance(name string) error {
 // enabledInstanceNames returns the instances that have an enabled inbound.
 func enabledInstanceNames() (map[string]bool, error) {
 	var inbounds []*model.Inbound
-	if err := database.GetDB().Model(model.Inbound{}).Select("id", "xray_instance").
-		Where("enable = ?", true).Find(&inbounds).Error; err != nil {
+	if err := database.GetDB().Model(model.Inbound{}).Select("id", "tag", "port", "enable", "xray_instance", "xray_cores", "sub_inbounds").
+		Find(&inbounds).Error; err != nil {
 		return nil, err
 	}
 	out := map[string]bool{}
-	for _, in := range inbounds {
-		out[instanceName(in)] = true
+	for _, in := range model.ExpandSubInbounds(inbounds) {
+		if in.Enable {
+			out[instanceName(in)] = true
+		}
 	}
 	return out, nil
 }
@@ -1107,13 +1176,17 @@ func (s *InboundService) prepareXrayInstance(inbound *model.Inbound, old *model.
 		inbound.XrayInstance = old.XrayInstance
 		inbound.XrayCores = old.XrayCores
 	}
-	var others []*model.Inbound
-	q := database.GetDB().Model(model.Inbound{}).Select("id", "xray_instance", "xray_cores").Order("id")
-	if inbound.Id > 0 {
-		q = q.Where("id <> ?", inbound.Id)
-	}
-	if err := q.Find(&others).Error; err != nil {
+	others, err := othersExpanded(inbound.Id)
+	if err != nil {
 		return err
+	}
+	// The inbound's own sub-inbounds stay; their instances count as others.
+	if old != nil {
+		for _, sub := range old.Subs() {
+			if sub.Instance != inbound.XrayInstance {
+				others = append(others, &model.Inbound{Id: old.Id, XrayInstance: sub.Instance, XrayCores: sub.Cores, Port: sub.Port, SubOf: old.Id})
+			}
+		}
 	}
 	if inbound.XrayInstance == "" {
 		used := map[string]bool{}
@@ -1134,6 +1207,7 @@ type XrayInstanceInbound struct {
 	Port     int    `json:"port"`
 	Protocol string `json:"protocol"`
 	Enable   bool   `json:"enable"`
+	Sub      bool   `json:"sub"` // a sub-inbound of inbound Id
 }
 
 // XrayInstanceInfo is an instance as the inbound form needs it.
@@ -1155,11 +1229,12 @@ type XrayInstancesInfo struct {
 func (s *InboundService) GetXrayInstancesInfo() (*XrayInstancesInfo, error) {
 	var inbounds []*model.Inbound
 	err := database.GetDB().Model(model.Inbound{}).
-		Select("id", "remark", "port", "protocol", "enable", "xray_instance", "xray_cores").
+		Select("id", "remark", "port", "protocol", "enable", "tag", "xray_instance", "xray_cores", "sub_inbounds").
 		Order("id").Find(&inbounds).Error
 	if err != nil {
 		return nil, err
 	}
+	inbounds = model.ExpandSubInbounds(inbounds)
 	info := &XrayInstancesInfo{TotalCores: len(xray.AvailableCPUs())}
 	cores := instanceCores(inbounds)
 	used := map[string]bool{}
@@ -1173,7 +1248,7 @@ func (s *InboundService) GetXrayInstancesInfo() (*XrayInstancesInfo, error) {
 	}
 	for _, in := range inbounds {
 		it := byName[instanceName(in)]
-		it.Inbounds = append(it.Inbounds, XrayInstanceInbound{Id: in.Id, Remark: in.Remark, Port: in.Port, Protocol: string(in.Protocol), Enable: in.Enable})
+		it.Inbounds = append(it.Inbounds, XrayInstanceInbound{Id: in.Id, Remark: in.Remark, Port: in.Port, Protocol: string(in.Protocol), Enable: in.Enable, Sub: in.SubOf != 0})
 	}
 	info.NextName = model.NextXrayInstanceName(used)
 	return info, nil

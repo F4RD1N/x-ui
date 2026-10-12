@@ -1,9 +1,19 @@
 package service
 
+// Multi Instance: sub-inbounds.
+//
+// An inbound can have sub-inbounds: the same inbound -- protocol, settings,
+// clients, transport, sniffing -- on other ports, each in an xray instance of
+// its own. A sub-inbound has four settings of its own and nothing else: its
+// port, its instance, that instance's cores and whether it is enabled. Its
+// clients are the inbound's clients (one traffic account each across every
+// port), and its traffic counts on the inbound.
+
 import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -14,62 +24,85 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/xray"
 )
 
-// Multi Instance: copies of one inbound, with all its clients, each in a new
-// xray instance of its own, on the ports right after the inbound's.
-
-// MultiInstanceItem is one copy to be made.
-type MultiInstanceItem struct {
+// SubPlanItem is one sub-inbound to be added.
+type SubPlanItem struct {
 	Port     int    `json:"port"`
 	Instance string `json:"instance"`
 	Conflict string `json:"conflict"` // why this port cannot be used; "" if it can
 }
 
-// MultiInstancePlan is what a Multi Instance request would do.
-type MultiInstancePlan struct {
-	SourcePort int                 `json:"sourcePort"`
-	TotalCores int                 `json:"totalCores"`
-	Available  int                 `json:"available"` // cores new fixed instances can have between them
-	Max        int                 `json:"max"`       // copies that fit with these cores
-	Count      int                 `json:"count"`
-	Cores      int                 `json:"cores"` // per copy; 0 = auto
-	Clients    int                 `json:"clients"`
-	Items      []MultiInstanceItem `json:"items"`
-	Error      string              `json:"error"` // why it cannot be made; "" if it can
+// SubPlan is what adding sub-inbounds would do.
+type SubPlan struct {
+	SourcePort int           `json:"sourcePort"`
+	TotalCores int           `json:"totalCores"`
+	Available  int           `json:"available"` // cores new fixed instances can have between them
+	Max        int           `json:"max"`       // sub-inbounds that fit with these cores
+	Count      int           `json:"count"`
+	Cores      int           `json:"cores"` // per sub-inbound; 0 = auto
+	Clients    int           `json:"clients"`
+	Items      []SubPlanItem `json:"items"`
+	Error      string        `json:"error"` // why they cannot be added; "" if they can
 }
 
-// multiInstanceMaxCopies caps one request; a port range this long is far
-// beyond any CPU count anyway.
-const multiInstanceMaxCopies = 1024
+// subPlanMax caps one request.
+const subPlanMax = 1024
 
-// PlanMultiInstance works out the copies of inbound id: count copies (or as
-// many as the CPUs allow when useMax), each with cores CPU cores (0 = auto).
-// With max, fixed copies take every free core between them and auto copies
-// add one instance per core that no instance has yet.
-func (s *InboundService) PlanMultiInstance(id, count, cores int, useMax bool) (*MultiInstancePlan, *model.Inbound, error) {
+// othersExpanded returns every inbound but id, with their sub-inbounds.
+func othersExpanded(id int) ([]*model.Inbound, error) {
+	var all []*model.Inbound
+	err := database.GetDB().Model(model.Inbound{}).
+		Select("id", "remark", "port", "listen", "protocol", "enable", "tag", "xray_instance", "xray_cores", "sub_inbounds").
+		Where("id <> ?", id).Order("id").Find(&all).Error
+	if err != nil {
+		return nil, err
+	}
+	return model.ExpandSubInbounds(all), nil
+}
+
+// familyCores returns the cores of every instance named by the other
+// inbounds, by the inbound itself and by subs.
+func familyCores(others []*model.Inbound, src *model.Inbound, subs []model.SubInbound) map[string]int {
+	cores := instanceCores(others)
+	if _, ok := cores[instanceName(src)]; !ok {
+		cores[instanceName(src)] = src.XrayCores
+	}
+	for _, sub := range subs {
+		if _, ok := cores[sub.Instance]; !ok {
+			cores[sub.Instance] = sub.Cores
+		}
+	}
+	return cores
+}
+
+// PlanSubInbounds proposes count new sub-inbounds for inbound id, on the
+// ports after the highest one the inbound and current already use, each in
+// a new instance with cores CPU cores (0 = auto). current is the list being
+// edited, which may not be saved yet. With useMax, as many as the free CPU
+// cores allow: fixed ones take every free core between them, auto ones add
+// one instance per core no instance has yet.
+func (s *InboundService) PlanSubInbounds(id int, current []model.SubInbound, count, cores int, useMax bool) (*SubPlan, error) {
 	src, err := s.GetInbound(id)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
+	}
+	others, err := othersExpanded(id)
+	if err != nil {
+		return nil, err
 	}
 	if cores < 0 {
 		cores = 0
 	}
-	var all []*model.Inbound
-	if err := database.GetDB().Model(model.Inbound{}).
-		Select("id", "remark", "port", "listen", "xray_instance", "xray_cores").
-		Order("id").Find(&all).Error; err != nil {
-		return nil, nil, err
-	}
-	instCores := instanceCores(all)
+	all := familyCores(others, src, current)
 	total := len(xray.AvailableCPUs())
 	reserved, autos := 0, 0
-	for _, n := range instCores {
+	for _, n := range all {
 		if n > 0 {
 			reserved += n
 		} else {
 			autos++
 		}
 	}
-	plan := &MultiInstancePlan{SourcePort: src.Port, TotalCores: total, Cores: cores}
+	plan := &SubPlan{SourcePort: src.Port, TotalCores: total, Cores: cores}
 	plan.Available = total - reserved
 	if autos > 0 {
 		plan.Available-- // the auto instances keep at least one core
@@ -79,21 +112,17 @@ func (s *InboundService) PlanMultiInstance(id, count, cores int, useMax bool) (*
 	}
 	if cores > 0 {
 		plan.Max = plan.Available / cores
-	} else {
-		plan.Max = total - reserved - autos
-		if plan.Max < 0 {
-			plan.Max = 0
-		}
+	} else if plan.Max = total - reserved - autos; plan.Max < 0 {
+		plan.Max = 0
 	}
 	if clients, err := s.GetClients(src); err == nil {
 		plan.Clients = len(clients)
 	}
-
 	if useMax {
 		count = plan.Max
 	}
-	if count > multiInstanceMaxCopies {
-		count = multiInstanceMaxCopies
+	if count > subPlanMax {
+		count = subPlanMax
 	}
 	plan.Count = count
 	switch {
@@ -108,14 +137,28 @@ func (s *InboundService) PlanMultiInstance(id, count, cores int, useMax bool) (*
 	}
 
 	used := map[string]bool{}
-	for _, in := range all {
-		used[instanceName(in)] = true
+	for name := range all {
+		used[name] = true
 	}
+	start := src.Port
+	taken := map[int]bool{src.Port: true}
+	for _, sub := range current {
+		taken[sub.Port] = true
+		if sub.Port > start {
+			start = sub.Port
+		}
+	}
+	running := ownPorts(src)
 	conflicts := 0
 	for i := 1; i <= count; i++ {
-		item := MultiInstanceItem{Port: src.Port + i, Instance: model.NextXrayInstanceName(used)}
+		port := start + i
+		item := SubPlanItem{Port: port, Instance: model.NextXrayInstanceName(used)}
 		used[item.Instance] = true
-		item.Conflict = s.portConflict(src, item.Port, all)
+		if taken[port] {
+			item.Conflict = "used by this inbound"
+		} else {
+			item.Conflict = portConflict(src, port, others, running)
+		}
 		if item.Conflict != "" {
 			conflicts++
 		}
@@ -124,20 +167,36 @@ func (s *InboundService) PlanMultiInstance(id, count, cores int, useMax bool) (*
 	if conflicts > 0 && plan.Error == "" {
 		plan.Error = fmt.Sprintf("%d of the ports are taken", conflicts)
 	}
-	return plan, src, nil
+	return plan, nil
 }
 
-// portConflict says why a copy of src cannot listen on port, or "".
-func (s *InboundService) portConflict(src *model.Inbound, port int, all []*model.Inbound) string {
-	if port > 65535 {
-		return "beyond port 65535"
+// ownPorts returns the ports the inbound and its saved sub-inbounds have:
+// the inbound's own cores may hold them, which is no conflict.
+func ownPorts(src *model.Inbound) map[int]bool {
+	out := map[int]bool{src.Port: true}
+	for _, sub := range src.Subs() {
+		out[sub.Port] = true
 	}
-	wildcard := func(l string) bool { return l == "" || l == "0.0.0.0" || l == "::" || l == "::0" }
-	for _, in := range all {
-		if in.Port == port && (wildcard(src.Listen) || wildcard(in.Listen) || in.Listen == src.Listen) {
+	return out
+}
+
+func wildcardListen(l string) bool { return l == "" || l == "0.0.0.0" || l == "::" || l == "::0" }
+
+// portConflict says why src cannot also listen on port, or "". others are
+// the other inbounds with their sub-inbounds; ports in own are the
+// inbound's own and are not tried.
+func portConflict(src *model.Inbound, port int, others []*model.Inbound, own map[int]bool) string {
+	if port < 1 || port > 65535 {
+		return "not a port number"
+	}
+	for _, in := range others {
+		if in.Port == port && (wildcardListen(src.Listen) || wildcardListen(in.Listen) || in.Listen == src.Listen) {
 			name := in.Remark
 			if name == "" {
 				name = "#" + strconv.Itoa(in.Id)
+			}
+			if in.SubOf != 0 {
+				return "used by a sub-inbound of " + name
 			}
 			return "used by inbound " + name
 		}
@@ -145,8 +204,11 @@ func (s *InboundService) portConflict(src *model.Inbound, port int, all []*model
 	if name := corePortUser(port); name != "" {
 		return "used by the API of " + name
 	}
+	if own[port] {
+		return ""
+	}
 	host := src.Listen
-	if wildcard(host) || strings.HasPrefix(host, "/") || strings.HasPrefix(host, "@") {
+	if wildcardListen(host) || strings.HasPrefix(host, "/") || strings.HasPrefix(host, "@") {
 		host = ""
 	}
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
@@ -179,107 +241,181 @@ func usesUDP(in *model.Inbound) bool {
 	return stream.Network == "kcp"
 }
 
-// MultiInstance makes the copies PlanMultiInstance describes: every setting
-// of the inbound and every client is copied, each copy goes on the next
-// port in a new instance. Client emails, which the panel needs unique, get
-// the copy's port appended; ids, passwords, flows, limits, expiry and
-// subscription ids stay the same, so a client's config works on every copy
-// by changing the port. If any copy fails, the ones made are removed.
-func (s *InboundService) MultiInstance(id, count, cores int, useMax bool) (*MultiInstancePlan, []*model.Inbound, error) {
-	plan, src, err := s.PlanMultiInstance(id, count, cores, useMax)
+// SaveSubInbounds makes subs the sub-inbounds of inbound id. Ports must be
+// free and distinct; an empty instance name gets the next default one; an
+// instance may be shared by the inbound's own sub-inbounds (and the inbound
+// itself), never with other inbounds, and its cores must fit next to every
+// other instance. Changes go to the running cores through their API: the
+// cores of other sub-inbounds keep running.
+func (s *InboundService) SaveSubInbounds(id int, subs []model.SubInbound) (*model.Inbound, bool, error) {
+	src, err := s.GetInbound(id)
 	if err != nil {
-		return nil, nil, err
+		return nil, false, err
 	}
-	if plan.Error != "" {
-		return plan, nil, common.NewError(plan.Error)
+	others, err := othersExpanded(id)
+	if err != nil {
+		return nil, false, err
 	}
-	taken := map[string]bool{}
-	if emails, err := s.getAllEmails(); err == nil {
-		for _, e := range emails {
-			taken[strings.ToLower(e)] = true
+	otherNames := instanceCores(others)
+	used := map[string]bool{instanceName(src): true}
+	for n := range otherNames {
+		used[n] = true
+	}
+	for _, sub := range subs {
+		if n := strings.TrimSpace(sub.Instance); n != "" {
+			used[n] = true
 		}
 	}
-	var created []*model.Inbound
-	for _, item := range plan.Items {
-		clone, err := cloneForPort(src, item, plan.Cores, taken)
+	own := ownPorts(src)
+	seen := map[int]bool{src.Port: true}
+	family := map[string]int{instanceName(src): src.XrayCores}
+	for i := range subs {
+		sub := &subs[i]
+		if sub.Port < 1 || sub.Port > 65535 {
+			return nil, false, common.NewErrorf("%d is not a port number", sub.Port)
+		}
+		if seen[sub.Port] {
+			return nil, false, common.NewErrorf("port %d is used twice by this inbound", sub.Port)
+		}
+		seen[sub.Port] = true
+		if c := portConflict(src, sub.Port, others, own); c != "" {
+			return nil, false, common.NewErrorf("port %d is %s", sub.Port, c)
+		}
+		sub.Instance = strings.TrimSpace(sub.Instance)
+		if sub.Instance == "" {
+			sub.Instance = model.NextXrayInstanceName(used)
+			used[sub.Instance] = true
+		}
+		if _, other := otherNames[sub.Instance]; other {
+			return nil, false, common.NewErrorf("instance %s belongs to another inbound", sub.Instance)
+		}
+		if sub.Instance == instanceName(src) {
+			sub.Cores = src.XrayCores // it shares the inbound's own core
+		}
+		if sub.Cores < 0 {
+			return nil, false, common.NewErrorf("CPU cores of %s cannot be negative", sub.Instance)
+		}
+		if prev, ok := family[sub.Instance]; ok && prev != sub.Cores {
+			return nil, false, common.NewErrorf("instance %s is given %d CPU cores in one sub-inbound and %d in another", sub.Instance, prev, sub.Cores)
+		}
+		family[sub.Instance] = sub.Cores
+	}
+	all := instanceCores(others)
+	for name, n := range family {
+		all[name] = n
+	}
+	total := len(xray.AvailableCPUs())
+	for name := range family {
+		if err := checkCoreRequest(total, all, name); err != nil {
+			return nil, false, err
+		}
+	}
+
+	sort.SliceStable(subs, func(i, j int) bool { return subs[i].Port < subs[j].Port })
+	old := src.Subs()
+	src.SetSubs(subs)
+	if err := database.GetDB().Model(model.Inbound{}).Where("id = ?", id).Update("sub_inbounds", src.SubInbounds).Error; err != nil {
+		return nil, false, err
+	}
+	return src, s.applySubChanges(src, old, subs), nil
+}
+
+// applySubChanges updates the running cores for a changed sub-inbound list:
+// sub-inbounds removed, moved to another instance or disabled leave their
+// core; new or re-enabled ones are added to theirs. It reports whether any
+// change has to wait for a restart.
+func (s *InboundService) applySubChanges(src *model.Inbound, old, subs []model.SubInbound) bool {
+	oldBy := map[int]model.SubInbound{}
+	for _, o := range old {
+		oldBy[o.Port] = o
+	}
+	newBy := map[int]model.SubInbound{}
+	for _, n := range subs {
+		newBy[n.Port] = n
+	}
+	api := newCoreAPI()
+	defer api.Close()
+	needRestart := false
+	for port, o := range oldBy {
+		n, kept := newBy[port]
+		if o.Enable && (!kept || !n.Enable || n.Instance != o.Instance) {
+			if err := api.DelInbound(model.SubTag(src.Tag, port)); err != nil {
+				logger.Debug("Unable to remove sub-inbound by api:", err)
+				needRestart = true
+			}
+		}
+	}
+	if !src.Enable {
+		return needRestart
+	}
+	var base *xray.InboundConfig
+	for port, n := range newBy {
+		o, had := oldBy[port]
+		if !n.Enable || (had && o.Enable && o.Instance == n.Instance) {
+			continue
+		}
+		if base == nil {
+			rt, err := s.buildRuntimeInboundForAPI(database.GetDB(), src)
+			if err != nil {
+				return true
+			}
+			base = rt.GenXrayInboundConfig()
+		}
+		c := *base
+		c.Port = port
+		c.Tag = model.SubTag(src.Tag, port)
+		b, err := json.Marshal(c)
 		if err == nil {
-			clone, _, err = s.AddInbound(clone)
+			err = api.AddInbound(n.Instance, c.Tag, b)
 		}
 		if err != nil {
-			for _, c := range created {
-				if _, derr := s.DelInbound(c.Id); derr != nil {
-					logger.Warning("multi instance: remove copy", c.Id, ":", derr)
-				}
-			}
-			return plan, nil, fmt.Errorf("copy on port %d: %w", item.Port, err)
+			// A new instance has no core yet: applying starts it.
+			logger.Debug("Unable to add sub-inbound by api:", err)
+			needRestart = true
 		}
-		created = append(created, clone)
 	}
-	return plan, created, nil
+	return needRestart
 }
 
-// cloneForPort copies src for one Multi Instance item.
-func cloneForPort(src *model.Inbound, item MultiInstanceItem, cores int, taken map[string]bool) (*model.Inbound, error) {
-	settings := map[string]any{}
-	if err := json.Unmarshal([]byte(src.Settings), &settings); err != nil {
-		return nil, err
-	}
-	if clients, ok := settings["clients"].([]any); ok {
-		for _, c := range clients {
-			cm, ok := c.(map[string]any)
-			if !ok {
-				continue
-			}
-			email, _ := cm["email"].(string)
-			if email == "" {
-				continue
-			}
-			cm["email"] = uniqueEmail(email, item.Port, taken)
-			delete(cm, "created_at")
-			delete(cm, "updated_at")
+// addSubInboundsByAPI adds the enabled sub-inbounds of in to their cores,
+// after the inbound itself was (re)added. It reports whether any has to
+// wait for a restart.
+func addSubInboundsByAPI(api *coreAPI, in *model.Inbound, base *xray.InboundConfig) bool {
+	needRestart := false
+	for _, sub := range in.Subs() {
+		if !sub.Enable {
+			continue
+		}
+		c := *base
+		c.Port = sub.Port
+		c.Tag = model.SubTag(in.Tag, sub.Port)
+		b, err := json.Marshal(c)
+		if err == nil {
+			err = api.AddInbound(sub.Instance, c.Tag, b)
+		}
+		if err != nil {
+			needRestart = true
 		}
 	}
-	b, err := json.MarshalIndent(settings, "", "  ")
+	return needRestart
+}
+
+// subPortUser returns a description of the inbound or sub-inbound other than
+// ignoreId that uses port on an address overlapping listen, or "".
+func subPortUser(listen string, port int, ignoreId int) (string, error) {
+	others, err := othersExpanded(ignoreId)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	remark := src.Remark
-	if remark == "" {
-		remark = "inbound"
+	src := &model.Inbound{Listen: listen}
+	for _, in := range others {
+		if in.SubOf != 0 && in.Port == port && (wildcardListen(listen) || wildcardListen(in.Listen) || in.Listen == src.Listen) {
+			name := in.Remark
+			if name == "" {
+				name = "#" + strconv.Itoa(in.SubOf)
+			}
+			return name, nil
+		}
 	}
-	clone := &model.Inbound{
-		UserId:       src.UserId,
-		Remark:       fmt.Sprintf("%s-%d", remark, item.Port),
-		Enable:       src.Enable,
-		Total:        src.Total,
-		ExpiryTime:   src.ExpiryTime,
-		TrafficReset: src.TrafficReset,
-		Listen:       src.Listen,
-		Port:         item.Port,
-		Protocol:     src.Protocol,
-		Settings:     string(b),
-		// tlsSettings/realitySettings, transports and sniffing are kept as
-		// they are: the copy answers exactly like the original.
-		StreamSettings: src.StreamSettings,
-		Sniffing:       src.Sniffing,
-		XrayInstance:   item.Instance,
-		XrayCores:      cores,
-	}
-	if clone.Listen == "" || clone.Listen == "0.0.0.0" || clone.Listen == "::" || clone.Listen == "::0" {
-		clone.Tag = fmt.Sprintf("inbound-%v", clone.Port)
-	} else {
-		clone.Tag = fmt.Sprintf("inbound-%v:%v", clone.Listen, clone.Port)
-	}
-	return clone, nil
-}
-
-// uniqueEmail is email with the port appended, made unique among taken
-// (compared without case), which it is added to.
-func uniqueEmail(email string, port int, taken map[string]bool) string {
-	cand := fmt.Sprintf("%s-%d", email, port)
-	for n := 2; taken[strings.ToLower(cand)]; n++ {
-		cand = fmt.Sprintf("%s-%d-%d", email, port, n)
-	}
-	taken[strings.ToLower(cand)] = true
-	return cand
+	return "", nil
 }

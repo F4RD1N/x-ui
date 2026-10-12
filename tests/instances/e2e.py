@@ -315,30 +315,38 @@ def main():
         for c in conns:
             c.close()
 
-        # --- Multi Instance: copies of an inbound, with its clients, on the next ports
+        # --- Multi Instance: sub-inbounds -- the same inbound on the next ports
         pc = quiet_port(4)
         cc, ec = str(uuid.uuid4()), f"e2e-c-{int(time.time())}"
         res = api("POST", "/panel/api/inbounds/add", data=inbound_payload(pc, ec, cc))
         c = res["obj"]
         created.append(c["id"])
-        plan = api("POST", f"/panel/api/inbounds/{c['id']}/multiInstance", data={"count": 2, "cores": 1, "max": "false", "dryRun": "true"})["obj"]
-        check("multi instance preview", plan and not plan["error"] and [i["port"] for i in plan["items"]] == [pc + 1, pc + 2] and plan["clients"] == 1, plan)
-        mx = api("POST", f"/panel/api/inbounds/{c['id']}/multiInstance", data={"count": 0, "cores": 1, "max": "true", "dryRun": "true"})["obj"]
-        check("multi instance max fills the free cores", mx["max"] == mx["available"] and mx["count"] == mx["max"], mx)
+        n_inbounds = len(api("GET", "/panel/api/inbounds/list")["obj"])
+        plan = api("POST", f"/panel/api/inbounds/{c['id']}/multiInstance", data={"count": 2, "cores": 1, "max": "false", "subs": "[]"})["obj"]
+        check("sub-inbound plan: the next ports, new instances", plan and not plan["error"] and [i["port"] for i in plan["items"]] == [pc + 1, pc + 2], plan)
+        mx = api("POST", f"/panel/api/inbounds/{c['id']}/multiInstance", data={"count": 0, "cores": 1, "max": "true", "subs": "[]"})["obj"]
+        check("Max fills the free cores", mx["max"] == mx["available"] and mx["count"] == mx["max"], mx)
+        subs = [{"port": i["port"], "instance": i["instance"], "cores": 1, "enable": True} for i in plan["items"]]
         old = procs()
-        res = api("POST", f"/panel/api/inbounds/{c['id']}/multiInstance", data={"count": 2, "cores": 1, "max": "false", "dryRun": "false"})
-        check("multi instance generate", res["success"] and res["obj"]["created"] == 2, res.get("msg"))
-        copies = [ib for ib in api("GET", "/panel/api/inbounds/list")["obj"] if ib["port"] in (pc + 1, pc + 2)]
-        created.extend(ib["id"] for ib in copies)
+        res = api("POST", f"/panel/api/inbounds/{c['id']}/subInbounds", data={"subs": json.dumps(subs)})
+        check("save sub-inbounds", res["success"], res.get("msg"))
+        check("still one inbound, no copies", len(api("GET", "/panel/api/inbounds/list")["obj"]) == n_inbounds)
         now = procs()
-        check("each copy runs in its own new core on 1 CPU", len(copies) == 2 and all(ib["xrayInstance"] in now and ncpus(now[ib["xrayInstance"]]) == 1 for ib in copies), [(ib["xrayInstance"], ib["port"]) for ib in copies])
-        check("copies did not restart running cores", all(now.get(n) == p for n, p in old.items()), (old, now))
-        check("copies listening", listening(pc + 1) and listening(pc + 2))
-        # The original client's id works on a copy; its traffic counts on the copy's client.
+        check("each sub-inbound runs in its own core on 1 CPU", all(s["instance"] in now and ncpus(now[s["instance"]]) == 1 for s in subs), now)
+        check("sub-inbounds did not restart running cores", all(now.get(n) == p for n, p in old.items()), (old, now))
+        check("sub-inbounds listening", listening(pc + 1) and listening(pc + 2))
+        # A client added after the sub-inbounds exist reaches them too, with
+        # the same email and the same traffic total.
+        dc, ed = str(uuid.uuid4()), f"e2e-d-{int(time.time())}"
+        res = api("POST", "/panel/api/inbounds/addClient", data={"id": c["id"], "settings": json.dumps({"clients": [{
+            "id": dc, "email": ed, "flow": "", "limitIp": 0, "totalGB": 0, "expiryTime": 0, "enable": True,
+            "tgId": "", "subId": uuid.uuid4().hex[:16], "reset": 0}]})})
+        check("add a client to the inbound", res["success"], res.get("msg"))
+        check("adding the client restarted no core", procs() == now, (now, procs()))
         socks2 = free_port()
         ccfg2 = dict(ccfg)
         ccfg2["inbounds"] = [{"listen": "127.0.0.1", "port": socks2, "protocol": "socks", "settings": {"udp": False}}]
-        ccfg2["outbounds"] = [{"protocol": "vless", "settings": {"vnext": [{"address": "127.0.0.1", "port": pc + 2, "users": [{"id": cc, "encryption": "none"}]}]}, "streamSettings": {"network": "tcp"}}]
+        ccfg2["outbounds"] = [{"protocol": "vless", "settings": {"vnext": [{"address": "127.0.0.1", "port": pc + 2, "users": [{"id": dc, "encryption": "none"}]}]}, "streamSettings": {"network": "tcp"}}]
         cpath2 = os.path.join(tmp, "client2.json")
         json.dump(ccfg2, open(cpath2, "w"))
         client2 = subprocess.Popen([XRAY, "-c", cpath2], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -346,25 +354,39 @@ def main():
             listening(socks2)
             dl = subprocess.run(["curl", "-s", "-o", "/dev/null", "-w", "%{size_download}", "--socks5-hostname",
                                  f"127.0.0.1:{socks2}", f"http://{TARGET}:{hp}/blob"], capture_output=True, text=True, timeout=120)
-            check("original client id works on a copy", dl.stdout.strip() == str(20 * 1024 * 1024), dl.stdout)
-            want = f"{ec}-{pc + 2}"
-            def copy_traffic():
+            check("the new client works on a sub-inbound port", dl.stdout.strip() == str(20 * 1024 * 1024), dl.stdout)
+            def client_traffic(email):
                 for ib in api("GET", "/panel/api/inbounds/list")["obj"]:
                     for cs in ib.get("clientStats") or []:
-                        if cs["email"] == want:
+                        if cs["email"] == email:
                             return cs["up"] + cs["down"]
                 return 0
             end = time.time() + 40
-            while copy_traffic() < 20 * 1024 * 1024 and time.time() < end:
+            while client_traffic(ed) < 20 * 1024 * 1024 and time.time() < end:
                 time.sleep(2)
-            check("traffic on the copy counts on the copy's client", copy_traffic() >= 20 * 1024 * 1024, copy_traffic())
+            check("its traffic counts on its one email", client_traffic(ed) >= 20 * 1024 * 1024, client_traffic(ed))
+            def inbound_traffic():
+                ib = next(i for i in api("GET", "/panel/api/inbounds/list")["obj"] if i["id"] == c["id"])
+                return ib["up"] + ib["down"]
+            end = time.time() + 30
+            while inbound_traffic() < 20 * 1024 * 1024 and time.time() < end:
+                time.sleep(2)
+            check("the sub-inbound's traffic counts on the inbound", inbound_traffic() >= 20 * 1024 * 1024, inbound_traffic())
         finally:
             client2.kill()
-        taken = api("POST", f"/panel/api/inbounds/{c['id']}/multiInstance", data={"count": 2, "cores": 0, "max": "false", "dryRun": "true"})["obj"]
-        check("ports already taken by copies are reported", taken["error"] and all(i["conflict"] for i in taken["items"]), taken)
-        for ib in copies + [c]:
-            api("POST", f"/panel/api/inbounds/del/{ib['id']}")
-            created.remove(ib["id"])
+        # Disable one sub-inbound: only its core stops.
+        subs[0]["enable"] = False
+        pre = procs()
+        res = api("POST", f"/panel/api/inbounds/{c['id']}/subInbounds", data={"subs": json.dumps(subs)})
+        now = procs()
+        check("disabling a sub-inbound stops only its core", res["success"] and subs[0]["instance"] not in now and now.get(subs[1]["instance"]) == pre.get(subs[1]["instance"]), now)
+        clash = api("POST", "/panel/api/inbounds/add", data=inbound_payload(pc + 2, f"e2e-x-{int(time.time())}", str(uuid.uuid4())))
+        check("another inbound cannot take a sub-inbound's port", not clash["success"], clash.get("msg"))
+        if clash.get("success"):
+            created.append(clash["obj"]["id"])
+        api("POST", f"/panel/api/inbounds/del/{c['id']}")
+        created.remove(c["id"])
+        check("deleting the inbound stops its sub-inbounds", subs[1]["instance"] not in procs() and not listening(pc + 2, 2))
 
         # --- restart one instance only
         old = procs()
@@ -420,7 +442,6 @@ def main():
     end_procs = procs()
     check("test instances gone after delete", "e2e-big" not in end_procs and len(end_procs) == len(live), end_procs)
     check("existing cores never restarted", all(end_procs.get(n) == p for n, p in live.items()), (live, end_procs))
-    check("existing cores back to an even split", sorted(ncpus(p) for p in end_procs.values()) == sorted(ncpus(p) for p in before.values()) or True)
     shares = sorted(ncpus(p) for p in end_procs.values())
     check("existing cores share all CPUs again", sum(shares) == total, shares)
     failed = [n for n, ok in results if not ok]

@@ -324,6 +324,13 @@
                         <template slot="title">{{ i18n "pages.inbounds.xrayInstance" }}: [[ dbInbound.xrayInstance ]] &middot; {{ i18n "pages.inbounds.xrayCores" }}: [[ dbInbound.xrayCores > 0 ? dbInbound.xrayCores : '{{ i18n "pages.inbounds.xrayCoresAuto" }}' ]]</template>
                         <a-tag :style="{ margin: '0' }" color="orange">[[ dbInbound.xrayInstance ]]</a-tag>
                       </a-tooltip>
+                      <a-tooltip v-if="dbInbound.subs.length" :overlay-class-name="themeSwitcher.currentTheme">
+                        <template slot="title">
+                          <div>{{ i18n "pages.inbounds.subInbounds" }}:</div>
+                          <div v-for="sub in dbInbound.subs" :key="sub.port">[[ sub.port ]] &middot; [[ sub.instance ]] &middot; [[ sub.cores > 0 ? sub.cores + ' {{ i18n "pages.inbounds.xrayCoresUnit" }}' : '{{ i18n "pages.inbounds.xrayCoresAuto" }}' ]][[ sub.enable ? '' : ' &middot; off' ]]</div>
+                        </template>
+                        <a-tag :style="{ margin: '0' }" color="cyan" class="sub-count">+[[ dbInbound.subs.length ]]</a-tag>
+                      </a-tooltip>
                       <template
                         v-if="dbInbound.isVMess || dbInbound.isVLess || dbInbound.isTrojan || dbInbound.isSS">
                         <a-tag :style="{ margin: '0' }" color="green">[[
@@ -539,6 +546,10 @@
                             <tr>
                               <td>{{ i18n "pages.inbounds.port" }}</td>
                               <td><a-tag>[[ dbInbound.port ]]</a-tag></td>
+                            </tr>
+                            <tr v-if="dbInbound.subs.length">
+                              <td>{{ i18n "pages.inbounds.subInbounds" }}</td>
+                              <td><a-tag v-for="sub in dbInbound.subs" :key="sub.port" :color="sub.enable ? 'cyan' : ''">[[ sub.port ]]</a-tag></td>
                             </tr>
                             <tr v-if="dbInbound.xrayInstance">
                               <td>{{ i18n "pages.inbounds.xrayInstance" }}</td>

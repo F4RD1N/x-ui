@@ -84,14 +84,26 @@ const check = (name, ok, detail) => {
     await page.click('#inbound-modal .ant-radio-button-wrapper:has-text("Fixed")');
     await page.waitForSelector('#inbound-modal .ant-input-number', { timeout: 5000 });
     await page.waitForTimeout(600); // let the button transition finish before the screenshot
-    const max = await page.$eval('#inbound-modal .ant-form-item:has-text("CPU cores") .ant-input-number-input', (e) => e.getAttribute('aria-valuemax'));
-    check(label + ': fixed cores are capped at the available cores', m && max === m[2], `max=${max} available=${m && m[2]}`);
+    // No silent clamping: more than available is allowed in the box and
+    // refused with a message.
+    const box = '#inbound-modal .ant-form-item:has-text("CPU cores") .ant-input-number-input';
+    if (m) {
+      await page.fill(box, String(+m[2] + 1));
+      await page.waitForTimeout(300);
+      const kept = await page.inputValue(box);
+      const tooMany = await page.$('#inbound-modal .xray-instance-error');
+      check(label + ': more cores than available are kept and refused with a message', kept === String(+m[2] + 1) && !!tooMany, `value=${kept}`);
+      await page.fill(box, '1');
+    }
     await modal.screenshot({ path: `${SHOTS}/${label}-inbound-form.png` });
     // Typing an existing instance takes over its cores.
     await page.fill('#inbound-modal .ant-select-auto-complete input', 'xray-1');
     await page.waitForTimeout(300);
+    // xray-1 is on auto until the desktop pass below fixes it at 3 cores.
     const mode = await page.$eval('#inbound-modal .ant-radio-button-wrapper-checked', (e) => e.textContent.trim());
-    check(label + ': picking an existing instance takes its cores', mode === 'Auto', mode);
+    const want = label === 'desktop' ? 'Auto' : 'Fixed';
+    const val = want === 'Fixed' ? await page.inputValue(box) : '';
+    check(label + ': picking an existing instance takes its cores', mode === want && (want === 'Auto' || val === '3'), `${mode} ${val}`);
     const shared = await page.textContent('#inbound-modal .ant-form-item:has-text("Xray instance")');
     check(label + ': form lists the other inbounds of that instance', /Also runs:/.test(shared), shared.slice(0, 120));
     const formOverflowX = await page.evaluate(() => {
@@ -101,42 +113,72 @@ const check = (name, ok, detail) => {
     await page.click('#inbound-modal .ant-modal-close');
     await page.waitForTimeout(400);
 
-    // Multi Instance, from the row's menu.
+    // Fixed cores: the saved number shows as saved, and clearing it while
+    // typing does not switch to Auto.
+    const openEdit = async () => {
+      await page.click('.ant-table-row .anticon-more');
+      await page.click('.ant-dropdown:not(.ant-dropdown-hidden) .ant-dropdown-menu-item:has-text("Edit")');
+      await page.waitForSelector('#inbound-modal .ant-modal-body', { timeout: 10000 });
+      await page.waitForTimeout(900);
+    };
+    const coresBox = '#inbound-modal .ant-form-item:has-text("CPU cores") .ant-input-number-input';
+    if (label === 'desktop') {
+      await openEdit();
+      await page.click('#inbound-modal .ant-form-item:has-text("CPU cores") .ant-radio-button-wrapper:has-text("Fixed")');
+      await page.fill(coresBox, '3');
+      await page.click('#inbound-modal .ant-modal-footer .ant-btn-primary');
+      await page.waitForSelector('#inbound-modal .ant-modal-wrap', { state: 'hidden', timeout: 15000 });
+      await page.waitForTimeout(800);
+    }
+    await openEdit();
+    const shown = await page.inputValue(coresBox);
+    check(label + ': saved fixed cores show as saved (3)', shown === '3', shown);
+    await page.fill(coresBox, '');
+    await page.waitForTimeout(300);
+    const modeAfter = await page.$eval('#inbound-modal .ant-form-item:has-text("CPU cores") .ant-radio-button-wrapper-checked', (e) => e.textContent.trim());
+    const emptyMsg = await page.$('#inbound-modal .xray-instance-error');
+    check(label + ': clearing the number keeps Fixed and asks for a number', modeAfter === 'Fixed' && !!emptyMsg, modeAfter);
+    await page.click('#inbound-modal .ant-modal-close');
+    await page.waitForTimeout(400);
+
+    // Multi Instance: sub-inbounds of the first inbound.
+    const rowsBefore = await page.$$eval('.ant-table-row', (els) => els.length);
     await page.click('.ant-table-row .anticon-more');
     await page.click('.ant-dropdown:not(.ant-dropdown-hidden) .ant-dropdown-menu-item:has-text("Multi Instance")');
-    await page.waitForSelector('#multi-instance-modal .mi-item', { timeout: 10000 });
-    const items = await page.$$eval('#multi-instance-modal .mi-item .mi-port', (els) => els.map((e) => +e.textContent));
-    check(label + ': multi instance previews the next port', items.length === 1, items.join(','));
-    await page.click('#multi-instance-modal .ant-radio-button-wrapper:has-text("Fixed")');
-    await page.click('#multi-instance-modal .ant-checkbox-wrapper');
-    await page.waitForTimeout(900);
-    const maxText = await page.textContent('#multi-instance-modal .ant-checkbox-wrapper');
-    const maxN = +(maxText.match(/\((\d+)\)/) || [])[1];
-    const listed = await page.$$eval('#multi-instance-modal .mi-item', (els) => els.length);
-    check(label + ': Max fills the free cores with 1-core instances', maxN > 0 && listed === maxN, `max=${maxN} listed=${listed}`);
-    await page.click('#multi-instance-modal .ant-checkbox-wrapper'); // back to a number
-    await page.fill('#multi-instance-modal .mi-count input', '2');
-    await page.waitForTimeout(900);
-    const two = await page.$$eval('#multi-instance-modal .mi-item .mi-port', (els) => els.map((e) => +e.textContent));
-    check(label + ': two instances on consecutive ports', two.length === 2 && two[1] === two[0] + 1, two.join(','));
-    await (await page.$('#multi-instance-modal .ant-modal-content')).screenshot({ path: `${SHOTS}/${label}-multi-instance.png` });
+    await page.waitForSelector('#multi-instance-modal .mi-body', { timeout: 10000 });
+    await page.waitForTimeout(700);
     if (label === 'desktop') {
-      const before = await page.$$eval('.ant-table-row', (els) => els.length);
-      const off = await page.$eval('#multi-instance-modal .ant-modal-footer .ant-btn-primary', (b) => b.disabled);
-      if (off) {
-        const why = await page.textContent('#multi-instance-modal .mi-body');
-        throw new Error('Generate is off: ' + why.replace(/\s+/g, ' ').slice(0, 400));
-      }
-      await page.click('#multi-instance-modal .ant-modal-footer .ant-btn-primary');
+      check('desktop: no sub-inbounds yet', !!(await page.$('#multi-instance-modal .mi-empty')));
+      await page.click('#multi-instance-modal .mi-row-add .ant-radio-button-wrapper:has-text("Fixed")');
+      await page.fill('#multi-instance-modal .mi-count input', '2');
+      await page.click('#multi-instance-modal .mi-add-btn');
+      await page.waitForSelector('#multi-instance-modal .mi-row.mi-new', { timeout: 10000 });
+      const ports = await page.$$eval('#multi-instance-modal .mi-row:not(.mi-row-head) .mi-port input', (els) => els.map((e) => +e.value));
+      check('desktop: Add puts two sub-inbounds on the next ports', ports.length === 2 && ports[1] === ports[0] + 1, ports.join(','));
+      await page.click('#multi-instance-modal .mi-max');
+      await page.waitForTimeout(900);
+      const maxText = await page.textContent('#multi-instance-modal .mi-max');
+      check('desktop: Max shows how many more fit', /\(\d+\)/.test(maxText), maxText);
+      await page.click('#multi-instance-modal .mi-max');
+      await (await page.$('#multi-instance-modal .ant-modal-content')).screenshot({ path: `${SHOTS}/${label}-multi-instance.png` });
+      await page.click('#multi-instance-modal .mi-save');
       await page.waitForSelector('#multi-instance-modal .ant-modal-wrap', { state: 'hidden', timeout: 20000 });
       await page.waitForTimeout(1500);
-      const after = await page.$$eval('.ant-table-row', (els) => els.length);
-      check('desktop: generate adds the inbounds', after === before + 2, `${before} -> ${after}`);
+      const rowsAfter = await page.$$eval('.ant-table-row', (els) => els.length);
+      check('desktop: sub-inbounds add no inbounds', rowsAfter === rowsBefore, `${rowsBefore} -> ${rowsAfter}`);
+      const subTag = await page.$$eval('.ant-table-row .sub-count', (els) => els.map((e) => e.textContent.trim()));
+      check('desktop: the inbound shows +2', subTag.includes('+2'), subTag.join(','));
     } else {
-      // The desktop pass already made these copies: the preview says so.
-      const bad = await page.$$eval('#multi-instance-modal .mi-bad', (els) => els.length);
-      const disabled = await page.$eval('#multi-instance-modal .ant-modal-footer .ant-btn-primary', (b) => b.disabled);
-      check(label + ': taken ports are flagged and Generate is off', bad === 2 && disabled, `bad=${bad} disabled=${disabled}`);
+      const rows = await page.$$eval('#multi-instance-modal .mi-row:not(.mi-row-head)', (els) => els.length);
+      check(label + ': the dialog lists the saved sub-inbounds', rows === 2, rows);
+      const insts = await page.$$eval('#multi-instance-modal .mi-c-inst input', (els) => els.map((e) => e.value));
+      check(label + ': each has its own instance', insts.length === 2 && insts[0] !== insts[1] && insts.every((n) => /^xray-\d+$/.test(n)), insts.join(','));
+      const dialogOverflow = await page.evaluate(() => {
+        const b = document.querySelector('#multi-instance-modal .ant-modal-body');
+        return b.scrollWidth - b.clientWidth;
+      });
+      check(label + ': dialog has no horizontal scroll', dialogOverflow <= 0, dialogOverflow + 'px');
+      await (await page.$('#multi-instance-modal .ant-modal-content')).screenshot({ path: `${SHOTS}/${label}-multi-instance.png` });
       await page.click('#multi-instance-modal .ant-modal-close');
     }
     const formOverflow = formOverflowX;

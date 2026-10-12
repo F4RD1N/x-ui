@@ -221,8 +221,19 @@ func (s *XrayService) buildXrayConfigAndInbounds(templateConfig string) (*xray.C
 
 		inboundConfig := inbound.GenXrayInboundConfig()
 		xrayConfig.InboundConfigs = append(xrayConfig.InboundConfigs, *inboundConfig)
+		// Sub-inbounds: the same inbound on their own ports.
+		for _, sub := range inbound.Subs() {
+			if !sub.Enable {
+				continue
+			}
+			c := *inboundConfig
+			c.Port = sub.Port
+			c.Tag = model.SubTag(inbound.Tag, sub.Port)
+			xrayConfig.InboundConfigs = append(xrayConfig.InboundConfigs, c)
+		}
 	}
-	return xrayConfig, inbounds, nil
+	// The cores are planned per inbound and sub-inbound alike.
+	return xrayConfig, model.ExpandSubInbounds(inbounds), nil
 }
 
 // GetXrayTraffic collects, and resets, the traffic counters of every running
@@ -279,7 +290,8 @@ func fillShadowsocksClientMethod(protocol model.Protocol, settings map[string]an
 }
 
 // mergeTraffic sums entries for the same inbound or outbound reported by
-// several cores (every core has the template's outbounds).
+// several cores (every core has the template's outbounds), counting a
+// sub-inbound's traffic on its inbound.
 func mergeTraffic(in []*xray.Traffic) []*xray.Traffic {
 	type key struct {
 		inbound, outbound bool
@@ -288,13 +300,18 @@ func mergeTraffic(in []*xray.Traffic) []*xray.Traffic {
 	idx := map[key]*xray.Traffic{}
 	out := make([]*xray.Traffic, 0, len(in))
 	for _, t := range in {
-		k := key{t.IsInbound, t.IsOutbound, t.Tag}
+		tag := t.Tag
+		if t.IsInbound {
+			tag = model.ParentTag(tag) // a sub-inbound's traffic is its inbound's
+		}
+		k := key{t.IsInbound, t.IsOutbound, tag}
 		if m, ok := idx[k]; ok {
 			m.Up += t.Up
 			m.Down += t.Down
 			continue
 		}
 		c := *t
+		c.Tag = tag
 		idx[k] = &c
 		out = append(out, &c)
 	}

@@ -2,7 +2,9 @@
 package model
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/mhsanaei/3x-ui/v2/util/json_util"
 	"github.com/mhsanaei/3x-ui/v2/xray"
@@ -62,6 +64,86 @@ type Inbound struct {
 	// value.
 	XrayInstance string `json:"xrayInstance" form:"xrayInstance" gorm:"default:''"`
 	XrayCores    int    `json:"xrayCores" form:"xrayCores" gorm:"default:0"`
+
+	// SubInbounds is a JSON list of SubInbound: copies of this inbound on
+	// other ports, each in its own xray instance. They share everything
+	// else -- protocol, settings, clients, transport -- with this inbound.
+	SubInbounds string `json:"subInbounds" form:"subInbounds" gorm:"default:''"`
+
+	// SubOf is set on the copies ExpandSubInbounds makes: the id of the
+	// inbound they belong to. Not stored.
+	SubOf int `json:"subOf,omitempty" gorm:"-"`
+}
+
+// SubInbound is one sub-inbound: the only settings it has of its own.
+type SubInbound struct {
+	Port     int    `json:"port"`
+	Instance string `json:"instance"`
+	Cores    int    `json:"cores"` // 0 = auto
+	Enable   bool   `json:"enable"`
+}
+
+// SubTagSep joins an inbound's tag and a sub-inbound's port into the
+// sub-inbound's tag: inbound-443~sub444.
+const SubTagSep = "~sub"
+
+// SubTag returns the tag of the sub-inbound of parent on port.
+func SubTag(parent string, port int) string {
+	return fmt.Sprintf("%s%s%d", parent, SubTagSep, port)
+}
+
+// ParentTag returns the inbound tag a sub-inbound tag belongs to; any
+// other tag is returned as it is.
+func ParentTag(tag string) string {
+	if i := strings.Index(tag, SubTagSep); i >= 0 {
+		return tag[:i]
+	}
+	return tag
+}
+
+// Subs returns the inbound's sub-inbounds.
+func (i *Inbound) Subs() []SubInbound {
+	if strings.TrimSpace(i.SubInbounds) == "" {
+		return nil
+	}
+	var out []SubInbound
+	if json.Unmarshal([]byte(i.SubInbounds), &out) != nil {
+		return nil
+	}
+	return out
+}
+
+// SetSubs stores subs as the inbound's sub-inbounds.
+func (i *Inbound) SetSubs(subs []SubInbound) {
+	if len(subs) == 0 {
+		i.SubInbounds = ""
+		return
+	}
+	b, _ := json.Marshal(subs)
+	i.SubInbounds = string(b)
+}
+
+// ExpandSubInbounds returns the inbounds with each one's sub-inbounds after
+// it, as inbounds of their own: the same inbound on the sub-inbound's port,
+// with its tag, instance and cores, enabled when both it and the inbound
+// are. The copies carry SubOf.
+func ExpandSubInbounds(list []*Inbound) []*Inbound {
+	out := make([]*Inbound, 0, len(list))
+	for _, in := range list {
+		out = append(out, in)
+		for _, sub := range in.Subs() {
+			c := *in
+			c.Port = sub.Port
+			c.Tag = SubTag(in.Tag, sub.Port)
+			c.XrayInstance = sub.Instance
+			c.XrayCores = sub.Cores
+			c.Enable = in.Enable && sub.Enable
+			c.SubInbounds = ""
+			c.SubOf = in.Id
+			out = append(out, &c)
+		}
+	}
+	return out
 }
 
 // XrayInstancePrefix is how default instance names start: xray-1, xray-2, ...

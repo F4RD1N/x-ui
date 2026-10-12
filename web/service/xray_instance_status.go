@@ -63,11 +63,12 @@ type cpuSample struct {
 func (s *XrayService) XrayInstancesStatus() ([]XrayInstanceStatus, XrayCpuSummary) {
 	var inbounds []*model.Inbound
 	err := database.GetDB().Model(model.Inbound{}).
-		Select("id", "remark", "port", "listen", "protocol", "enable", "xray_instance", "xray_cores").
+		Select("id", "remark", "port", "listen", "protocol", "enable", "tag", "xray_instance", "xray_cores", "sub_inbounds").
 		Order("id").Find(&inbounds).Error
 	if err != nil {
 		logger.Warning("read inbounds for the xray instance status:", err)
 	}
+	inbounds = model.ExpandSubInbounds(inbounds)
 	cores := instanceCores(inbounds)
 	byName := map[string]*XrayInstanceStatus{}
 	var names []string
@@ -82,7 +83,7 @@ func (s *XrayService) XrayInstancesStatus() ([]XrayInstanceStatus, XrayCpuSummar
 	}
 	for _, in := range inbounds {
 		st := add(instanceName(in))
-		st.Inbounds = append(st.Inbounds, XrayInstanceInbound{Id: in.Id, Remark: in.Remark, Port: in.Port, Protocol: string(in.Protocol), Enable: in.Enable})
+		st.Inbounds = append(st.Inbounds, XrayInstanceInbound{Id: in.Id, Remark: in.Remark, Port: in.Port, Protocol: string(in.Protocol), Enable: in.Enable, Sub: in.SubOf != 0})
 		if in.Enable && isInstanceStopped(st.Name) {
 			st.State = Stop
 		}

@@ -23,6 +23,7 @@ class DBInbound {
         this.clientStats = ""
         this.xrayInstance = "";
         this.xrayCores = 0;
+        this.subInbounds = "";
         if (data == null) {
             return;
         }
@@ -35,6 +36,18 @@ class DBInbound {
 
     set totalGB(gb) {
         this.total = NumberFormatter.toFixed(gb * SizeFormatter.ONE_GB, 0);
+    }
+
+    // Sub-inbounds: this inbound on other ports, each in its own xray
+    // instance ({port, instance, cores, enable}).
+    get subs() {
+        if (!this.subInbounds) return [];
+        try {
+            const list = JSON.parse(this.subInbounds);
+            return Array.isArray(list) ? list : [];
+        } catch (e) {
+            return [];
+        }
     }
 
     get isVMess() {

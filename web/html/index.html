@@ -417,7 +417,7 @@
                     </div>
                   </div>
                   <div class="xi-inbounds">
-                    <a-tag v-for="ib in inst.inbounds" :key="ib.id" :color="ib.enable ? 'blue' : ''">[[ ib.remark || ('#' + ib.id) ]] : [[ ib.port ]]</a-tag>
+                    <a-tag v-for="ib in inst.inbounds" :key="ib.id + ':' + ib.port" :color="ib.enable ? (ib.sub ? 'cyan' : 'blue') : ''">[[ ib.remark || ('#' + ib.id) ]] : [[ ib.port ]]</a-tag>
                   </div>
                   <div v-if="inst.errorMsg" class="xi-error">[[ inst.errorMsg ]]
                     <span v-if="inst.retryIn > 0" class="xi-muted">&middot; {{ i18n "pages.index.xrayInstanceRetry" }} [[ inst.retryIn ]]s</span>

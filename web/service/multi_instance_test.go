@@ -1,7 +1,6 @@
 package service
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
 	"strings"
@@ -12,54 +11,15 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/xray"
 )
 
-func TestUniqueEmail(t *testing.T) {
-	taken := map[string]bool{"a@x-444": true, "b-445": true}
-	if got := uniqueEmail("A@x", 444, taken); got != "A@x-444-2" {
-		t.Fatalf("taken without case: %s", got)
-	}
-	if got := uniqueEmail("c", 444, taken); got != "c-444" || !taken["c-444"] {
-		t.Fatalf("plain: %s", got)
-	}
-}
-
-func TestCloneForPort(t *testing.T) {
-	src := &model.Inbound{
-		UserId: 1, Remark: "edge", Enable: true, Total: 5, ExpiryTime: 9, TrafficReset: "monthly",
-		Listen: "", Port: 443, Protocol: model.VLESS,
-		Settings:       `{"clients":[{"id":"u1","email":"a","flow":"xtls-rprx-vision","limitIp":2,"totalGB":7,"subId":"s1","created_at":1},{"id":"u2","email":"b"}],"decryption":"none"}`,
-		StreamSettings: `{"network":"tcp","security":"reality","realitySettings":{"privateKey":"k"}}`,
-		Sniffing:       `{"enabled":true}`, XrayInstance: "xray-1",
-	}
-	c, err := cloneForPort(src, MultiInstanceItem{Port: 444, Instance: "xray-7"}, 2, map[string]bool{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.Port != 444 || c.Tag != "inbound-444" || c.XrayInstance != "xray-7" || c.XrayCores != 2 || c.Remark != "edge-444" {
-		t.Fatalf("clone: %+v", c)
-	}
-	if c.StreamSettings != src.StreamSettings || c.Sniffing != src.Sniffing || c.Total != 5 || c.ExpiryTime != 9 || c.TrafficReset != "monthly" || !c.Enable {
-		t.Fatalf("settings not copied: %+v", c)
-	}
-	var s struct {
-		Clients    []map[string]any `json:"clients"`
-		Decryption string           `json:"decryption"`
-	}
-	json.Unmarshal([]byte(c.Settings), &s)
-	if len(s.Clients) != 2 || s.Decryption != "none" {
-		t.Fatalf("settings: %s", c.Settings)
-	}
-	a := s.Clients[0]
-	if a["id"] != "u1" || a["email"] != "a-444" || a["flow"] != "xtls-rprx-vision" || a["subId"] != "s1" || a["limitIp"].(float64) != 2 || a["totalGB"].(float64) != 7 {
-		t.Fatalf("client: %v", a)
-	}
-	if _, ok := a["created_at"]; ok {
-		t.Fatal("timestamps copied")
-	}
-	if !strings.Contains(src.Settings, `"email":"a"`) {
-		t.Fatal("source changed")
-	}
-	if c2, _ := cloneForPort(&model.Inbound{Listen: "1.2.3.4", Port: 1, Settings: "{}"}, MultiInstanceItem{Port: 2}, 0, nil); c2.Tag != "inbound-1.2.3.4:2" {
-		t.Fatalf("tag with listen: %s", c2.Tag)
+func TestSubInboundTrafficCountsOnInbound(t *testing.T) {
+	out := mergeTraffic([]*xray.Traffic{
+		{IsInbound: true, Tag: "inbound-443", Up: 1, Down: 2},
+		{IsInbound: true, Tag: "inbound-443~sub444", Up: 10, Down: 20},
+		{IsInbound: true, Tag: "inbound-443~sub445", Up: 100, Down: 200},
+		{IsOutbound: true, Tag: "direct", Up: 5, Down: 5},
+	})
+	if len(out) != 2 || out[0].Tag != "inbound-443" || out[0].Up != 111 || out[0].Down != 222 {
+		t.Fatalf("merged: %+v", out[0])
 	}
 }
 
@@ -67,7 +27,7 @@ func TestCloneForPort(t *testing.T) {
 func freeRun(t *testing.T, n int) int {
 	t.Helper()
 	for try := 0; try < 50; try++ {
-		base := freeTCPPort(t)
+		base := 20000 + (freeTCPPort(t) % 10000)
 		ok := true
 		for i := 0; i < n && ok; i++ {
 			l, err := net.Listen("tcp", fmt.Sprintf(":%d", base+i))
@@ -77,7 +37,7 @@ func freeRun(t *testing.T, n int) int {
 			}
 			l.Close()
 		}
-		if ok && base+n < 65535 {
+		if ok {
 			return base
 		}
 	}
@@ -85,7 +45,7 @@ func freeRun(t *testing.T, n int) int {
 	return 0
 }
 
-func TestMultiInstanceIntegration(t *testing.T) {
+func TestSubInboundsIntegration(t *testing.T) {
 	integrationCore(t)
 	var xs XrayService
 	var is InboundService
@@ -93,127 +53,212 @@ func TestMultiInstanceIntegration(t *testing.T) {
 	if err := xs.RestartXray(true); err != nil {
 		t.Fatal(err)
 	}
-	base := freeRun(t, 6)
+	base := freeRun(t, 8)
 	src := vlessInbound(t, "", 0)
 	src.Port, src.Tag = base, fmt.Sprintf("inbound-%d", base)
-	src.Settings = `{"clients":[{"id":"6b0e9c1c-2d6f-4c6e-9b8a-000000000001","email":"alice","enable":true,"flow":"","subId":"sa","totalGB":1073741824},{"id":"6b0e9c1c-2d6f-4c6e-9b8a-000000000002","email":"bob","enable":true,"flow":"","subId":"sb"}],"decryption":"none","fallbacks":[]}`
+	src.Settings = `{"clients":[{"id":"6b0e9c1c-2d6f-4c6e-9b8a-000000000001","email":"alice","enable":true,"flow":""}],"decryption":"none","fallbacks":[]}`
 	src, _, err := is.AddInbound(src)
 	if err != nil {
 		t.Fatal(err)
 	}
 	xs.ApplyInboundChanges()
+	pSrc := pidOf(t, src.XrayInstance)
 
-	t.Run("plan and max", func(t *testing.T) {
-		// xray-1 (auto) keeps a core: fixed copies of 1 core fit total-1 times.
-		plan, _, err := is.PlanMultiInstance(src.Id, 0, 1, true)
+	t.Run("plan", func(t *testing.T) {
+		plan, err := is.PlanSubInbounds(src.Id, nil, 0, 1, true)
 		if err != nil || plan.Error != "" {
 			t.Fatalf("plan: %+v %v", plan, err)
 		}
-		if plan.Max != total-1 || plan.Count != total-1 || plan.Available != total-1 || plan.Clients != 2 {
+		// The inbound's own instance is auto and keeps a core.
+		if plan.Max != total-1 || plan.Count != total-1 || plan.Clients != 1 {
 			t.Fatalf("max: %+v", plan)
 		}
-		if plan.Items[0].Port != base+1 || plan.Items[0].Instance != "xray-2" || plan.Items[1].Instance != "xray-3" {
-			t.Fatalf("items: %+v", plan.Items)
+		if plan.Items[0].Port != base+1 || plan.Items[0].Instance != "xray-2" {
+			t.Fatalf("first item: %+v", plan.Items[0])
 		}
-		// Auto copies: one per core no instance has yet.
-		plan, _, _ = is.PlanMultiInstance(src.Id, 0, 0, true)
-		if plan.Max != total-1 {
-			t.Fatalf("auto max: %+v", plan)
+		// With an unsaved list, new ones go after it.
+		plan, _ = is.PlanSubInbounds(src.Id, []model.SubInbound{{Port: base + 3, Instance: "xray-2", Enable: true}}, 2, 0, false)
+		if plan.Items[0].Port != base+4 || plan.Items[1].Port != base+5 || plan.Items[0].Instance != "xray-3" {
+			t.Fatalf("after current: %+v", plan.Items)
 		}
-		plan, _, _ = is.PlanMultiInstance(src.Id, total, 1, false)
-		if plan.Error == "" || !strings.Contains(plan.Error, "available") {
-			t.Fatalf("too many: %+v", plan)
-		}
-	})
-
-	t.Run("a taken port is reported", func(t *testing.T) {
-		l, err := net.Listen("tcp", fmt.Sprintf(":%d", base+2))
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer l.Close()
-		plan, _, _ := is.PlanMultiInstance(src.Id, 3, 0, false)
-		if plan.Items[1].Conflict == "" || plan.Items[0].Conflict != "" || plan.Error == "" {
-			t.Fatalf("conflict: %+v", plan)
-		}
-		_, created, err := is.MultiInstance(src.Id, 3, 0, false)
-		for _, c := range created {
-			is.DelInbound(c.Id)
-		}
-		if err == nil || len(created) != 0 {
-			t.Fatal("made copies onto a taken port")
-		}
-		var n int64
-		database.GetDB().Model(model.Inbound{}).Count(&n)
-		if n != 1 {
-			t.Fatalf("inbounds after the refusal: %d", n)
+		plan, _ = is.PlanSubInbounds(src.Id, nil, total, 1, false)
+		if plan.Error == "" {
+			t.Fatal("too many cores accepted")
 		}
 	})
 
-	t.Run("a copy failing removes the ones made", func(t *testing.T) {
-		// A row that takes the second copy's tag but not its port: the plan
-		// passes, the second insert fails.
-		blocker := &model.Inbound{UserId: 1, Port: base + 100, Tag: fmt.Sprintf("inbound-%d", base+2), Protocol: model.VLESS, Settings: `{"clients":[]}`, XrayInstance: "blocker"}
-		if err := database.GetDB().Create(blocker).Error; err != nil {
-			t.Fatal(err)
-		}
-		defer database.GetDB().Delete(&model.Inbound{}, blocker.Id)
-		_, created, err := is.MultiInstance(src.Id, 2, 0, false)
-		if err == nil || len(created) != 0 {
-			t.Fatalf("expected a failure: %v %d", err, len(created))
-		}
-		var n int64
-		database.GetDB().Model(model.Inbound{}).Where("port = ?", base+1).Count(&n)
-		var stats int64
-		database.GetDB().Model(xray.ClientTraffic{}).Where("email LIKE ?", fmt.Sprintf("%%-%d", base+1)).Count(&stats)
-		if n != 0 || stats != 0 {
-			t.Fatalf("first copy left behind: %d inbounds, %d client stats", n, stats)
-		}
-	})
-
-	t.Run("generate", func(t *testing.T) {
-		_, created, err := is.MultiInstance(src.Id, 2, 1, false)
+	subs := []model.SubInbound{
+		{Port: base + 1, Cores: 1, Enable: true},
+		{Port: base + 2, Cores: 1, Enable: true},
+	}
+	t.Run("save", func(t *testing.T) {
+		got, _, err := is.SaveSubInbounds(src.Id, subs)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err := xs.ApplyInboundChanges(); err != nil {
 			t.Fatal(err)
 		}
-		if len(created) != 2 {
-			t.Fatalf("created %d", len(created))
+		saved := got.Subs()
+		if len(saved) != 2 || saved[0].Instance != "xray-2" || saved[1].Instance != "xray-3" {
+			t.Fatalf("saved: %+v", saved)
 		}
-		for i, c := range created {
-			port := base + 1 + i
-			if c.Port != port || c.XrayCores != 1 || c.Protocol != src.Protocol || c.StreamSettings != src.StreamSettings {
-				t.Fatalf("copy %d: %+v", i, c)
+		subs = saved
+		for _, sub := range saved {
+			if !listening(sub.Port) {
+				t.Fatalf("sub-inbound %d not listening", sub.Port)
 			}
-			if !listening(port) {
-				t.Fatalf("port %d not listening", port)
-			}
-			p := procOf(c.XrayInstance)
-			if p == nil || len(xray.ProcessCPUs(p.Pid())) != 1 {
-				t.Fatalf("%s not on one CPU", c.XrayInstance)
-			}
-			clients, _ := is.GetClients(c)
-			if len(clients) != 2 || clients[0].ID != "6b0e9c1c-2d6f-4c6e-9b8a-000000000001" || clients[0].Email != fmt.Sprintf("alice-%d", port) || clients[0].SubID != "sa" || clients[0].TotalGB != 1073741824 {
-				t.Fatalf("copy clients: %+v", clients)
-			}
-			var stats int64
-			database.GetDB().Model(xray.ClientTraffic{}).Where("inbound_id = ?", c.Id).Count(&stats)
-			if stats != 2 {
-				t.Fatalf("client stats of the copy: %d", stats)
+			if got := xray.ProcessCPUs(pidOf(t, sub.Instance)); len(got) != 1 {
+				t.Fatalf("%s on %v", sub.Instance, got)
 			}
 		}
-		if created[0].XrayInstance == created[1].XrayInstance || created[0].XrayInstance == src.XrayInstance {
-			t.Fatal("copies share an instance")
+		if pidOf(t, src.XrayInstance) != pSrc {
+			t.Fatal("the inbound's own core restarted")
 		}
-		// The source keeps its own core.
-		if got, _ := is.GetInbound(src.Id); got.XrayInstance != src.XrayInstance || !listening(src.Port) {
-			t.Fatal("source changed")
+		// Still one inbound.
+		var n int64
+		database.GetDB().Model(model.Inbound{}).Count(&n)
+		if n != 1 {
+			t.Fatalf("%d inbounds", n)
 		}
-		for _, c := range created {
-			is.DelInbound(c.Id)
+		// The overview lists them under their instances.
+		st, _ := xs.XrayInstancesStatus()
+		var seen int
+		for _, s := range st {
+			for _, ib := range s.Inbounds {
+				if ib.Id == src.Id && ib.Sub {
+					seen++
+				}
+			}
 		}
+		if seen != 2 {
+			t.Fatalf("status shows %d sub-inbounds", seen)
+		}
+	})
+
+	t.Run("clients reach every port", func(t *testing.T) {
+		p2, p3 := pidOf(t, "xray-2"), pidOf(t, "xray-3")
+		data := &model.Inbound{Id: src.Id, Settings: `{"clients":[{"id":"6b0e9c1c-2d6f-4c6e-9b8a-000000000002","email":"bob","enable":true,"flow":""}]}`}
+		needRestart, err := is.AddInboundClient(data)
+		if err != nil || needRestart {
+			t.Fatalf("add client: restart=%v err=%v", needRestart, err)
+		}
+		if err := xs.ApplyInboundChanges(); err != nil {
+			t.Fatal(err)
+		}
+		if pidOf(t, "xray-2") != p2 || pidOf(t, "xray-3") != p3 || pidOf(t, src.XrayInstance) != pSrc {
+			t.Fatal("a core restarted for a new client")
+		}
+		// bob is in every core's config now: they are recorded as touched,
+		// and a rebuild would give the same inbound.
+		instMu.RLock()
+		_, t2 := touched["xray-2"][model.SubTag(src.Tag, subs[0].Port)]
+		_, t3 := touched["xray-3"][model.SubTag(src.Tag, subs[1].Port)]
+		instMu.RUnlock()
+		if !t2 && !t3 {
+			// ApplyInboundChanges may have adopted the new config already;
+			// then the cores' configs carry bob.
+			for _, name := range []string{"xray-2", "xray-3"} {
+				cfg := procOf(name).GetConfig()
+				found := false
+				for _, ic := range cfg.InboundConfigs {
+					if strings.Contains(string(ic.Settings), "bob") {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatalf("%s does not carry the new client", name)
+				}
+			}
+		}
+		// Removing it goes to every port too.
+		if _, err := is.DelInboundClientByEmail(src.Id, "bob"); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("disable one, change cores of another", func(t *testing.T) {
+		p3 := pidOf(t, "xray-3")
+		edited := []model.SubInbound{
+			{Port: subs[0].Port, Instance: subs[0].Instance, Cores: 1, Enable: false},
+			{Port: subs[1].Port, Instance: subs[1].Instance, Cores: 2, Enable: true},
+		}
+		if _, _, err := is.SaveSubInbounds(src.Id, edited); err != nil {
+			t.Fatal(err)
+		}
+		if err := xs.ApplyInboundChanges(); err != nil {
+			t.Fatal(err)
+		}
+		if procOf("xray-2") != nil || listening(subs[0].Port) {
+			t.Fatal("disabled sub-inbound still runs")
+		}
+		if pidOf(t, "xray-3") != p3 || len(xray.ProcessCPUs(p3)) != 2 {
+			t.Fatalf("xray-3 should keep running on 2 CPUs: %v", xray.ProcessCPUs(p3))
+		}
+		subs = edited
+	})
+
+	t.Run("checks", func(t *testing.T) {
+		other := vlessInbound(t, "", 0)
+		other, _, err := is.AddInbound(other)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bad := append(append([]model.SubInbound(nil), subs...), model.SubInbound{Port: other.Port, Enable: true})
+		if _, _, err := is.SaveSubInbounds(src.Id, bad); err == nil || !strings.Contains(err.Error(), "used by inbound") {
+			t.Fatalf("port of another inbound accepted: %v", err)
+		}
+		bad = append(append([]model.SubInbound(nil), subs...), model.SubInbound{Port: subs[1].Port, Enable: true})
+		if _, _, err := is.SaveSubInbounds(src.Id, bad); err == nil || !strings.Contains(err.Error(), "twice") {
+			t.Fatalf("duplicate port accepted: %v", err)
+		}
+		bad = append(append([]model.SubInbound(nil), subs...), model.SubInbound{Port: base + 5, Instance: other.XrayInstance, Enable: true})
+		if _, _, err := is.SaveSubInbounds(src.Id, bad); err == nil || !strings.Contains(err.Error(), "another inbound") {
+			t.Fatalf("other inbound's instance accepted: %v", err)
+		}
+		bad = append(append([]model.SubInbound(nil), subs...), model.SubInbound{Port: base + 5, Cores: total, Enable: true})
+		if _, _, err := is.SaveSubInbounds(src.Id, bad); err == nil {
+			t.Fatal("too many cores accepted")
+		}
+		// Another inbound cannot take a sub-inbound's port.
+		clash := vlessInbound(t, "", 0)
+		clash.Port, clash.Tag = subs[1].Port, fmt.Sprintf("inbound-%d", subs[1].Port)
+		if _, _, err := is.AddInbound(clash); err == nil || !strings.Contains(err.Error(), "sub-inbound") {
+			t.Fatalf("inbound on a sub-inbound's port accepted: %v", err)
+		}
+		is.DelInbound(other.Id)
 		xs.ApplyInboundChanges()
+	})
+
+	t.Run("editing the inbound keeps its sub-inbounds", func(t *testing.T) {
+		p3 := pidOf(t, "xray-3")
+		cur, _ := is.GetInbound(src.Id)
+		cur.Remark = "renamed"
+		cur.SubInbounds = "" // the form never sends them
+		if _, _, err := is.UpdateInbound(cur); err != nil {
+			t.Fatal(err)
+		}
+		if err := xs.ApplyInboundChanges(); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := is.GetInbound(src.Id)
+		if len(got.Subs()) != 2 {
+			t.Fatalf("sub-inbounds lost: %q", got.SubInbounds)
+		}
+		if pidOf(t, "xray-3") != p3 || !listening(subs[1].Port) {
+			t.Fatal("the sub-inbound's core restarted")
+		}
+	})
+
+	t.Run("deleting the inbound stops its sub-inbounds", func(t *testing.T) {
+		if _, err := is.DelInbound(src.Id); err != nil {
+			t.Fatal(err)
+		}
+		if err := xs.ApplyInboundChanges(); err != nil {
+			t.Fatal(err)
+		}
+		if procOf("xray-3") != nil || listening(subs[1].Port) {
+			t.Fatal("sub-inbound outlived its inbound")
+		}
 	})
 }

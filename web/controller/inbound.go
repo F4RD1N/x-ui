@@ -37,6 +37,7 @@ func (a *InboundController) initRouter(g *gin.RouterGroup) {
 	g.GET("/getClientTrafficsById/:id", a.getClientTrafficsById)
 	g.GET("/xrayInstances", a.getXrayInstances)
 	g.POST("/:id/multiInstance", a.multiInstance)
+	g.POST("/:id/subInbounds", a.saveSubInbounds)
 
 	g.POST("/add", a.addInbound)
 	g.POST("/del/:id", a.delInbound)
@@ -399,9 +400,10 @@ func (a *InboundController) applyToCores(needRestart bool) {
 	}
 }
 
-// multiInstance copies an inbound, with all its clients, into new xray
-// instances on the following ports. With dryRun it only reports what it
-// would do: the ports, instance names, conflicts and how many copies fit.
+// multiInstance proposes new sub-inbounds for an inbound: count of them (or
+// as many as the CPUs allow with max) with cores each, after the ports the
+// inbound and the posted list (subs, possibly unsaved) already use. It
+// changes nothing.
 func (a *InboundController) multiInstance(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
@@ -410,19 +412,39 @@ func (a *InboundController) multiInstance(c *gin.Context) {
 	}
 	count, _ := strconv.Atoi(c.PostForm("count"))
 	cores, _ := strconv.Atoi(c.PostForm("cores"))
-	useMax := c.PostForm("max") == "true"
-	if c.PostForm("dryRun") == "true" {
-		plan, _, err := a.inboundService.PlanMultiInstance(id, count, cores, useMax)
-		jsonObj(c, plan, err)
-		return
+	var current []model.SubInbound
+	if s := c.PostForm("subs"); s != "" {
+		if err := json.Unmarshal([]byte(s), &current); err != nil {
+			jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
+			return
+		}
 	}
-	plan, created, err := a.inboundService.MultiInstance(id, count, cores, useMax)
+	plan, err := a.inboundService.PlanSubInbounds(id, current, count, cores, c.PostForm("max") == "true")
+	jsonObj(c, plan, err)
+}
+
+// saveSubInbounds replaces an inbound's sub-inbounds with the posted list
+// (subs, JSON) and brings the cores in line.
+func (a *InboundController) saveSubInbounds(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		jsonMsgObj(c, I18nWeb(c, "somethingWentWrong"), plan, err)
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
 		return
 	}
-	a.applyToCores(false)
-	jsonMsgObj(c, I18nWeb(c, "pages.inbounds.multiInstanceDone"), gin.H{"plan": plan, "created": len(created)}, nil)
+	var subs []model.SubInbound
+	if s := c.PostForm("subs"); s != "" {
+		if err := json.Unmarshal([]byte(s), &subs); err != nil {
+			jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
+			return
+		}
+	}
+	inbound, needRestart, err := a.inboundService.SaveSubInbounds(id, subs)
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
+		return
+	}
+	a.applyToCores(needRestart)
+	jsonMsgObj(c, I18nWeb(c, "pages.inbounds.subInboundsSaved"), inbound, nil)
 	user := session.GetLoginUser(c)
 	inbounds, _ := a.inboundService.GetInbounds(user.Id)
 	websocket.BroadcastInbounds(inbounds)

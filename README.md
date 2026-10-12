@@ -154,14 +154,18 @@ and a change of cores moves running processes to their new CPUs in place.
 On upgrade, each existing inbound gets its own instance. An imported inbound
 also gets a new one.
 
-**Multi Instance** (the inbound's ⋮ menu) copies an inbound, with every setting
-and every client, into new instances on the ports right after it — port+1,
-port+2, … — one inbound per instance. Choose the cores per instance (Auto or a
-number) and how many instances; **Max** makes as many as the free CPU cores
-allow. The dialog previews the ports and instance names and refuses ports that
-are taken. Client IDs, passwords, flows, limits and subscription IDs stay the
-same; client emails get the port appended (`alice` → `alice-444`) because the
-panel needs every email to be unique, so traffic limits count on each copy.
+**Multi Instance** (the inbound's ⋮ menu) manages the inbound's
+**sub-inbounds**: the same inbound on other ports, each in an xray instance of
+its own. A sub-inbound has only four settings of its own — port, instance, CPU
+cores, on/off — and shares everything else with its inbound: protocol,
+settings, transport and every client. A client works on every port with one
+traffic total and one IP limit, and a sub-inbound's traffic counts on its
+inbound. **Add** puts new sub-inbounds on the ports after the last one in use
+(cores per instance Auto or a number; **Max** adds as many as the free CPU cores
+allow), every row can be edited, switched off or removed, and **Save** applies
+the list: new instances start, removed or disabled ones stop, and the others
+keep running. Adding or removing clients reaches every sub-inbound through the
+API.
 
 Tests: `go test ./...` (the instance tests start real cores when one is
 installed or `XRAY_TEST_BINARY` points at one), and

@@ -23,6 +23,9 @@
         // Xray core instances and the CPU cores they have, for the instance
         // and cores fields.
         xrayInfo: { totalCores: 0, nextName: "", instances: [] },
+        // Auto or fixed cores, kept apart from the number so that clearing
+        // the number while typing does not switch to auto.
+        coresMode: "auto",
         async loadXrayInfo() {
             const msg = await HttpUtil.get("/panel/api/inbounds/xrayInstances");
             if (!msg || !msg.success || !msg.obj) return;
@@ -52,10 +55,18 @@
             return inModal.xrayInfo.totalCores - reserved - (autos > 0 ? 1 : 0);
         },
         ok() {
-            const cores = inModal.dbInbound.xrayCores || 0;
-            if (inModal.xrayInfo.totalCores > 0 && cores > inModal.xrayCoresAvailable()) {
-                Vue.prototype.$message.error('{{ i18n "pages.inbounds.xrayCoresTooMany" }}');
-                return;
+            if (inModal.coresMode === "auto") {
+                inModal.dbInbound.xrayCores = 0;
+            } else {
+                const cores = inModal.dbInbound.xrayCores;
+                if (!(cores >= 1)) {
+                    Vue.prototype.$message.error('{{ i18n "pages.inbounds.xrayCoresEmpty" }}');
+                    return;
+                }
+                if (inModal.xrayInfo.totalCores > 0 && cores > inModal.xrayCoresAvailable()) {
+                    Vue.prototype.$message.error('{{ i18n "pages.inbounds.xrayCoresTooMany" }}');
+                    return;
+                }
             }
             ObjectUtil.execute(inModal.confirm, inModal.inbound, inModal.dbInbound);
         },
@@ -95,6 +106,7 @@
             this.visible = true;
             this.isEdit = isEdit;
             this.xrayInfo = { totalCores: 0, nextName: "", instances: [] };
+            this.coresMode = this.dbInbound.xrayCores > 0 ? "fixed" : "auto";
             this.loadXrayInfo();
         },
         close() {
@@ -209,13 +221,14 @@
                     .map((i) => (i.remark ? i.remark : "#" + i.id) + " (" + i.port + ")");
             },
             get xrayCoresMode() {
-                return inModal.dbInbound.xrayCores > 0 ? "fixed" : "auto";
+                return inModal.coresMode;
             },
             set xrayCoresMode(mode) {
+                inModal.coresMode = mode;
                 if (mode === "auto") {
                     inModal.dbInbound.xrayCores = 0;
                 } else if (!(inModal.dbInbound.xrayCores > 0)) {
-                    inModal.dbInbound.xrayCores = Math.max(1, inModal.xrayCoresAvailable());
+                    inModal.dbInbound.xrayCores = inModal.xrayInfo.totalCores > 0 ? Math.max(1, inModal.xrayCoresAvailable()) : 1;
                 }
             },
             get delayedExpireDays() {
@@ -290,6 +303,7 @@
                 const it = (inModal.xrayInfo.instances || []).find((i) => i.name === name);
                 if (it && it.inbounds.some((i) => i.id !== inModal.dbInbound.id)) {
                     inModal.dbInbound.xrayCores = it.cores;
+                    inModal.coresMode = it.cores > 0 ? "fixed" : "auto";
                 }
             },
             streamNetworkChange() {

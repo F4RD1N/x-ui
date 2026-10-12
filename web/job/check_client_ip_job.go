@@ -390,19 +390,12 @@ func (j *CheckClientIpJob) updateInboundClientIps(inboundClientIps *model.Inboun
 
 // disconnectClientTemporarily removes and re-adds a client to force disconnect banned connections
 func (j *CheckClientIpJob) disconnectClientTemporarily(inbound *model.Inbound, clientEmail string, clients []model.Client) {
-	var xrayAPI xray.XrayAPI
-	// The client lives in the core that runs its inbound.
-	apiPort := service.XrayAPIPortForTag(inbound.Tag)
-	if apiPort == 0 {
-		apiPort = j.resolveXrayAPIPort()
+	// The client lives in the core that runs its inbound, and in the cores
+	// of the inbound's sub-inbounds.
+	targets := service.XrayAPITargetsForTag(inbound.Tag)
+	if len(targets) == 0 {
+		targets = []service.XrayAPITarget{{Tag: inbound.Tag, Port: j.resolveXrayAPIPort()}}
 	}
-
-	err := xrayAPI.Init(apiPort)
-	if err != nil {
-		logger.Warningf("[LIMIT_IP] Failed to init Xray API for disconnection: %v", err)
-		return
-	}
-	defer xrayAPI.Close()
 
 	// Find the client config
 	var clientConfig map[string]any
@@ -442,20 +435,27 @@ func (j *CheckClientIpJob) disconnectClientTemporarily(inbound *model.Inbound, c
 		}
 	}
 
-	// Remove user to disconnect all connections
-	err = xrayAPI.RemoveUser(inbound.Tag, clientEmail)
-	if err != nil {
-		logger.Warningf("[LIMIT_IP] Failed to remove user %s: %v", clientEmail, err)
-		return
-	}
+	for _, target := range targets {
+		var xrayAPI xray.XrayAPI
+		if err := xrayAPI.Init(target.Port); err != nil {
+			logger.Warningf("[LIMIT_IP] Failed to init Xray API for disconnection: %v", err)
+			continue
+		}
+		// Remove user to disconnect all connections
+		if err := xrayAPI.RemoveUser(target.Tag, clientEmail); err != nil {
+			logger.Warningf("[LIMIT_IP] Failed to remove user %s: %v", clientEmail, err)
+			xrayAPI.Close()
+			continue
+		}
 
-	// Wait a moment for disconnection to take effect
-	time.Sleep(100 * time.Millisecond)
+		// Wait a moment for disconnection to take effect
+		time.Sleep(100 * time.Millisecond)
 
-	// Re-add user to allow new connections
-	err = xrayAPI.AddUser(protocol, inbound.Tag, clientConfig)
-	if err != nil {
-		logger.Warningf("[LIMIT_IP] Failed to re-add user %s: %v", clientEmail, err)
+		// Re-add user to allow new connections
+		if err := xrayAPI.AddUser(protocol, target.Tag, clientConfig); err != nil {
+			logger.Warningf("[LIMIT_IP] Failed to re-add user %s: %v", clientEmail, err)
+		}
+		xrayAPI.Close()
 	}
 }
 

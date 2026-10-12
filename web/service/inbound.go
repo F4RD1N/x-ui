@@ -230,6 +230,13 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 	if name := corePortUser(inbound.Port); name != "" {
 		return inbound, false, common.NewError("Port already used by the API of xray core", name+":", inbound.Port)
 	}
+	if name, err := subPortUser(inbound.Listen, inbound.Port, 0); err != nil {
+		return inbound, false, err
+	} else if name != "" {
+		return inbound, false, common.NewError("Port already used by a sub-inbound of", name+":", inbound.Port)
+	}
+	// Sub-inbounds are added with Multi Instance, never with the inbound.
+	inbound.SubInbounds = ""
 	if err = s.prepareXrayInstance(inbound, nil); err != nil {
 		return inbound, false, err
 	}
@@ -420,10 +427,20 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 	if name := corePortUser(inbound.Port); name != "" {
 		return inbound, false, common.NewError("Port already used by the API of xray core", name+":", inbound.Port)
 	}
+	if name, err := subPortUser(inbound.Listen, inbound.Port, inbound.Id); err != nil {
+		return inbound, false, err
+	} else if name != "" {
+		return inbound, false, common.NewError("Port already used by a sub-inbound of", name+":", inbound.Port)
+	}
 
 	oldInbound, err := s.GetInbound(inbound.Id)
 	if err != nil {
 		return inbound, false, err
+	}
+	for _, sub := range oldInbound.Subs() {
+		if sub.Port == inbound.Port {
+			return inbound, false, common.NewError("Port already used by a sub-inbound of this inbound:", inbound.Port)
+		}
 	}
 	if err = s.prepareXrayInstance(inbound, oldInbound); err != nil {
 		return inbound, false, err
@@ -550,6 +567,10 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 					logger.Debug("Updated inbound added by api:", oldInbound.Tag)
 				} else {
 					logger.Debug("Unable to update inbound by api:", err2)
+					needRestart = true
+				}
+				// Its sub-inbounds are the same inbound on other ports.
+				if addSubInboundsByAPI(api, oldInbound, runtimeInbound.GenXrayInboundConfig()) {
 					needRestart = true
 				}
 			}
