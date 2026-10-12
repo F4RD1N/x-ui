@@ -40,6 +40,13 @@ func integrationCore(t *testing.T) {
 	}
 	t.Setenv("XUI_BIN_FOLDER", dir)
 	t.Setenv("XUI_LOG_FOLDER", dir)
+	t.Setenv("XUI_DB_FOLDER", dir)
+	// Port reservations go to a file, not the build box's sysctl.
+	sysctl := filepath.Join(dir, "ip_local_reserved_ports")
+	os.WriteFile(sysctl, nil, 0o644)
+	oldPath := reservedPortsPath
+	reservedPortsPath, reservedLast = sysctl, ""
+	t.Cleanup(func() { reservedPortsPath, reservedLast = oldPath, "" })
 	if err := database.InitDB(filepath.Join(dir, "x-ui.db")); err != nil {
 		t.Fatal(err)
 	}
@@ -176,6 +183,13 @@ func TestXrayInstancesIntegration(t *testing.T) {
 	// own inbound.
 	if XrayAPIPortForTag(a.Tag) == XrayAPIPortForTag(b.Tag) || XrayAPIPortForTag(a.Tag) == 0 {
 		t.Fatal("API ports")
+	}
+	// The inbound ports and the cores' API ports are kept out of the
+	// ephemeral range.
+	resv, _ := os.ReadFile(reservedPortsPath)
+	got := parsePortList(string(resv))
+	if !got[a.Port] || !got[b.Port] || !got[XrayAPIPortForTag(a.Tag)] || !got[XrayAPIPortForTag(b.Tag)] {
+		t.Fatalf("reserved ports %q lack %d, %d or the API ports", resv, a.Port, b.Port)
 	}
 
 	t.Run("fixed cores move cores without restarting them", func(t *testing.T) {

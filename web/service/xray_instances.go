@@ -651,6 +651,21 @@ func (s *XrayService) applyInstances(force bool) error {
 	if err != nil {
 		return err
 	}
+	// Keep every inbound port, and every core's API and metrics port, out
+	// of the ephemeral range before any core (re)starts.
+	reserve := map[int]bool{}
+	for _, in := range inbounds {
+		reserve[in.Port] = true
+	}
+	for _, cfg := range plan.configs {
+		for _, ic := range cfg.InboundConfigs {
+			reserve[ic.Port] = true
+		}
+		if _, m := metricsListen(cfg.Metrics); m > 0 {
+			reserve[m] = true
+		}
+	}
+	syncReservedPorts(reserve)
 	instMu.Lock()
 	for name := range stoppedInst {
 		if _, ok := plan.configs[name]; !ok {
