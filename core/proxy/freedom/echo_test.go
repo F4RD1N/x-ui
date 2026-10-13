@@ -636,6 +636,31 @@ func TestEchoSendThrough(t *testing.T) {
 	})
 }
 
+// A wildcard sendThrough names no source: echoes of either family go out,
+// as TCP and UDP of that family do.
+func TestEchoWildcardSendThrough(t *testing.T) {
+	for _, ipv6 := range []bool{false, true} {
+		t.Run(fmt.Sprintf("ipv6=%v", ipv6), func(t *testing.T) {
+			if ipv6 && !hasIPv6Loopback() {
+				t.Skip("no IPv6 loopback")
+			}
+			withMode(t, ipv6, func(t *testing.T) {
+				target := net.LocalHostIP
+				if ipv6 {
+					target = net.LocalHostIPv6
+				}
+				h := newTestHandler(&Config{})
+				for i, gateway := range []net.Address{net.AnyIP, net.AnyIPv6} {
+					seq := uint16(i + 1)
+					f := startFlow(t, h, &testDialer{gateway: gateway}, net.UDPDestination(target, 0))
+					f.send(nil, request(ipv6, 3, seq, []byte("wildcard")))
+					expectReply(t, f.recv(3*time.Second), target, ipv6, 3, seq, []byte("wildcard"))
+				}
+			})
+		})
+	}
+}
+
 // A flow may start at most MaxRequestsPerSecond echoes in a second.
 func TestEchoRateLimit(t *testing.T) {
 	withMode(t, false, func(t *testing.T) {
