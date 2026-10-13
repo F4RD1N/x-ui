@@ -155,6 +155,7 @@
 "xrayInstanceEgressSaved" = "Outgoing IP saved"
 "xrayInstanceEgressError" = "Could not set the outgoing IP"
 "xrayInstanceUdpPorts" = "UDP ports"
+"xrayInstanceUdpAll" = "All addresses"
 "xrayInstanceIdle" = "Idle"
 "systemLoad" = "Carga do Sistema"
 "systemLoadDesc" = "Média de carga do sistema nos últimos 1, 5 e 15 minutos"

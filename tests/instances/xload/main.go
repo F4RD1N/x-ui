@@ -1,3 +1,5 @@
+//go:build linux
+
 // Command xload loads xray VLESS inbounds (TCP, optionally with the HTTP
 // header) with many connections, for comparing one core with several.
 //

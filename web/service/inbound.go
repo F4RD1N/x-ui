@@ -219,6 +219,8 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 		return inbound, false, err
 	}
 	inbound.StreamSettings = materialized
+	editMu.RLock()
+	defer editMu.RUnlock()
 
 	exist, err := s.checkPortExist(inbound.Listen, inbound.Port, 0)
 	if err != nil {
@@ -351,6 +353,8 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 // It removes the inbound from the database and the running Xray instance if active.
 // Returns whether Xray needs restart and any error.
 func (s *InboundService) DelInbound(id int) (bool, error) {
+	editMu.RLock()
+	defer editMu.RUnlock()
 	db := database.GetDB()
 
 	var tag string
@@ -363,7 +367,6 @@ func (s *InboundService) DelInbound(id int) (bool, error) {
 			logger.Debug("Inbound deleted by api:", tag)
 		} else {
 			logger.Debug("Unable to delete inbound by api:", err1)
-			markDirtyTag(tag)
 			needRestart = true
 		}
 		api.Close()
@@ -416,6 +419,8 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 		return inbound, false, err
 	}
 	inbound.StreamSettings = materialized
+	editMu.RLock()
+	defer editMu.RUnlock()
 
 	exist, err := s.checkPortExist(inbound.Listen, inbound.Port, inbound.Id)
 	if err != nil {
@@ -441,6 +446,9 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 		if sub.Port == inbound.Port {
 			return inbound, false, common.NewError("Port already used by a sub-inbound of this inbound:", inbound.Port)
 		}
+	}
+	if len(oldInbound.Subs()) > 0 && unixSocketListen(inbound.Listen) {
+		return inbound, false, errSubOnUnixSocket
 	}
 	if err = s.prepareXrayInstance(inbound, oldInbound); err != nil {
 		return inbound, false, err
@@ -692,6 +700,8 @@ func (s *InboundService) updateClientTraffics(tx *gorm.DB, oldInbound *model.Inb
 }
 
 func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
+	editMu.RLock()
+	defer editMu.RUnlock()
 	clients, err := s.GetClients(data)
 	if err != nil {
 		return false, err
@@ -816,6 +826,8 @@ func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
 }
 
 func (s *InboundService) DelInboundClient(inboundId int, clientId string) (bool, error) {
+	editMu.RLock()
+	defer editMu.RUnlock()
 	oldInbound, err := s.GetInbound(inboundId)
 	if err != nil {
 		logger.Error("Load Old Data Error")
@@ -896,7 +908,6 @@ func (s *InboundService) DelInboundClient(inboundId int, clientId string) (bool,
 					logger.Debug("User is already deleted. Nothing to do more...")
 				} else {
 					logger.Debug("Error in deleting client by api:", err1)
-					markDirtyTag(oldInbound.Tag)
 					needRestart = true
 				}
 			}
@@ -907,6 +918,8 @@ func (s *InboundService) DelInboundClient(inboundId int, clientId string) (bool,
 }
 
 func (s *InboundService) UpdateInboundClient(data *model.Inbound, clientId string) (bool, error) {
+	editMu.RLock()
+	defer editMu.RUnlock()
 	// TODO: check if TrafficReset field is updating
 	clients, err := s.GetClients(data)
 	if err != nil {
@@ -1052,7 +1065,6 @@ func (s *InboundService) UpdateInboundClient(data *model.Inbound, clientId strin
 					logger.Debug("User is already deleted. Nothing to do more...")
 				} else {
 					logger.Debug("Error in deleting client by api:", err1)
-					markDirtyTag(oldInbound.Tag)
 					needRestart = true
 				}
 			}
@@ -1088,6 +1100,13 @@ func (s *InboundService) UpdateInboundClient(data *model.Inbound, clientId strin
 }
 
 func (s *InboundService) AddTraffic(inboundTraffics []*xray.Traffic, clientTraffics []*xray.ClientTraffic) (error, bool) {
+	editMu.RLock()
+	defer editMu.RUnlock()
+	return s.addTraffic(inboundTraffics, clientTraffics)
+}
+
+// addTraffic is AddTraffic for a caller that holds editMu.
+func (s *InboundService) addTraffic(inboundTraffics []*xray.Traffic, clientTraffics []*xray.ClientTraffic) (error, bool) {
 	var err error
 	db := database.GetDB()
 	tx := db.Begin()
@@ -1380,7 +1399,6 @@ func (s *InboundService) disableInvalidInbounds(tx *gorm.DB) (bool, int64, error
 				logger.Debug("Inbound disabled by api:", tag)
 			} else {
 				logger.Debug("Error in disabling inbound by api:", err1)
-				markDirtyTag(tag)
 				needRestart = true
 			}
 		}
@@ -1426,7 +1444,6 @@ func (s *InboundService) disableInvalidClients(tx *gorm.DB) (bool, int64, error)
 						logger.Debug("User is already disabled. Nothing to do more...")
 					} else if err1 != errInboundNotRunning {
 						logger.Debug("Error in disabling client by api:", err1)
-						markDirtyTag(result.Tag)
 						needRestart = true
 					}
 				}
@@ -1925,6 +1942,8 @@ func (s *InboundService) ResetClientTrafficByEmail(clientEmail string) error {
 }
 
 func (s *InboundService) ResetClientTraffic(id int, clientEmail string) (bool, error) {
+	editMu.RLock()
+	defer editMu.RUnlock()
 	needRestart := false
 
 	traffic, err := s.GetClientTrafficByEmail(clientEmail)
@@ -2570,6 +2589,8 @@ func (s *InboundService) FilterAndSortClientEmails(emails []string) ([]string, [
 	return validEmails, extraEmails, nil
 }
 func (s *InboundService) DelInboundClientByEmail(inboundId int, email string) (bool, error) {
+	editMu.RLock()
+	defer editMu.RUnlock()
 	oldInbound, err := s.GetInbound(inboundId)
 	if err != nil {
 		logger.Error("Load Old Data Error")
@@ -2652,7 +2673,6 @@ func (s *InboundService) DelInboundClientByEmail(inboundId int, email string) (b
 					logger.Debug("User is already deleted. Nothing to do more...")
 				} else {
 					logger.Debug("Error in deleting client by api:", err1)
-					markDirtyTag(oldInbound.Tag)
 					needRestart = true
 				}
 			}

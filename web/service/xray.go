@@ -116,12 +116,14 @@ func (s *XrayService) GetXrayConfigFor(templateConfig string) (*xray.Config, err
 }
 
 func (s *XrayService) buildXrayConfig(templateConfig string) (*xray.Config, error) {
+	editMu.RLock()
+	defer editMu.RUnlock()
 	c, _, err := s.buildXrayConfigAndInbounds(templateConfig)
 	return c, err
 }
 
 // buildXrayConfigAndInbounds builds the whole config and also returns the
-// inbounds it was built from.
+// inbounds it was built from. The caller holds editMu.
 func (s *XrayService) buildXrayConfigAndInbounds(templateConfig string) (*xray.Config, []*model.Inbound, error) {
 	xrayConfig := &xray.Config{}
 	err := json.Unmarshal([]byte(templateConfig), xrayConfig)
@@ -129,7 +131,7 @@ func (s *XrayService) buildXrayConfigAndInbounds(templateConfig string) (*xray.C
 		return nil, nil, err
 	}
 
-	s.inboundService.AddTraffic(nil, nil)
+	s.inboundService.addTraffic(nil, nil)
 
 	inbounds, err := s.inboundService.GetAllInbounds()
 	if err != nil {

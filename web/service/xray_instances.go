@@ -61,9 +61,24 @@ var (
 	// crashFails counts the quick failures in a row of each instance, for
 	// the back-off between its restarts.
 	crashFails = map[string]int{}
+	// templateHost is the instance that runs the template's own inbounds.
+	templateHost string
+	// egressApplied is the outgoing IP each core was started with, or kept
+	// running with; a core not in it sends from the default address.
+	egressApplied = map[string]string{}
 
 	onlineMu      sync.RWMutex
 	onlineClients []string
+
+	// editMu keeps the edits that reach the cores through their API apart
+	// from applyInstances. An edit holds it shared from before it reads the
+	// database until its change is committed; an apply holds it alone from
+	// before it reads the database until the cores it started answer. A
+	// change sent to a core that an apply is replacing, or committed after
+	// the apply read the database, would otherwise be missing from the new
+	// core, and nothing would notice. An edit takes it once only: a waiting
+	// apply blocks a second shared lock in the same call chain.
+	editMu sync.RWMutex
 )
 
 // ------------------------------------------------------------ API routing
@@ -221,6 +236,8 @@ func (c *coreAPI) delOne(tag string) error {
 	}
 	markTouched(owner, tag)
 	if err := a.DelInbound(tag); err != nil {
+		// Only a restart takes it off this core now.
+		markDirtyInstance(owner)
 		return err
 	}
 	instMu.Lock()
@@ -244,10 +261,15 @@ func (c *coreAPI) AddUser(protocol, tag string, user map[string]any) error {
 
 // RemoveUser removes a client from the cores running tag and its
 // sub-inbounds. "User not found" is left to the caller, which treats it as
-// already done.
+// already done; a core that failed otherwise is marked for a restart, which
+// is the only way the client leaves it now.
 func (c *coreAPI) RemoveUser(tag, email string) error {
 	return c.eachTag(tag, func(a *xray.XrayAPI, t string) error {
-		return a.RemoveUser(t, email)
+		err := a.RemoveUser(t, email)
+		if err != nil && !strings.Contains(err.Error(), "not found") {
+			markDirtyTag(t)
+		}
+		return err
 	})
 }
 
@@ -478,17 +500,24 @@ func sortedNames(m map[string]int) []string {
 
 // instancePlan is the set of cores the database asks for.
 type instancePlan struct {
-	order   []string // natural name order; the first is the primary
-	configs map[string]*xray.Config
-	cores   map[string]int // configured cores of every running instance
+	order        []string // natural name order
+	configs      map[string]*xray.Config
+	cores        map[string]int // configured cores of every running instance
+	templateHost string         // the instance running the template's own inbounds; "" if it has none
 }
 
-type runningPorts struct{ api, metrics int }
+// runningPorts are the API and metrics ports of a core. A running core keeps
+// them; an exited one gets them back if they are still free.
+type runningPorts struct {
+	api, metrics int
+	exited       bool
+}
 
 // buildPlan splits the full config (template plus every enabled inbound)
 // into one config per instance. ports holds the API and metrics ports of
-// cores already running, which they keep; new cores get free ports.
-func buildPlan(full *xray.Config, inbounds []*model.Inbound, ports map[string]runningPorts) (*instancePlan, error) {
+// the cores there are, which they keep; new cores get free ports.
+// templateHost is the instance that ran the template's own inbounds so far.
+func buildPlan(full *xray.Config, inbounds []*model.Inbound, ports map[string]runningPorts, templateHost string) (*instancePlan, error) {
 	allCores := instanceCores(inbounds)
 
 	// Which instance runs each enabled inbound's tag.
@@ -517,16 +546,30 @@ func buildPlan(full *xray.Config, inbounds []*model.Inbound, ports map[string]ru
 		templateInbounds = append(templateInbounds, ic)
 	}
 
+	firstName := model.XrayInstancePrefix + "1"
+	if names := sortedNames(allCores); len(names) > 0 {
+		firstName = names[0]
+	}
+	host := ""
+	if len(templateInbounds) > 0 {
+		// The template's own inbounds stay in the core that runs them as
+		// long as an inbound names its instance, even a disabled one, so
+		// that adding, moving or disabling inbounds never restarts another
+		// core to take them over. Otherwise the first instance takes them.
+		host = firstName
+		if _, ok := allCores[templateHost]; ok {
+			host = templateHost
+		}
+		if _, ok := groups[host]; !ok {
+			groups[host] = nil
+		}
+	}
 	if len(groups) == 0 {
 		// No enabled inbound: keep one core up, as a single-core panel
 		// would, under the first instance name.
-		name := model.XrayInstancePrefix + "1"
-		if names := sortedNames(allCores); len(names) > 0 {
-			name = names[0]
-		}
-		groups[name] = nil
+		groups[firstName] = nil
 	}
-	plan := &instancePlan{configs: map[string]*xray.Config{}, cores: map[string]int{}}
+	plan := &instancePlan{configs: map[string]*xray.Config{}, cores: map[string]int{}, templateHost: host}
 	for name := range groups {
 		plan.order = append(plan.order, name)
 		plan.cores[name] = allCores[name]
@@ -543,17 +586,23 @@ func buildPlan(full *xray.Config, inbounds []*model.Inbound, ports map[string]ru
 		usedPorts[p.metrics] = true
 	}
 
-	for i, name := range plan.order {
+	for _, name := range plan.order {
 		cfg := *full
-		p, running := ports[name]
-		if !running {
-			p.api = pickFreePort(apiBase, usedPorts)
-			if metricsBase > 0 {
-				p.metrics = pickFreePort(metricsBase, usedPorts)
-			}
+		p, known := ports[name]
+		if !known || p.exited {
+			// A core that exited takes its ports back if they are free, so
+			// its config stays the same and its restart back-off holds.
+			p.api = reusePort(p.api, apiBase, usedPorts)
 			if p.api == 0 {
 				return nil, fmt.Errorf("no free local port for the API of %s", name)
 			}
+			if metricsBase > 0 {
+				p.metrics = reusePort(p.metrics, metricsBase, usedPorts)
+			}
+		} else if metricsBase > 0 && p.metrics == 0 {
+			// It ran without metrics: the template just got them, and every
+			// core needs a port of its own for them.
+			p.metrics = pickFreePort(metricsBase, usedPorts)
 		}
 		var ics []xray.InboundConfig
 		if apiInbound != nil {
@@ -561,7 +610,7 @@ func buildPlan(full *xray.Config, inbounds []*model.Inbound, ports map[string]ru
 			api.Port = p.api
 			ics = append(ics, api)
 		}
-		if i == 0 {
+		if name == host {
 			ics = append(ics, templateInbounds...)
 		}
 		ics = append(ics, groups[name]...)
@@ -622,6 +671,18 @@ func pickFreePort(start int, used map[int]bool) int {
 		return port
 	}
 	return 0
+}
+
+// reusePort returns prefer when it is set and can be bound on loopback, and
+// otherwise the first free port from start on. prefer is already in used.
+func reusePort(prefer, start int, used map[int]bool) int {
+	if prefer > 0 {
+		if l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(prefer))); err == nil {
+			l.Close()
+			return prefer
+		}
+	}
+	return pickFreePort(start, used)
 }
 
 // sameRunning reports whether a core started with have already runs want,
@@ -688,6 +749,8 @@ func instanceConfigPath(name string) string {
 // enabled inbound stop, new ones start, and every running core is moved onto
 // its current share of the CPUs. The caller holds lock.
 func (s *XrayService) applyInstances(force bool) error {
+	editMu.Lock()
+	defer editMu.Unlock()
 	if force {
 		// Stop everything first so the cores come back on the ports they
 		// had, rather than on new ones picked while the old still held them.
@@ -698,12 +761,10 @@ func (s *XrayService) applyInstances(force bool) error {
 	instMu.RLock()
 	ports := map[string]runningPorts{}
 	for name, p := range procs {
-		if p.IsRunning() && !force {
-			_, m := metricsListen(p.GetConfig().Metrics)
-			ports[name] = runningPorts{api: p.GetAPIPort(), metrics: m}
-		}
+		_, m := metricsListen(p.GetConfig().Metrics)
+		ports[name] = runningPorts{api: p.GetAPIPort(), metrics: m, exited: !p.IsRunning()}
 	}
-	seq := touchSeq
+	host := templateHost
 	instMu.RUnlock()
 
 	template, err := s.settingService.GetXrayConfigTemplate()
@@ -714,15 +775,22 @@ func (s *XrayService) applyInstances(force bool) error {
 	if err != nil {
 		return err
 	}
-	plan, err := buildPlan(full, inbounds, ports)
+	// Every touch so far is in what was just read: no edit runs during an
+	// apply, and the apply's own client changes were committed before.
+	instMu.RLock()
+	seq := touchSeq
+	instMu.RUnlock()
+	plan, err := buildPlan(full, inbounds, ports, host)
 	if err != nil {
 		return err
 	}
 	egress, err := s.settingService.GetInstanceEgress()
 	if err != nil {
 		logger.Warning(err)
+	} else {
+		s.pruneEgress(egress, inbounds)
 	}
-	applyEgress(plan, egress)
+	appliedEgress := applyEgress(plan, egress)
 	// Keep every inbound port, and every core's API and metrics port, out
 	// of the ephemeral range before any core (re)starts.
 	reserve := map[int]bool{}
@@ -739,6 +807,7 @@ func (s *XrayService) applyInstances(force bool) error {
 	}
 	syncReservedPorts(reserve)
 	instMu.Lock()
+	templateHost = plan.templateHost
 	for name := range stoppedInst {
 		if _, ok := plan.configs[name]; !ok {
 			delete(stoppedInst, name) // the instance is gone
@@ -836,6 +905,7 @@ func (s *XrayService) applyInstances(force bool) error {
 	for _, r := range reqs {
 		allocated += len(alloc[r.Name])
 	}
+	var started []*xray.Process
 	for _, name := range start {
 		p := xray.NewInstanceProcess(name, plan.configs[name], instanceConfigPath(name), alloc[name])
 		if parentLimit > 0 {
@@ -850,8 +920,17 @@ func (s *XrayService) applyInstances(force bool) error {
 		instMu.Unlock()
 		if err != nil {
 			errs = append(errs, name+": "+err.Error())
+		} else {
+			started = append(started, p)
 		}
 	}
+	// A core's API listens a little after its process starts. Changes made
+	// right after this apply go to it, so wait for it here.
+	waitCoreAPIs(started)
+	// Every planned core now runs its planned config, outgoing IP included.
+	instMu.Lock()
+	egressApplied = appliedEgress
+	instMu.Unlock()
 
 	// Re-pin the cores that kept running.
 	instMu.RLock()
@@ -862,6 +941,15 @@ func (s *XrayService) applyInstances(force bool) error {
 		if err := p.SetCPUs(alloc[name]); err != nil {
 			logger.Warning("move xray core", name, "to its CPUs:", err)
 		}
+		// Its memory limit was fixed when it started; it gets its new
+		// share when it next restarts. Restarting it now for that alone
+		// would drop its connections.
+		if have := p.MemoryLimit(); parentLimit > 0 && have > 0 {
+			want := shareMemLimit(parentLimit, len(alloc[name]), allocated)
+			if have > 2*want || want > 2*have {
+				logger.Infof("xray core %s keeps GOMEMLIMIT %d MiB until it restarts; its share is now %d MiB", name, have>>20, want>>20)
+			}
+		}
 	}
 	instMu.RUnlock()
 
@@ -871,6 +959,49 @@ func (s *XrayService) applyInstances(force bool) error {
 		return errors.New(strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+// apiReadyTimeout bounds the wait for a started core's API.
+const apiReadyTimeout = 5 * time.Second
+
+// waitCoreAPIs waits until the API of every core in ps answers, or the core
+// exits, or apiReadyTimeout passes; for all of them at once.
+func waitCoreAPIs(ps []*xray.Process) {
+	var wg sync.WaitGroup
+	for _, p := range ps {
+		wg.Add(1)
+		go func(p *xray.Process) {
+			defer wg.Done()
+			if p.GetAPIPort() <= 0 {
+				return // the template has no API
+			}
+			deadline := time.Now().Add(apiReadyTimeout)
+			addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(p.GetAPIPort()))
+			// Cheap polls until the port accepts, then one call that the
+			// API itself answers.
+			for {
+				if !p.IsRunning() || time.Now().After(deadline) {
+					return
+				}
+				if c, err := net.DialTimeout("tcp", addr, 100*time.Millisecond); err == nil {
+					c.Close()
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			var api xray.XrayAPI
+			if err := api.Init(p.GetAPIPort()); err != nil {
+				return
+			}
+			defer api.Close()
+			for p.IsRunning() && time.Now().Before(deadline) {
+				if api.Ready(250*time.Millisecond) == nil {
+					return
+				}
+			}
+		}(p)
+	}
+	wg.Wait()
 }
 
 // Restart back-off for a core that fails soon after starting: 2s, 4s, 8s,
@@ -1002,7 +1133,7 @@ func writeReferenceConfig(full *xray.Config) {
 	if err != nil {
 		return
 	}
-	if err := os.WriteFile(xray.GetConfigPath(), data, 0o644); err != nil {
+	if err := os.WriteFile(xray.GetConfigPath(), data, 0o600); err != nil {
 		logger.Warning("write", xray.GetConfigPath(), ":", err)
 	}
 }
@@ -1089,18 +1220,30 @@ func (s *XrayService) StartInstance(name string) error {
 		return fmt.Errorf("%s has no enabled inbound to run", name)
 	}
 	instMu.Lock()
-	if isManuallyStopped.Load() {
-		for n := range names {
-			if n != name {
-				stoppedInst[n] = true
-			}
-		}
+	if p := procs[name]; p != nil && p.IsRunning() && !stoppedInst[name] && !isManuallyStopped.Load() {
+		instMu.Unlock()
+		return nil // it runs already
 	}
+	stopOthersAfterFullStopLocked(names, name)
 	delete(stoppedInst, name)
 	dirty[name] = true // start it now, whatever its restart back-off says
 	instMu.Unlock()
 	isManuallyStopped.Store(false)
 	return s.applyInstances(false)
+}
+
+// stopOthersAfterFullStopLocked keeps every instance in names but name
+// stopped when the cores were all stopped by hand: starting one does not
+// start the rest. The caller holds instMu.
+func stopOthersAfterFullStopLocked(names map[string]bool, name string) {
+	if !isManuallyStopped.Load() {
+		return
+	}
+	for n := range names {
+		if n != name {
+			stoppedInst[n] = true
+		}
+	}
 }
 
 // enabledInstanceNames returns the instances that have an enabled inbound.
@@ -1126,10 +1269,15 @@ func isInstanceStopped(name string) bool {
 	return stoppedInst[name]
 }
 
-// RestartInstance restarts one core with the current config.
+// RestartInstance restarts one core with the current config. After a full
+// stop it starts this core alone, as StartInstance does.
 func (s *XrayService) RestartInstance(name string) error {
 	lock.Lock()
 	defer lock.Unlock()
+	names, err := enabledInstanceNames()
+	if err != nil {
+		return err
+	}
 	instMu.Lock()
 	if stoppedInst[name] {
 		instMu.Unlock()
@@ -1139,6 +1287,7 @@ func (s *XrayService) RestartInstance(name string) error {
 		instMu.Unlock()
 		return fmt.Errorf("no xray core named %s is running", name)
 	}
+	stopOthersAfterFullStopLocked(names, name)
 	dirty[name] = true
 	instMu.Unlock()
 	isManuallyStopped.Store(false)
@@ -1199,6 +1348,11 @@ func (s *InboundService) prepareXrayInstance(inbound *model.Inbound, old *model.
 			used[o.XrayInstance] = true
 		}
 		inbound.XrayInstance = model.NextXrayInstanceName(used)
+	}
+	for _, o := range others {
+		if o.SubOf != 0 && o.SubOf != inbound.Id && o.XrayInstance == inbound.XrayInstance {
+			return fmt.Errorf("instance %s runs sub-inbounds of another inbound", inbound.XrayInstance)
+		}
 	}
 	cores := instanceCores(others)
 	cores[inbound.XrayInstance] = inbound.XrayCores

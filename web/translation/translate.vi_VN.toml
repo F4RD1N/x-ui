@@ -155,6 +155,7 @@
 "xrayInstanceEgressSaved" = "Outgoing IP saved"
 "xrayInstanceEgressError" = "Could not set the outgoing IP"
 "xrayInstanceUdpPorts" = "UDP ports"
+"xrayInstanceUdpAll" = "All addresses"
 "xrayInstanceIdle" = "Idle"
 "systemLoad" = "Tải hệ thống"
 "systemLoadDesc" = "trung bình tải hệ thống trong 1, 5 và 15 phút qua"

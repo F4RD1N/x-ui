@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 // Latency histogram (from xload): 4 buckets per power of two of microseconds.

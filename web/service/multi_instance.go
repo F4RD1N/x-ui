@@ -11,6 +11,7 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -136,6 +137,11 @@ func (s *InboundService) PlanSubInbounds(id int, current []model.SubInbound, cou
 		plan.Error = fmt.Sprintf("auto instances need a free CPU core, but all %d are reserved", total)
 	}
 
+	if unixSocketListen(src.Listen) {
+		plan.Error = errSubOnUnixSocket.Error()
+		return plan, nil
+	}
+
 	used := map[string]bool{}
 	for name := range all {
 		used[name] = true
@@ -148,34 +154,44 @@ func (s *InboundService) PlanSubInbounds(id int, current []model.SubInbound, cou
 			start = sub.Port
 		}
 	}
+	// The ports after the highest one in use, skipping the ones that are
+	// taken.
 	running := ownPorts(src)
-	conflicts := 0
-	for i := 1; i <= count; i++ {
-		port := start + i
+	for port := start + 1; len(plan.Items) < count && port <= 65535; port++ {
+		if taken[port] || portConflict(src, port, others, running) != "" {
+			continue
+		}
 		item := SubPlanItem{Port: port, Instance: model.NextXrayInstanceName(used)}
 		used[item.Instance] = true
-		if taken[port] {
-			item.Conflict = "used by this inbound"
-		} else {
-			item.Conflict = portConflict(src, port, others, running)
-		}
-		if item.Conflict != "" {
-			conflicts++
-		}
 		plan.Items = append(plan.Items, item)
 	}
-	if conflicts > 0 && plan.Error == "" {
-		plan.Error = fmt.Sprintf("%d of the ports are taken", conflicts)
+	if len(plan.Items) < count && plan.Error == "" {
+		plan.Error = fmt.Sprintf("only %d free ports are left after %d", len(plan.Items), start)
 	}
 	return plan, nil
 }
 
-// ownPorts returns the ports the inbound and its saved sub-inbounds have:
-// the inbound's own cores may hold them, which is no conflict.
+var errSubOnUnixSocket = errors.New("an inbound that listens on a Unix socket cannot have sub-inbounds")
+
+// unixSocketListen reports whether listen is a Unix socket: a path, or an
+// abstract name.
+func unixSocketListen(listen string) bool {
+	return strings.HasPrefix(listen, "/") || strings.HasPrefix(listen, "@")
+}
+
+// ownPorts returns the ports the inbound's cores hold now: its own and its
+// enabled sub-inbounds', while it is enabled. They are no conflict; any
+// other port, a disabled sub-inbound's included, must be free.
 func ownPorts(src *model.Inbound) map[int]bool {
-	out := map[int]bool{src.Port: true}
+	out := map[int]bool{}
+	if !src.Enable {
+		return out
+	}
+	out[src.Port] = true
 	for _, sub := range src.Subs() {
-		out[sub.Port] = true
+		if sub.Enable {
+			out[sub.Port] = true
+		}
 	}
 	return out
 }
@@ -248,9 +264,14 @@ func usesUDP(in *model.Inbound) bool {
 // other instance. Changes go to the running cores through their API: the
 // cores of other sub-inbounds keep running.
 func (s *InboundService) SaveSubInbounds(id int, subs []model.SubInbound) (*model.Inbound, bool, error) {
+	editMu.RLock()
+	defer editMu.RUnlock()
 	src, err := s.GetInbound(id)
 	if err != nil {
 		return nil, false, err
+	}
+	if len(subs) > 0 && unixSocketListen(src.Listen) {
+		return nil, false, errSubOnUnixSocket
 	}
 	others, err := othersExpanded(id)
 	if err != nil {

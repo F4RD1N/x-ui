@@ -155,6 +155,7 @@
 "xrayInstanceEgressSaved" = "IP خروجی ذخیره شد"
 "xrayInstanceEgressError" = "تنظیم IP خروجی ممکن نشد"
 "xrayInstanceUdpPorts" = "پورت‌های UDP"
+"xrayInstanceUdpAll" = "همه آدرس‌ها"
 "xrayInstanceIdle" = "غیرفعال"
 "systemLoad" = "بارسیستم"
 "systemLoadDesc" = "میانگین بار سیستم برای 1، 5 و 15 دقیقه گذشته"

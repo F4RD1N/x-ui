@@ -159,12 +159,17 @@ freedom outbounds send from one of the server's own addresses (`sendThrough`).
 Every UDP flow a user opens (DNS, QUIC, calls) holds a local port of its own,
 and all instances sending from the default address share its ~64k ports: near
 full, every new flow's port search spins in the kernel, the CPU goes to 100% and
-traffic collapses, however big the server. With an address each, an instance has
-the whole port range to itself, as a separate server would, and its TCP
-connections still share ports by destination (`IP_BIND_ADDRESS_NO_PORT`). An
-address is accepted only if it is on the server and reaches the internet;
-setting it restarts that instance only. The card also shows the **UDP ports**
-in use where the instance takes them from, orange from 80% and red from 90%.
+traffic collapses, however big the server. With an address each, an instance's
+UDP flows have that address's whole port range, and its TCP connections still
+share ports by destination (`IP_BIND_ADDRESS_NO_PORT`). The system resolver's
+lookups are the exception: each takes a port that must be free on every
+address. An address is accepted only if it is an IPv4 address on the server and
+reaches the internet; an instance with one reaches IPv4 destinations only, and
+outbounds set to prefer IPv6 keep the default address. Setting it restarts that
+instance only, and an instance whose address comes or goes later (late at boot,
+say) is restarted onto it, or back onto the default, within 30 seconds. The
+card also shows the **UDP ports** in use where the instance takes them from,
+orange from 80% and red from 90% of that or of the ports held on all addresses.
 From the shell: `x-ui setting -xrayEgress "xray-1=IP,xray-2=IP"` (applied at
 the next panel restart).
 

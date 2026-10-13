@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -256,6 +256,12 @@ func (p *process) SetMemoryLimit(bytes int64) {
 	p.memLimit = bytes
 }
 
+// MemoryLimit returns the GOMEMLIMIT the core was given, in bytes; 0 when it
+// inherits the panel's.
+func (p *process) MemoryLimit() int64 {
+	return p.memLimit
+}
+
 // StartTime returns when the core was started.
 func (p *process) StartTime() time.Time {
 	return p.startTime
@@ -390,7 +396,8 @@ func (p *process) Start() (err error) {
 	if p.configPath != "" {
 		configPath = p.configPath
 	}
-	err = os.WriteFile(configPath, data, fs.ModePerm)
+	// It holds the inbounds' private keys and every client's credentials.
+	err = os.WriteFile(configPath, data, 0o600)
 	if err != nil {
 		return common.NewErrorf("Failed to write configuration file: %v", err)
 	}
@@ -419,14 +426,16 @@ func (p *process) Start() (err error) {
 	cpus := p.CPUs()
 	started := make(chan error, 1)
 	go func() {
+		// Fork from a thread that stays locked, and alive, until the core
+		// exits: the core's Pdeathsig is tied to the thread that forked it,
+		// and a locked goroutine that returns takes its thread down with it
+		// -- which must only happen after the core is gone. An unlocked
+		// thread could meanwhile be locked by another goroutine, and end
+		// with it.
+		runtime.LockOSThread()
 		if len(cpus) > 0 {
 			// Fork from a thread pinned to the core's CPUs so the core
-			// inherits the mask. The thread stays locked, and alive, until
-			// the core exits: the core's Pdeathsig is tied to the thread
-			// that forked it, and a locked goroutine that returns takes its
-			// thread down with it -- which must only happen after the core
-			// is gone.
-			runtime.LockOSThread()
+			// inherits the mask.
 			if err := pinCurrentThread(cpus); err != nil {
 				logger.Warning("Could not pin xray-core to its CPUs:", err)
 			}
@@ -521,8 +530,24 @@ func (p *process) Wait(timeout time.Duration) error {
 	}
 }
 
-// writeCrashReport writes a crash report to the binary folder with a timestamped filename.
-func writeCrashReport(m []byte) error {
-	crashReportPath := config.GetBinFolderPath() + "/core_crash_" + time.Now().Format("20060102_150405") + ".log"
-	return os.WriteFile(crashReportPath, m, os.ModePerm)
+var unsafeNameChars = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
+
+// writeCrashReport adds what a crashing core printed to its crash report in
+// the binary folder: one file per core and second, named after the core's
+// instance, so cores crashing together do not overwrite each other.
+func writeCrashReport(instance string, m []byte) error {
+	name := "core_crash_"
+	if instance != "" {
+		name += unsafeNameChars.ReplaceAllString(instance, "_") + "_"
+	}
+	crashReportPath := config.GetBinFolderPath() + "/" + name + time.Now().Format("20060102_150405") + ".log"
+	f, err := os.OpenFile(crashReportPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(m)
+	if err1 := f.Close(); err == nil {
+		err = err1
+	}
+	return err
 }

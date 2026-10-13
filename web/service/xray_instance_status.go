@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mhsanaei/3x-ui/v2/database"
@@ -35,6 +36,7 @@ type XrayInstanceStatus struct {
 	Egress     string                `json:"egress"`     // outgoing IP; "" = the host's default
 	EgressGone bool                  `json:"egressGone"` // the outgoing IP is not on the host: it sends from the default
 	UdpPorts   int                   `json:"udpPorts"`   // local ports held where its UDP sockets get theirs; -1 = unknown
+	UdpShared  int                   `json:"udpShared"`  // local ports held on any address: what a lookup's socket needs one of
 	UdpPool    int                   `json:"udpPool"`    // ports there are to hold
 	RetryIn    int                   `json:"retryIn"`    // seconds until a failed core is tried again
 	Inbounds   []XrayInstanceInbound `json:"inbounds"`
@@ -48,6 +50,17 @@ type XrayCpuSummary struct {
 }
 
 const tcpCountEvery = 10 * time.Second
+
+// statusWatched is set while someone looks at the status: the overview is
+// open, or it was asked for over HTTP lately. The connection and UDP port
+// counts dump every socket on the host, so they are only refreshed then.
+var statusWatched atomic.Bool
+
+// SetStatusWatched records whether anyone looks at the status now. Until
+// it is first called, the status counts as watched.
+func SetStatusWatched(v bool) { statusWatched.Store(v) }
+
+func init() { statusWatched.Store(true) }
 
 var (
 	statMu    sync.Mutex
@@ -120,6 +133,12 @@ func (s *XrayService) XrayInstancesStatus() ([]XrayInstanceStatus, XrayCpuSummar
 	if len(egress) > 0 {
 		hostIPs = hostAddressSet()
 	}
+	instMu.RLock()
+	applied := make(map[string]string, len(egressApplied))
+	for name, ip := range egressApplied {
+		applied[name] = ip
+	}
+	instMu.RUnlock()
 	for name, st := range byName {
 		st.Egress = egress[name]
 		if st.Egress != "" && !hostIPs[st.Egress] {
@@ -127,11 +146,14 @@ func (s *XrayService) XrayInstancesStatus() ([]XrayInstanceStatus, XrayCpuSummar
 		}
 		st.UdpPorts = -1
 		if udp != nil {
-			from := st.Egress
-			if st.EgressGone {
-				from = ""
+			// Where a running core takes its ports from is the address it
+			// was started with, whatever the setting says now.
+			from := usableEgress(st.Egress, hostIPs)
+			if p := running[name]; p != nil && p.IsRunning() {
+				from = applied[name]
 			}
 			st.UdpPorts = udp.used(from)
+			st.UdpShared = udp.shared
 			st.UdpPool = udp.pool
 		}
 	}
@@ -205,7 +227,7 @@ func sortNames(names []string) {
 // addresses gets the rest on its port.
 func (s *XrayService) instanceTCPCounts(inbounds []*model.Inbound) map[string]int {
 	statMu.Lock()
-	if time.Since(tcpAt) < tcpCountEvery {
+	if time.Since(tcpAt) < tcpCountEvery || (!statusWatched.Load() && !tcpAt.IsZero()) {
 		c, failed := tcpCounts, tcpErr
 		statMu.Unlock()
 		if failed {

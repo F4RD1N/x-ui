@@ -155,6 +155,7 @@
 "xrayInstanceEgressSaved" = "Outgoing IP saved"
 "xrayInstanceEgressError" = "Could not set the outgoing IP"
 "xrayInstanceUdpPorts" = "UDP ports"
+"xrayInstanceUdpAll" = "All addresses"
 "xrayInstanceIdle" = "Idle"
 "systemLoad" = "系统负载"
 "systemLoadDesc" = "过去 1、5 和 15 分钟的系统平均负载"

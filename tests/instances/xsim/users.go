@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 // xsim users: the devices, live. Each device runs the model (model.go) in

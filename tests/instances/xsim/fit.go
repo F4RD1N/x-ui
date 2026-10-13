@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 // xsim fit: run the model in virtual time — devices, their sessions, the

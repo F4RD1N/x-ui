@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/mhsanaei/3x-ui/v2/web/global"
@@ -23,7 +24,8 @@ type ServerController struct {
 	serverService  service.ServerService
 	settingService service.SettingService
 
-	lastStatus *service.Status
+	lastStatus  *service.Status
+	statusAsked atomic.Int64 // when the status was last asked for over HTTP, in Unix nanoseconds
 }
 
 // NewServerController creates a new ServerController, initializes routes, and starts background tasks.
@@ -66,6 +68,8 @@ func (a *ServerController) initRouter(g *gin.RouterGroup) {
 
 // refreshStatus updates the cached server status and collects CPU history.
 func (a *ServerController) refreshStatus() {
+	asked := time.Unix(0, a.statusAsked.Load())
+	service.SetStatusWatched(websocket.HasClients() || time.Since(asked) < 10*time.Second)
 	a.lastStatus = a.serverService.GetStatus(a.lastStatus)
 	// collect cpu history when status is fresh
 	if a.lastStatus != nil {
@@ -87,7 +91,10 @@ func (a *ServerController) startTask() {
 }
 
 // status returns the current server status information.
-func (a *ServerController) status(c *gin.Context) { jsonObj(c, a.lastStatus, nil) }
+func (a *ServerController) status(c *gin.Context) {
+	a.statusAsked.Store(time.Now().UnixNano())
+	jsonObj(c, a.lastStatus, nil)
+}
 
 // getCpuHistoryBucket retrieves aggregated CPU usage history based on the specified time bucket.
 func (a *ServerController) getCpuHistoryBucket(c *gin.Context) {

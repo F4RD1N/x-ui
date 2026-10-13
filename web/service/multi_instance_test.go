@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"net"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -259,6 +260,87 @@ func TestSubInboundsIntegration(t *testing.T) {
 		}
 		if procOf("xray-3") != nil || listening(subs[1].Port) {
 			t.Fatal("sub-inbound outlived its inbound")
+		}
+	})
+}
+
+// The checks on sub-inbounds that need only the database.
+func TestSubInboundChecks(t *testing.T) {
+	dir := t.TempDir()
+	if err := database.InitDB(filepath.Join(dir, "x-ui.db")); err != nil {
+		t.Fatal(err)
+	}
+	defer database.CloseDB()
+	// No core runs: changes wait for the next start.
+	isManuallyStopped.Store(true)
+	defer isManuallyStopped.Store(false)
+	var is InboundService
+	add := func(in *model.Inbound, port int) *model.Inbound {
+		t.Helper()
+		in.Port, in.Tag = port, fmt.Sprintf("inbound-%d", port)
+		in, _, err := is.AddInbound(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return in
+	}
+	base := freeRun(t, 8)
+	a := add(vlessInbound(t, "", 0), base)
+	add(vlessInbound(t, "", 0), base+1)
+
+	t.Run("taken ports are skipped", func(t *testing.T) {
+		// The port right after the inbound's is another inbound's.
+		plan, err := is.PlanSubInbounds(a.Id, nil, 2, 0, false)
+		if err != nil || plan.Error != "" {
+			t.Fatalf("plan: %+v %v", plan, err)
+		}
+		if len(plan.Items) != 2 || plan.Items[0].Port != base+2 || plan.Items[1].Port != base+3 {
+			t.Fatalf("items: %+v", plan.Items)
+		}
+	})
+
+	t.Run("a re-enabled sub-inbound's port is checked", func(t *testing.T) {
+		if _, _, err := is.SaveSubInbounds(a.Id, []model.SubInbound{{Port: base + 2, Enable: false}}); err != nil {
+			t.Fatal(err)
+		}
+		l, err := net.Listen("tcp", fmt.Sprintf(":%d", base+2))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer l.Close()
+		a, _ = is.GetInbound(a.Id)
+		subs := a.Subs()
+		subs[0].Enable = true
+		if _, _, err := is.SaveSubInbounds(a.Id, subs); err == nil || !strings.Contains(err.Error(), "another program") {
+			t.Fatalf("re-enabled on a busy port: %v", err)
+		}
+	})
+
+	t.Run("another inbound cannot join a sub-inbound's instance", func(t *testing.T) {
+		if _, _, err := is.SaveSubInbounds(a.Id, []model.SubInbound{{Port: base + 3, Instance: "subs", Enable: true}}); err != nil {
+			t.Fatal(err)
+		}
+		in := vlessInbound(t, "subs", 0)
+		if _, _, err := is.AddInbound(in); err == nil || !strings.Contains(err.Error(), "sub-inbounds of another inbound") {
+			t.Fatalf("inbound added into a sub-inbound's instance: %v", err)
+		}
+	})
+
+	t.Run("no sub-inbounds on a Unix socket", func(t *testing.T) {
+		uds := vlessInbound(t, "", 0)
+		uds.Listen = filepath.Join(dir, "in.sock")
+		uds = add(uds, base+5)
+		if plan, _ := is.PlanSubInbounds(uds.Id, nil, 1, 0, false); plan == nil || !strings.Contains(plan.Error, "Unix socket") || len(plan.Items) != 0 {
+			t.Fatalf("plan for a Unix socket: %+v", plan)
+		}
+		if _, _, err := is.SaveSubInbounds(uds.Id, []model.SubInbound{{Port: base + 6, Enable: true}}); err == nil {
+			t.Fatal("sub-inbound saved on a Unix socket inbound")
+		}
+		// An inbound with sub-inbounds cannot move onto one either.
+		a, _ = is.GetInbound(a.Id)
+		a.Listen = "@abstract"
+		if _, _, err := is.UpdateInbound(a); err == nil || !strings.Contains(err.Error(), "Unix socket") {
+			t.Fatalf("inbound with sub-inbounds moved to a Unix socket: %v", err)
 		}
 	})
 }

@@ -428,7 +428,7 @@
                       </div>
                       <div class="xi-fact">
                         <div class="xi-label">{{ i18n "pages.index.xrayInstanceUdpPorts" }}</div>
-                        <div class="xi-value xi-udp" :style="{ color: udpColor(inst) }">[[ udpText(inst) ]]</div>
+                        <div class="xi-value xi-udp" :style="{ color: udpColor(inst) }" :title="udpSharedText(inst)">[[ udpText(inst) ]]</div>
                       </div>
                     </div>
                   </div>
@@ -454,7 +454,7 @@
       :dropdown-class-name="themeSwitcher.currentTheme" :get-popup-container="(el) => el.parentNode">
       <a-select-option value="">{{ i18n "pages.index.xrayInstanceEgressDefault" }}</a-select-option>
       <a-select-option v-for="a in egressModal.addresses" :key="a.ip" :value="a.ip">
-        [[ a.ip ]]<span v-if="egressOthers(a).length" class="xi-muted"> &middot; [[ egressOthers(a).join(', ') ]]</span>
+        [[ a.ip ]]<span class="xi-muted"> &middot; [[ a.iface ]]</span><span v-if="egressOthers(a).length" class="xi-muted"> &middot; [[ egressOthers(a).join(', ') ]]</span>
       </a-select-option>
     </a-select>
   </a-modal>
@@ -980,8 +980,10 @@
         }
 
         if (message) {
-          if (message.startsWith("XRAY:"))
-            message = "<b>XRAY: </b>" + message.substring(5);
+          // A core's lines start with "XRAY: ", or "XRAY[instance]: ".
+          const core = message.match(/^XRAY(\[[^\]]*\])?: ?/);
+          if (core)
+            message = "<b>" + core[0].trim() + " </b>" + message.substring(core[0].length);
           else
             message = "<b>X-UI: </b>" + message;
         }
@@ -1433,9 +1435,16 @@
         const k = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n));
         return k(inst.udpPorts) + ' / ' + k(inst.udpPool);
       },
+      // The ports held on any address: a DNS lookup's socket needs one of
+      // those free, whatever address the instance sends from.
+      udpSharedText(inst) {
+        if (!(inst.udpPorts >= 0) || !inst.udpPool || !(inst.udpShared > inst.udpPorts)) return '';
+        const k = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n));
+        return '{{ i18n "pages.index.xrayInstanceUdpAll" }}: ' + k(inst.udpShared) + ' / ' + k(inst.udpPool);
+      },
       udpColor(inst) {
         if (!(inst.udpPorts >= 0) || !inst.udpPool) return '';
-        const p = (100 * inst.udpPorts) / inst.udpPool;
+        const p = (100 * Math.max(inst.udpPorts, inst.udpShared || 0)) / inst.udpPool;
         return p < 80 ? '' : p < 90 ? '#f37b24' : '#cf3c3c';
       },
       xiAnyBusy(name) {

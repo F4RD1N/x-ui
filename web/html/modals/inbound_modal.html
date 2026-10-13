@@ -198,7 +198,11 @@
                 return app.datepicker;
             },
             get xrayInstanceNames() {
-                return (inModal.xrayInfo.instances || []).map((it) => it.name);
+                // an instance running another inbound's sub-inbounds is that inbound's
+                const id = inModal.dbInbound.id;
+                return (inModal.xrayInfo.instances || [])
+                    .filter((it) => !it.inbounds.some((i) => i.sub && i.id !== id))
+                    .map((it) => it.name);
             },
             get xrayNextName() {
                 return inModal.xrayInfo.nextName || "xray-1";
