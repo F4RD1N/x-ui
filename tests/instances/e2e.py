@@ -368,10 +368,15 @@ def main():
             def inbound_traffic():
                 ib = next(i for i in api("GET", "/panel/api/inbounds/list")["obj"] if i["id"] == c["id"])
                 return ib["up"] + ib["down"]
+            # The core's inbound counter leaves out the first chunk of a
+            # response (written with the protocol's response header): the
+            # headers, and some body when it arrives with them. Allow one
+            # buffer.
+            want = 20 * 1024 * 1024 - 16 * 1024
             end = time.time() + 30
-            while inbound_traffic() < 20 * 1024 * 1024 and time.time() < end:
+            while inbound_traffic() < want and time.time() < end:
                 time.sleep(2)
-            check("the sub-inbound's traffic counts on the inbound", inbound_traffic() >= 20 * 1024 * 1024, inbound_traffic())
+            check("the sub-inbound's traffic counts on the inbound", inbound_traffic() >= want, inbound_traffic())
         finally:
             client2.kill()
         # Disable one sub-inbound: only its core stops.

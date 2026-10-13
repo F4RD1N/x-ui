@@ -40,6 +40,8 @@ const check = (name, ok, detail) => {
     check(label + ': cores read like "Auto · 4 Core (0-3)"', cores.length > 0 && cores.every((t) => /^(Auto|Fixed) · \d+ Core \([\d,\- ]+\)$/.test(t)), cores.join(' | '));
     const cardText = await page.textContent('.xi-card');
     check(label + ': card shows CPU, TCP, RAM, threads, uptime', /CPU/.test(cardText) && /TCP connections/.test(cardText) && /RAM/.test(cardText) && /Threads/.test(cardText), cardText.slice(0, 200));
+    const cut = await page.$$eval('.xi-card .xi-egress-ip, .xi-card .xi-udp', (els) => els.filter((e) => e.scrollWidth > e.clientWidth + 1).map((e) => e.textContent.trim()));
+    check(label + ': outgoing IP and UDP ports are not cut off', cut.length === 0, cut.join(' | '));
     // The panel scrolls an inner element, so shoot the viewport with the
     // section scrolled to the top of it.
     await page.$eval('.xi-summary', (e) => e.scrollIntoView({ block: 'start' }));
@@ -68,7 +70,7 @@ const check = (name, ok, detail) => {
       // reaches nothing (this namespace has no route out) is refused.
       const card1 = '.xi-card:has(.xi-name:text-is("xray-1"))';
       const facts = await page.textContent(`${card1} .xi-facts`);
-      check('desktop: card shows the outgoing IP and UDP ports', /Outgoing IP\s*Server default/.test(facts) && /UDP ports\s*[\d.]+k? \/ [\d.]+k/.test(facts), facts.replace(/\s+/g, ' '));
+      check('desktop: card shows the outgoing IP and UDP ports', /Outgoing IP\s*Default/.test(facts) && /UDP ports\s*[\d.]+k? \/ [\d.]+k/.test(facts), facts.replace(/\s+/g, ' '));
       await page.click(`${card1} .xi-egress-edit`);
       await page.waitForSelector('#egress-modal .ant-select', { state: 'visible' });
       await page.click('#egress-modal .ant-select');

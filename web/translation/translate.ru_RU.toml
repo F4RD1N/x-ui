@@ -150,7 +150,7 @@
 "xrayInstanceCoresBusy" = "cores busy"
 "xrayInstanceTcp" = "TCP connections"
 "xrayInstanceEgress" = "Outgoing IP"
-"xrayInstanceEgressDefault" = "Server default"
+"xrayInstanceEgressDefault" = "Default"
 "xrayInstanceEgressGone" = "not on this server"
 "xrayInstanceEgressSaved" = "Outgoing IP saved"
 "xrayInstanceEgressError" = "Could not set the outgoing IP"

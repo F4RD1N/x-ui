@@ -421,7 +421,7 @@
                       <div class="xi-fact">
                         <div class="xi-label">{{ i18n "pages.index.xrayInstanceEgress" }}</div>
                         <div class="xi-value xi-egress">
-                          <span class="xi-egress-ip">[[ inst.egress || '{{ i18n "pages.index.xrayInstanceEgressDefault" }}' ]]</span>
+                          <span class="xi-egress-ip" :title="inst.egress">[[ inst.egress || '{{ i18n "pages.index.xrayInstanceEgressDefault" }}' ]]</span>
                           <a-button type="link" size="small" icon="edit" class="xi-egress-edit" @click="openEgress(inst)"></a-button>
                         </div>
                         <div v-if="inst.egressGone" class="xi-gone">{{ i18n "pages.index.xrayInstanceEgressGone" }}</div>
@@ -451,7 +451,7 @@
     :confirm-loading="egressModal.saving" :ok-button-props="{ props: { disabled: egressModal.loading } }"
     ok-text='{{ i18n "save" }}' cancel-text='{{ i18n "cancel" }}' @ok="saveEgress">
     <a-select v-model="egressModal.ip" show-search class="w-100" :loading="egressModal.loading"
-      :dropdown-class-name="themeSwitcher.currentTheme">
+      :dropdown-class-name="themeSwitcher.currentTheme" :get-popup-container="(el) => el.parentNode">
       <a-select-option value="">{{ i18n "pages.index.xrayInstanceEgressDefault" }}</a-select-option>
       <a-select-option v-for="a in egressModal.addresses" :key="a.ip" :value="a.ip">
         [[ a.ip ]]<span v-if="egressOthers(a).length" class="xi-muted"> &middot; [[ egressOthers(a).join(', ') ]]</span>

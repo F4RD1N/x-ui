@@ -150,7 +150,7 @@
 "xrayInstanceCoresBusy" = "هسته مشغول"
 "xrayInstanceTcp" = "اتصال‌های TCP"
 "xrayInstanceEgress" = "IP خروجی"
-"xrayInstanceEgressDefault" = "پیش‌فرض سرور"
+"xrayInstanceEgressDefault" = "پیش‌فرض"
 "xrayInstanceEgressGone" = "روی این سرور نیست"
 "xrayInstanceEgressSaved" = "IP خروجی ذخیره شد"
 "xrayInstanceEgressError" = "تنظیم IP خروجی ممکن نشد"
