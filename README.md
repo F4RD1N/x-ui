@@ -168,12 +168,15 @@ instance**, and every instance is its own xray process:
 
 - **Xray instance** (inbound form): `xray-1`, `xray-2`, … by default, one per
   inbound. Give several inbounds the same name to put them in one process.
-- **CPU cores** (inbound form): `Auto` by default, or a fixed number. Fixed
-  instances get that many cores of their own; the auto instances split the rest
-  evenly. On 28 cores, two auto instances get 14 each; with one fixed at 10, the
-  auto one gets 18. The form shows the server's total cores and how many this
-  instance can have, and more than that is refused. The value belongs to the
-  instance, so it applies to all of its inbounds.
+- **CPU cores** (inbound form): `Auto` by default, or a fixed number. The
+  number counts logical CPUs (threads). Fixed instances get that many CPUs of
+  their own, on one NUMA node when one has room, whole cores first; the auto
+  instances split the rest evenly (one CPU apart at most), each on one NUMA node
+  when that keeps the split even. On 28 CPUs, two auto instances get 14 each;
+  with one fixed at 10, the auto one gets 18. On servers with 2 threads per
+  core, an even number keeps whole cores. The form shows the server's total
+  cores and how many this instance can have, and more than that is refused. The
+  value belongs to the instance, so it applies to all of its inbounds.
 
 Each process runs the template (routing, outbounds, DNS, …) plus its own
 inbounds and its own API port, and is pinned to its cores. The overview page
