@@ -1545,58 +1545,79 @@ func TestNICSeparateChannels(t *testing.T) {
 // A "tune nic" killed halfway through moving the interrupts (the panel
 // stopped, the 20 s limit): the next run finds the moved ones still x-ui's
 // (they were saved before they were written), places the rest, and revert
-// puts every one back.
+// puts every one back. Twice: a panic, whose deferred save still runs, and
+// a SIGKILL, where the state on disk is the one saved before the writes
+// (marked pending) and the next run settles the marks from the live values.
+// One CPU has no vector left on the first try, so that interrupt went to
+// the other thread of its core instead of its pending CPU.
 func TestNICKilledHalfway(t *testing.T) {
-	e, b := onHW(t, hwtest.Production())
-	b.Settle()
-	orig := irqSnapshot(t, b)
-	instances(t, b, "0-55", prodFixed...)
-	mustApply(t, e, ApplyOptions{Auto: true})
-	b.Settle()
-	instances(t, b, "0-55", prodAuto...)
-	type killed struct{}
-	writes := 0
-	e.beforeWrite = func(abs string) {
-		if strings.HasPrefix(abs, "/proc/irq/") {
-			if writes++; writes > 20 {
+	for _, sigkill := range []bool{false, true} {
+		e, b := onHW(t, hwtest.Production())
+		b.Settle()
+		orig := irqSnapshot(t, b)
+		instances(t, b, "0-55", prodFixed...)
+		mustApply(t, e, ApplyOptions{Auto: true})
+		b.Settle()
+		instances(t, b, "0-55", prodAuto...)
+		type killed struct{}
+		writes := 0
+		onDisk := ""
+		e.beforeWrite = func(abs, val string) error {
+			if !strings.HasPrefix(abs, "/proc/irq/") {
+				return nil
+			}
+			switch writes++; {
+			case writes == 3:
+				return syscall.ENOSPC
+			case writes > 20:
+				onDisk, _ = e.read(StateFile)
 				panic(killed{})
 			}
+			return nil
 		}
-	}
-	func() {
-		defer func() {
-			if v := recover(); v != (killed{}) {
-				panic(v)
-			}
+		func() {
+			defer func() {
+				if v := recover(); v != (killed{}) {
+					panic(v)
+				}
+			}()
+			e.RunNIC(NICOptions{})
+			t.Fatal("not killed")
 		}()
-		e.RunNIC(NICOptions{})
-		t.Fatal("not killed")
-	}()
-	e.beforeWrite = nil
-	b.Settle()
-
-	r, err := e.RunNIC(NICOptions{})
-	if err != nil || len(r.Problems) > 0 || !strings.Contains(strings.Join(r.Changed, "\n"), "interrupts moved") {
-		t.Errorf("the run after: %v %v %v", r.Changed, r.Problems, err)
-	}
-	if np := nicPlanOf(t, e); np.NICs[0].keep != "" {
-		t.Errorf("kept as %q: %s", np.NICs[0].keep, np.NICs[0].IRQNote)
-	}
-	if d, _ := e.Status(false); len(d) != 0 {
-		t.Errorf("drift: %v", d)
-	}
-	st, _, _ := e.loadState()
-	for k, is := range st.NICs["0000:82:00.0"].IRQ {
-		if is.Pending != "" {
-			t.Errorf("%s still pending: %+v", k, is)
+		e.beforeWrite = nil
+		if sigkill {
+			// Nothing ran after the kill: the state is the write-ahead one.
+			if !strings.Contains(onDisk, `"pending"`) {
+				t.Fatalf("no pending marks saved before the writes:\n%s", onDisk)
+			}
+			writeT(t, e.Root, StateFile, onDisk)
 		}
-	}
-	if _, err := e.Revert(false, false); err != nil {
-		t.Fatal(err)
-	}
-	b.Settle()
-	if d := diffMaps(orig, irqSnapshot(t, b)); len(d) > 0 {
-		t.Errorf("revert left %d differences: %v", len(d), d[:min(3, len(d))])
+		b.Settle()
+		name := fmt.Sprintf("sigkill=%v", sigkill)
+
+		r, err := e.RunNIC(NICOptions{})
+		if err != nil || len(r.Problems) > 0 || !strings.Contains(strings.Join(r.Changed, "\n"), "interrupts moved") {
+			t.Errorf("%s: the run after: %v %v %v", name, r.Changed, r.Problems, err)
+		}
+		if np := nicPlanOf(t, e); np.NICs[0].keep != "" {
+			t.Errorf("%s: kept as %q: %s", name, np.NICs[0].keep, np.NICs[0].IRQNote)
+		}
+		if d, _ := e.Status(false); len(d) != 0 {
+			t.Errorf("%s: drift: %v", name, d)
+		}
+		st, _, _ := e.loadState()
+		for k, is := range st.NICs["0000:82:00.0"].IRQ {
+			if is.Pending != "" {
+				t.Errorf("%s: %s still pending: %+v", name, k, is)
+			}
+		}
+		if _, err := e.Revert(false, false); err != nil {
+			t.Fatal(err)
+		}
+		b.Settle()
+		if d := diffMaps(orig, irqSnapshot(t, b)); len(d) > 0 {
+			t.Errorf("%s: revert left %d differences: %v", name, len(d), d[:min(3, len(d))])
+		}
 	}
 }
 

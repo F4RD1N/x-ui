@@ -411,8 +411,23 @@ func dropPending(st *State) {
 }
 
 // settlePending ends the writes a dead run left marked: a value that is
-// live now is x-ui's (it was written), any other is forgotten.
+// live now is x-ui's (it was written), any other is forgotten. An interrupt
+// on the other thread of its pending CPU's core was written too: writeIRQs
+// puts it there when that CPU has no vector left (ENOSPC).
 func (e *Env) settlePending(st *State) {
+	var topo *hw.Topology
+	sibling := func(pending string, live hw.CPUSet) bool {
+		p, err := strconv.Atoi(pending)
+		if err != nil || len(live) != 1 {
+			return false
+		}
+		if topo == nil {
+			if topo, err = hw.ReadTopology(e.hw()); err != nil {
+				return false
+			}
+		}
+		return topo.Siblings(p).Has(live[0])
+	}
 	for _, key := range sortedStrings(st.NICs) {
 		ns := st.NICs[key]
 		name := e.nicNameOf(key)
@@ -420,8 +435,8 @@ func (e *Env) settlePending(st *State) {
 			if is.Pending == "" {
 				continue
 			}
-			if l, err := hw.ParseList(e.readTrim(fmt.Sprintf("/proc/irq/%d/smp_affinity_list", is.IRQ))); err == nil && name != "" && l.List() == is.Pending {
-				is.Written = is.Pending
+			if l, err := hw.ParseList(e.readTrim(fmt.Sprintf("/proc/irq/%d/smp_affinity_list", is.IRQ))); err == nil && name != "" && (l.List() == is.Pending || sibling(is.Pending, l)) {
+				is.Written = l.List()
 			}
 			is.Pending = ""
 			if is.Written == "" {

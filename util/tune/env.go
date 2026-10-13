@@ -90,9 +90,9 @@ type Env struct {
 
 	owned   map[string]bool // package ownership, asked once per file
 	stopped bool            // SIGTERM during a queue change: stop after it
-	// beforeWrite, when set, runs before each kernel write (tests: a run
-	// killed halfway).
-	beforeWrite func(abs string)
+	// beforeWrite, when set, runs before each kernel write; an error fails
+	// the write (tests: a run killed halfway, a CPU out of vectors).
+	beforeWrite func(abs, val string) error
 }
 
 // NewEnv builds the environment from the process environment.
@@ -343,7 +343,9 @@ func (e *Env) netOnlyAllows(abs string) bool {
 // writeKernel writes a value to a kernel file.
 func (e *Env) writeKernel(abs, val string) error {
 	if e.beforeWrite != nil {
-		e.beforeWrite(abs)
+		if err := e.beforeWrite(abs, val); err != nil {
+			return err
+		}
 	}
 	if err, ok := e.FailWrite[abs]; ok {
 		return err
