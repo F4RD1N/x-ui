@@ -1,0 +1,9 @@
+Detected:
+  1 socket, 2 cores, 2 CPUs, 2 GiB RAM, a kvm VM
+  eth0: Red Hat Virtio network device (virtio_net), 1 queue
+  Xray: 1 instance running
+Configured:
+  Xray CPUs: xray-1 on all 2 CPUs
+  Open files: 1048576 per process (x-ui and its cores)
+  Backlog: somaxconn 16384, netdev_max_backlog 16384, tcp_max_syn_backlog 16384
+  Congestion control: bbr with fq

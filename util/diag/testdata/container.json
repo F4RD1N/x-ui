@@ -1,0 +1,198 @@
+{
+  "time": "2026-10-13T12:00:00Z",
+  "version": "2.9.0-test",
+  "kernel": "6.8.0-1-amd64",
+  "seconds": 3,
+  "root": true,
+  "hardware": {
+    "sockets": 1,
+    "cores": 8,
+    "cpus": 16,
+    "threads_per_core": 2,
+    "mem_bytes": 34359738368,
+    "model": "Intel(R) Core(TM) i7-10700 CPU @ 2.90GHz",
+    "virt": "docker",
+    "container": true,
+    "numa_balancing": "off",
+    "nodes": [
+      {
+        "id": 0,
+        "cpus": "0-15",
+        "mem_bytes": 34359738368
+      }
+    ]
+  },
+  "nics": [],
+  "network_notes": [
+    "the default route leaves through eth0 (a container's veth link): no NIC under it"
+  ],
+  "sample": {
+    "seconds": 3,
+    "cpus": [
+      {
+        "cpu": 0,
+        "busy": 7,
+        "softirq": 0.3,
+        "steal": 0
+      },
+      {
+        "cpu": 1,
+        "busy": 7,
+        "softirq": 0.3,
+        "steal": 0
+      },
+      {
+        "cpu": 2,
+        "busy": 7,
+        "softirq": 0.3,
+        "steal": 0
+      },
+      {
+        "cpu": 3,
+        "busy": 7,
+        "softirq": 0.3,
+        "steal": 0
+      },
+      {
+        "cpu": 4,
+        "busy": 7,
+        "softirq": 0.3,
+        "steal": 0
+      },
+      {
+        "cpu": 5,
+        "busy": 7,
+        "softirq": 0.3,
+        "steal": 0
+      },
+      {
+        "cpu": 6,
+        "busy": 7,
+        "softirq": 0.3,
+        "steal": 0
+      },
+      {
+        "cpu": 7,
+        "busy": 7,
+        "softirq": 0.3,
+        "steal": 0
+      },
+      {
+        "cpu": 8,
+        "busy": 7,
+        "softirq": 0.3,
+        "steal": 0
+      },
+      {
+        "cpu": 9,
+        "busy": 7,
+        "softirq": 0.3,
+        "steal": 0
+      },
+      {
+        "cpu": 10,
+        "busy": 7,
+        "softirq": 0.3,
+        "steal": 0
+      },
+      {
+        "cpu": 11,
+        "busy": 7,
+        "softirq": 0.3,
+        "steal": 0
+      },
+      {
+        "cpu": 12,
+        "busy": 7,
+        "softirq": 0.3,
+        "steal": 0
+      },
+      {
+        "cpu": 13,
+        "busy": 7,
+        "softirq": 0.3,
+        "steal": 0
+      },
+      {
+        "cpu": 14,
+        "busy": 7,
+        "softirq": 0.3,
+        "steal": 0
+      },
+      {
+        "cpu": 15,
+        "busy": 7,
+        "softirq": 0.3,
+        "steal": 0
+      }
+    ],
+    "busy": 7,
+    "softirq": 0.3,
+    "steal": 0,
+    "nics": [],
+    "softnet": {
+      "drops": 0,
+      "squeeze": 0,
+      "squeeze_per_second": 0,
+      "drops_total": 0,
+      "squeeze_total": 0
+    },
+    "listen": {
+      "overflows": 0,
+      "drops": 0
+    },
+    "abort_on_memory": 0
+  },
+  "instances": [
+    {
+      "name": "xray-1",
+      "pid": 2001,
+      "cpu_pct": 1.9,
+      "cpus": "0-15",
+      "nodes": [
+        0
+      ],
+      "threads": 40,
+      "fds": 20,
+      "fd_limit": 2097152,
+      "rss_bytes": 536870912,
+      "tcp": 0,
+      "udp": {
+        "ip": "",
+        "used": 0,
+        "pool": 55536
+      },
+      "nic_irqs": {
+        "rss": 0,
+        "other": 0,
+        "share": 0
+      },
+      "softirq_pct": 0.3,
+      "config": "/usr/local/x-ui/bin/config-xray-1.json"
+    }
+  ],
+  "tcp": {
+    "inuse": 37000,
+    "inuse6": 1200,
+    "orphans": 12,
+    "max_orphans": 262144,
+    "time_wait": 4100,
+    "max_time_wait": 2000000,
+    "mem_pages": 12000,
+    "tcp_mem": [
+      1487430,
+      1983242,
+      2974860
+    ],
+    "listen_overflows": 0,
+    "listen_drops": 0,
+    "abort_on_memory": 0,
+    "conntrack": null,
+    "files": {
+      "count": 41000,
+      "max": 9223372036854775807
+    },
+    "udp_pool": 55536
+  },
+  "warnings": []
+}

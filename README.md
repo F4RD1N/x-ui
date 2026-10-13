@@ -250,6 +250,32 @@ installed or `XRAY_TEST_BINARY` points at one), and
 namespace and checks instances, CPU pinning under load, traffic counting, TCP
 counts and, with `UI=1`, the pages in a browser.
 
+## Diagnostics
+
+`x-ui diag` shows the server as x-ui sees it and changes nothing:
+
+- the CPUs: sockets, cores, threads per core, NUMA nodes with their CPUs and
+  memory;
+- each NIC under the default routes: driver, NUMA node, speed, queues, the RSS
+  table and how UDP and TCP are hashed, which CPU each queue's interrupt runs
+  on and which xray instance owns that CPU, irqbalance, XPS and RPS;
+- a few seconds of live counters: busy, softirq and steal time per CPU,
+  traffic, and dropped packets at the NIC and in the kernel;
+- each xray instance: its CPUs and NUMA nodes, CPU use, threads, memory, open
+  files, TCP connections, UDP ports against the pool, and the NIC interrupts
+  on its CPUs against its fair share;
+- TCP, conntrack and open-file counters against their limits;
+- warnings, each with its fix where there is one.
+
+```bash
+x-ui diag               # the report, with a 3-second sample
+x-ui diag --seconds 10  # a longer sample (0 to 30; 0: none)
+x-ui diag --json        # the same as JSON
+```
+
+Install and update end with its short summary (`x-ui diag --summary`): what
+was detected, and what x-ui set up.
+
 ## Other changes
 
 - **Connection counts are cheap.** The overview's TCP and UDP totals come from

@@ -15,12 +15,9 @@ package service
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
-	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -416,64 +413,25 @@ func (s *XrayService) HostAddresses() ([]HostAddress, error) {
 
 // ------------------------------------------------------------ UDP ports
 
-// udpPortUse is how much of the local port range UDP sockets hold.
-type udpPortUse struct {
-	pool   int            // ports a socket can be given
-	wild   int            // held by sockets on all addresses
-	byIP   map[string]int // held in each address's share: its own sockets plus the wildcard ones
-	shared int            // held in the default address's share: by any socket
-}
-
-// used returns the ports held in the share an instance sending from egress
-// draws on.
-func (u *udpPortUse) used(egress string) int {
-	if egress == "" {
-		return u.shared
-	}
-	if n, ok := u.byIP[egress]; ok {
-		return n
-	}
-	return u.wild
-}
-
 const udpUseEvery = 10 * time.Second
 
 var (
 	udpMu  sync.Mutex
 	udpAt  time.Time
-	udpUse *udpPortUse
+	udpUse *sys.UDPPortUse
 )
-
-var localPortRangePath = "/proc/sys/net/ipv4/ip_local_port_range"
-
-func localPortRange() (int, int, error) {
-	b, err := os.ReadFile(localPortRangePath)
-	if err != nil {
-		return 0, 0, err
-	}
-	f := strings.Fields(string(b))
-	if len(f) != 2 {
-		return 0, 0, errors.New("unexpected ip_local_port_range")
-	}
-	lo, err1 := strconv.Atoi(f[0])
-	hi, err2 := strconv.Atoi(f[1])
-	if err1 != nil || err2 != nil || lo < 1 || hi < lo {
-		return 0, 0, errors.New("unexpected ip_local_port_range")
-	}
-	return lo, hi, nil
-}
 
 // currentUDPPortUse returns the UDP port use, read at most every
 // udpUseEvery, and only while the status is watched; nil when it cannot be
 // read.
-func currentUDPPortUse() *udpPortUse {
+func currentUDPPortUse() *sys.UDPPortUse {
 	udpMu.Lock()
 	defer udpMu.Unlock()
 	if time.Since(udpAt) < udpUseEvery || (!statusWatched.Load() && !udpAt.IsZero()) {
 		return udpUse
 	}
 	udpAt = time.Now()
-	u, err := readUDPPortUse(sys.UDPSockets)
+	u, err := sys.ReadUDPPortUse(sys.UDPSockets)
 	if err != nil {
 		logger.Debug("count UDP ports:", err)
 		udpUse = nil
@@ -481,54 +439,4 @@ func currentUDPPortUse() *udpPortUse {
 	}
 	udpUse = u
 	return u
-}
-
-func readUDPPortUse(list func(func(sys.LocalEndpoint)) error) (*udpPortUse, error) {
-	lo, hi, err := localPortRange()
-	if err != nil {
-		return nil, err
-	}
-	var reserved map[int]bool
-	if b, err := os.ReadFile(reservedPortsPath); err == nil {
-		reserved = parsePortList(string(b))
-	}
-	pool := 0
-	for p := lo; p <= hi; p++ {
-		if !reserved[p] {
-			pool++
-		}
-	}
-	wild := map[int]bool{}
-	all := map[int]bool{}
-	byIP := map[string]map[int]bool{}
-	err = list(func(ep sys.LocalEndpoint) {
-		if ep.Port < lo || ep.Port > hi || reserved[ep.Port] {
-			return // not taken from the range
-		}
-		all[ep.Port] = true
-		if ep.IP == "" {
-			wild[ep.Port] = true
-			return
-		}
-		m := byIP[ep.IP]
-		if m == nil {
-			m = map[int]bool{}
-			byIP[ep.IP] = m
-		}
-		m[ep.Port] = true
-	})
-	if err != nil {
-		return nil, err
-	}
-	u := &udpPortUse{pool: pool, wild: len(wild), shared: len(all), byIP: map[string]int{}}
-	for ip, ports := range byIP {
-		n := len(wild)
-		for p := range ports {
-			if !wild[p] {
-				n++
-			}
-		}
-		u.byIP[ip] = n
-	}
-	return u, nil
 }

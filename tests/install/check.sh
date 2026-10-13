@@ -8,10 +8,12 @@
 #      revert, containers (read-only /proc/sys, LXC), legacy files, services;
 #      and the util/hw readers (CPU topology, NUMA nodes, uplink NICs, their
 #      interrupts and queues) on fake machines from production to a VPS;
-#      all against fake /proc, /sys and /etc trees;
+#      and "x-ui diag" (golden reports, every warning, the install summary,
+#      read-only on a read-only tree); all against fake /proc, /sys and /etc
+#      trees;
 #   2. bash -n and shellcheck (when available) on every shell script;
 #   3. x-ui.sh's command line in a scratch folder with a fake binary: the
-#      usage screen prints, and setting/tune reach the binary.
+#      usage screen prints, and setting/tune/diag reach the binary.
 #
 # The live checks are separate: netns.sh (root, a throwaway network
 # namespace) and docker-install.sh (systemd containers, a release tarball).
@@ -22,8 +24,8 @@ fail=0
 step() { echo "== $*"; }
 bad() { echo "FAIL: $*"; fail=1; }
 
-step "go test ./util/tune/ ./util/hw/..."
-nice -n 10 go test -count=1 ./util/tune/ ./util/hw/... || bad "util/tune and util/hw tests"
+step "go test ./util/tune/ ./util/hw/... ./util/diag/"
+nice -n 10 go test -count=1 ./util/tune/ ./util/hw/... ./util/diag/ || bad "util/tune, util/hw and util/diag tests"
 
 step "bash -n"
 for f in install.sh update.sh x-ui.sh build.sh tests/install/*.sh; do
@@ -56,6 +58,8 @@ if [[ $EUID -eq 0 ]]; then
     [[ -z $(ls -A "$tmp/cwd") ]] || bad "usage screen created files: $(ls -A "$tmp/cwd")"
     [[ $(xui setting -xrayEgress xray-1=192.0.2.1) == "BIN: setting -xrayEgress xray-1=192.0.2.1" ]] || bad "setting passthrough"
     [[ $(xui tune status --json) == "BIN: tune status --json" ]] || bad "tune passthrough"
+    [[ $(xui diag --json --seconds 1) == "BIN: diag --json --seconds 1" ]] || bad "diag passthrough"
+    grep -q 'x-ui diag' <<<"$out" || bad "usage screen lacks x-ui diag"
     grep -q 'XUI_MODE=update run_installer update' x-ui.sh || bad "x-ui update must run install.sh in update mode"
 else
     echo "(x-ui.sh refuses to run without root; skipped)"

@@ -1,0 +1,40 @@
+x-ui diag 2.9.0-test, 2026-10-13 12:00:00 UTC, kernel 6.8.0-1-amd64
+
+Hardware
+  CPUs        1 socket, 2 cores, 2 CPUs: Intel Xeon Processor (Skylake, IBRS)
+  memory      2 GiB
+  machine     a virtual machine (kvm)
+
+NIC eth0 (default route v4+v6)
+  device      Red Hat Virtio network device [1af4:1000], virtio_net, PCI 0000:00:03.0
+  link        up
+  queues      1 of 1
+  RSS table   not readable
+  hashing     not readable
+  offloads    on: gro gso rx rxhash rxvlan sg tso tx txvlan; off: lro ntuple
+  interrupts  q0 0
+  irqbalance  not installed
+  XPS         n/a (one transmit queue)
+  RPS/RFS     off
+  notes       RSS table: not supported
+
+Sample (3 s)
+  CPU         25.5% busy on average, 5.5% softirq, 1% steal
+  hottest     CPU 0: 30% busy, 10% softirq (eth0 q0)
+              CPU 1: 21% busy, 1% softirq
+  eth0        rx 144.0 Mb/s 20.0k pkt/s, tx 133.3 Mb/s 16.7k pkt/s; dropped 0, errors 0
+  softnet     dropped +0 (0 since boot), time_squeeze 0/s (0 since boot)
+  TCP listen  overflows +0, drops +0
+
+Xray instances (1 running)
+  xray-1      pid 2001, all CPUs, 20% busy, 40 threads, 512 MiB
+              open files 300 of 1048576, TCP 812, UDP ports 30 of 55536 (the default address)
+
+TCP
+  sockets     900 in use (+1200 IPv6), orphans 12 of 2048, TIME_WAIT 210 of 8192
+  memory      300 pages; pressure at 24000, limit 36000 (tcp_mem)
+  listen      overflows 0, drops 0 since boot; aborts for lack of memory 0
+  open files  2600 of 202000 on the system
+
+Warnings
+  - eth0 has one queue and RPS is off: one CPU takes all its packets; x-ui tune apply

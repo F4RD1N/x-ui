@@ -549,6 +549,8 @@ tune_menu() {
     echo -e "${green}\t1.${plain} Show tuning status"
     echo -e "${green}\t2.${plain} Apply tuning"
     echo -e "${green}\t3.${plain} Revert tuning (and keep it off)"
+    echo -e "${green}\t4.${plain} Raise NIC queues now (the link resets for a few seconds)"
+    echo -e "${green}\t5.${plain} Diagnostics"
     echo -e "${green}\t0.${plain} Back to Main Menu"
     read -rp "Choose an option: " choice
     case "$choice" in
@@ -565,6 +567,18 @@ tune_menu() {
         ;;
     3)
         ${xui_folder}/x-ui tune revert
+        before_show_menu
+        ;;
+    4)
+        # The plan first; the raise itself resets the link, so it is asked.
+        ${xui_folder}/x-ui tune queues
+        if confirm "Raise the queues now? The link goes down for a few seconds" "n"; then
+            ${xui_folder}/x-ui tune queues --now
+        fi
+        before_show_menu
+        ;;
+    5)
+        ${xui_folder}/x-ui diag
         before_show_menu
         ;;
     *)
@@ -2258,7 +2272,8 @@ show_usage() {
 │  ${blue}x-ui banlog${plain}                - Check Fail2ban ban logs          │
 │  ${blue}x-ui update${plain}                - Update                           │
 │  ${blue}x-ui update-all-geofiles${plain}   - Update all geo files             │
-│  ${blue}x-ui tune${plain}                  - Server tuning (x-ui tune -h)       │
+│  ${blue}x-ui tune${plain}                  - Server tuning (x-ui tune -h)     │
+│  ${blue}x-ui diag${plain}                  - Server diagnostics (x-ui diag -h)│
 │  ${blue}x-ui db=\"<url>\"${plain}            - Replace database from a URL      │
 │  ${blue}x-ui install${plain}               - Install                          │
 │  ${blue}x-ui uninstall${plain}             - Uninstall                        │
@@ -2448,8 +2463,8 @@ if [[ $# -gt 0 ]]; then
             exit $rc
         fi
         ;;
-    "tune")
-        check_install 0 && { shift; ${xui_folder}/x-ui tune "$@"; exit $?; }
+    "tune" | "diag")
+        check_install 0 && { ${xui_folder}/x-ui "$@"; exit $?; }
         ;;
     "setting" | "migrate" | "cert")
         # Passed straight to the panel binary (x-ui setting -xrayEgress ...).

@@ -24,6 +24,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/logger"
 	"github.com/mhsanaei/3x-ui/v2/sub"
 	"github.com/mhsanaei/3x-ui/v2/util/crypto"
+	"github.com/mhsanaei/3x-ui/v2/util/diag"
 	"github.com/mhsanaei/3x-ui/v2/util/sys"
 	"github.com/mhsanaei/3x-ui/v2/util/tune"
 	"github.com/mhsanaei/3x-ui/v2/web"
@@ -643,6 +644,10 @@ func main() {
 	if os.Args[1] == "tune" {
 		os.Exit(tune.Main(os.Args[2:], config.GetVersion()))
 	}
+	// Diagnostics only read; the installer prints their summary.
+	if os.Args[1] == "diag" {
+		os.Exit(diag.Main(os.Args[2:], config.GetVersion()))
+	}
 
 	var showVersion bool
 	flag.BoolVar(&showVersion, "v", false, "show version")
@@ -695,6 +700,7 @@ func main() {
 		fmt.Println("    setting        set settings")
 		fmt.Println(`    db="<url>"     replace the database with one downloaded from <url>`)
 		fmt.Println("    tune           server tuning: x-ui tune [status|apply|revert]")
+		fmt.Println("    diag           server diagnostics: x-ui diag [--json] [--seconds N]")
 	}
 
 	flag.Parse()
