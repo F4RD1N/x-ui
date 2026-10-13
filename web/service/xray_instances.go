@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,6 +35,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/database"
 	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/logger"
+	"github.com/mhsanaei/3x-ui/v2/util/hw"
 	"github.com/mhsanaei/3x-ui/v2/util/json_util"
 	"github.com/mhsanaei/3x-ui/v2/xray"
 )
@@ -373,61 +375,49 @@ type coreRequest struct {
 	Cores int // 0 = automatic share
 }
 
-// allocateCPUs gives every instance its CPUs. Instances with a fixed number
-// get that many CPUs of their own, in name order; the instances on auto
-// split what is left evenly. When there are more auto instances than CPUs
-// left they share them, one CPU each, round-robin.
-func allocateCPUs(cpus []int, reqs []coreRequest) map[string][]int {
-	out := map[string][]int{}
-	if len(cpus) == 0 {
-		return out
+// allocateCPUs gives every instance its CPUs (hw.SplitCPUs). Instances with
+// a fixed number get that many CPUs of their own, in name order; the
+// instances on auto split what is left evenly. When there are more auto
+// instances than CPUs left they share them, one CPU each, round-robin. Each
+// instance takes whole cores of one NUMA node where it can, the node of the
+// NIC (prefer) first; a nil t is a machine of one node and one thread per
+// core, which splits cpus in order.
+func allocateCPUs(t *hw.Topology, prefer int, cpus []int, reqs []coreRequest) map[string][]int {
+	rs := make([]hw.CPURequest, len(reqs))
+	for i, r := range reqs {
+		rs[i] = hw.CPURequest{Name: r.Name, CPUs: r.Cores}
 	}
-	sorted := append([]coreRequest(nil), reqs...)
-	sort.SliceStable(sorted, func(i, j int) bool { return model.LessInstanceName(sorted[i].Name, sorted[j].Name) })
-	next := 0
-	var autos []string
-	for _, r := range sorted {
-		if r.Cores <= 0 {
-			autos = append(autos, r.Name)
-			continue
+	return hw.SplitCPUs(t, cpus, prefer, rs, model.LessInstanceName)
+}
+
+var (
+	panelTopoOnce   sync.Once
+	panelTopo       *hw.Topology
+	panelTopoPrefer = -1
+)
+
+// panelTopology is the machine's CPU topology and the NUMA node of the NIC
+// under the default route (-1 unknown), read once. When the topology cannot
+// be read it is nil, and the CPUs are split as on a machine of one node.
+func panelTopology() (*hw.Topology, int) {
+	panelTopoOnce.Do(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				panelTopo, panelTopoPrefer = nil, -1
+				logger.Warning("read the CPU topology:", r)
+			}
+		}()
+		fs := hw.EnvFS()
+		t, err := hw.ReadTopology(fs)
+		if err != nil {
+			if runtime.GOOS == "linux" {
+				logger.Info("CPU topology unknown, the CPUs are split in order:", err)
+			}
+			return
 		}
-		n := r.Cores
-		if next+n > len(cpus) {
-			n = len(cpus) - next
-		}
-		if n <= 0 {
-			// More cores were promised than this machine has (it lost
-			// CPUs since): run unpinned rather than not at all.
-			out[r.Name] = append([]int(nil), cpus...)
-			continue
-		}
-		out[r.Name] = append([]int(nil), cpus[next:next+n]...)
-		next += n
-	}
-	rest := cpus[next:]
-	if len(autos) == 0 {
-		return out
-	}
-	if len(rest) == 0 {
-		rest = cpus
-	}
-	if len(autos) > len(rest) {
-		for i, name := range autos {
-			out[name] = []int{rest[i%len(rest)]}
-		}
-		return out
-	}
-	base, extra := len(rest)/len(autos), len(rest)%len(autos)
-	at := 0
-	for i, name := range autos {
-		n := base
-		if i < extra {
-			n++
-		}
-		out[name] = append([]int(nil), rest[at:at+n]...)
-		at += n
-	}
-	return out
+		panelTopo, panelTopoPrefer = t, hw.UplinkNode(fs)
+	})
+	return panelTopo, panelTopoPrefer
 }
 
 // availableCores is how many cores instance could be given, next to the
@@ -908,7 +898,8 @@ func (s *XrayService) applyInstances(force bool) error {
 		}
 	}
 	instMu.Unlock()
-	alloc := allocateCPUs(xray.AvailableCPUs(), reqs)
+	topo, prefer := panelTopology()
+	alloc := allocateCPUs(topo, prefer, xray.AvailableCPUs(), reqs)
 
 	// Decide.
 	var stop []*xray.Process
@@ -1039,6 +1030,7 @@ func (s *XrayService) applyInstances(force bool) error {
 		}
 	}
 	instMu.RUnlock()
+	publishInstances(alloc, plan, appliedEgress)
 
 	writeReferenceConfig(full)
 	removeStaleInstanceConfigs(plan)

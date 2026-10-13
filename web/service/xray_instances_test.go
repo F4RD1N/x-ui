@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/mhsanaei/3x-ui/v2/database/model"
+	"github.com/mhsanaei/3x-ui/v2/util/hw"
+	"github.com/mhsanaei/3x-ui/v2/util/hw/hwtest"
 	"github.com/mhsanaei/3x-ui/v2/util/json_util"
 	"github.com/mhsanaei/3x-ui/v2/xray"
 )
@@ -27,22 +29,22 @@ func seq(from, n int) []int {
 func TestAllocateCPUsExamples(t *testing.T) {
 	cpus := seq(0, 28)
 	// Two auto instances on 28 cores: 14 each.
-	a := allocateCPUs(cpus, []coreRequest{{"xray-1", 0}, {"xray-2", 0}})
+	a := allocateCPUs(nil, -1, cpus, []coreRequest{{"xray-1", 0}, {"xray-2", 0}})
 	if !reflect.DeepEqual(a["xray-1"], seq(0, 14)) || !reflect.DeepEqual(a["xray-2"], seq(14, 14)) {
 		t.Fatalf("2 auto: %v", a)
 	}
 	// One with 10, one auto: 10 and 18.
-	a = allocateCPUs(cpus, []coreRequest{{"xray-1", 10}, {"xray-2", 0}})
+	a = allocateCPUs(nil, -1, cpus, []coreRequest{{"xray-1", 10}, {"xray-2", 0}})
 	if len(a["xray-1"]) != 10 || len(a["xray-2"]) != 18 || a["xray-2"][0] != 10 {
 		t.Fatalf("10 + auto: %v", a)
 	}
 	// The fixed one is placed first whatever its name.
-	a = allocateCPUs(cpus, []coreRequest{{"xray-1", 0}, {"xray-2", 10}})
+	a = allocateCPUs(nil, -1, cpus, []coreRequest{{"xray-1", 0}, {"xray-2", 10}})
 	if !reflect.DeepEqual(a["xray-2"], seq(0, 10)) || !reflect.DeepEqual(a["xray-1"], seq(10, 18)) {
 		t.Fatalf("auto + 10: %v", a)
 	}
 	// Uneven split: 28 over 3 autos is 10, 9, 9, in name order.
-	a = allocateCPUs(cpus, []coreRequest{{"xray-10", 0}, {"xray-2", 0}, {"xray-1", 0}})
+	a = allocateCPUs(nil, -1, cpus, []coreRequest{{"xray-10", 0}, {"xray-2", 0}, {"xray-1", 0}})
 	if len(a["xray-1"]) != 10 || len(a["xray-2"]) != 9 || len(a["xray-10"]) != 9 {
 		t.Fatalf("3 autos: %v", a)
 	}
@@ -62,14 +64,14 @@ func TestAllocateCPUsExamples(t *testing.T) {
 		}
 	}
 	// Only fixed instances: the rest of the CPUs stay free.
-	a = allocateCPUs(cpus, []coreRequest{{"xray-1", 4}})
+	a = allocateCPUs(nil, -1, cpus, []coreRequest{{"xray-1", 4}})
 	if len(a) != 1 || len(a["xray-1"]) != 4 {
 		t.Fatalf("fixed only: %v", a)
 	}
 }
 
 func TestAllocateCPUsMoreInstancesThanCPUs(t *testing.T) {
-	a := allocateCPUs(seq(0, 4), []coreRequest{{"xray-1", 2}, {"xray-2", 0}, {"xray-3", 0}, {"xray-4", 0}})
+	a := allocateCPUs(nil, -1, seq(0, 4), []coreRequest{{"xray-1", 2}, {"xray-2", 0}, {"xray-3", 0}, {"xray-4", 0}})
 	if !reflect.DeepEqual(a["xray-1"], []int{0, 1}) {
 		t.Fatalf("fixed: %v", a)
 	}
@@ -79,12 +81,57 @@ func TestAllocateCPUsMoreInstancesThanCPUs(t *testing.T) {
 	}
 	// A machine that lost CPUs: the instance that no longer fits runs
 	// unpinned, and the autos share everything.
-	a = allocateCPUs(seq(0, 4), []coreRequest{{"xray-1", 4}, {"xray-2", 2}, {"xray-3", 0}})
+	a = allocateCPUs(nil, -1, seq(0, 4), []coreRequest{{"xray-1", 4}, {"xray-2", 2}, {"xray-3", 0}})
 	if len(a["xray-1"]) != 4 || len(a["xray-2"]) != 4 || len(a["xray-3"]) != 4 {
 		t.Fatalf("over-committed: %v", a)
 	}
-	if len(allocateCPUs(nil, []coreRequest{{"xray-1", 0}})) != 0 {
+	if len(allocateCPUs(nil, -1, nil, []coreRequest{{"xray-1", 0}})) != 0 {
 		t.Fatal("no cpus")
+	}
+}
+
+func TestAllocateCPUsNUMA(t *testing.T) {
+	// The production server: two sockets, node 0 the even CPUs, node 1 the
+	// odd ones (the NIC's), siblings n and n+28.
+	b := hwtest.Production().Build(t)
+	topo, err := hw.ReadTopology(b.FS())
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefer := hw.UplinkNode(b.FS())
+	for _, size := range []int{0, 5} {
+		var reqs []coreRequest
+		for i := 1; i <= 10; i++ {
+			reqs = append(reqs, coreRequest{fmt.Sprintf("xray-%d", i), size})
+		}
+		a := allocateCPUs(topo, prefer, topo.Online, reqs)
+		seen := map[int]bool{}
+		for i := 1; i <= 10; i++ {
+			name := fmt.Sprintf("xray-%d", i)
+			cpus := a[name]
+			nodes := topo.NodesOf(cpus)
+			wantNode := 1
+			if i > 5 {
+				wantNode = 0
+			}
+			if len(nodes) != 1 || nodes[0] != wantNode {
+				t.Errorf("cores %d: %s on nodes %v, want %d", size, name, nodes, wantNode)
+			}
+			// Whole cores: at most one shared with a neighbour.
+			if _, partial := topo.CoresIn(cpus); partial > 1 {
+				t.Errorf("cores %d: %s = %v has %d half cores", size, name, cpus, partial)
+			}
+			for _, c := range cpus {
+				if seen[c] {
+					t.Errorf("cores %d: CPU %d given twice", size, c)
+				}
+				seen[c] = true
+			}
+		}
+	}
+	a := allocateCPUs(topo, prefer, topo.Online, []coreRequest{{"xray-1", 5}})
+	if !reflect.DeepEqual(a["xray-1"], []int{1, 3, 5, 29, 31}) {
+		t.Errorf("fixed 5: %v", a)
 	}
 }
 

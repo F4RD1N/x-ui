@@ -10,8 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mhsanaei/3x-ui/v2/config"
 	"github.com/mhsanaei/3x-ui/v2/database"
 	"github.com/mhsanaei/3x-ui/v2/database/model"
+	"github.com/mhsanaei/3x-ui/v2/util/hw"
 	"github.com/mhsanaei/3x-ui/v2/xray"
 )
 
@@ -125,6 +127,26 @@ func running() []string {
 	return out
 }
 
+// checkInstancesFile checks bin/instances.json: the instances that run, in
+// name order, each with the CPUs its core is pinned to.
+func checkInstancesFile(t *testing.T, names ...string) {
+	t.Helper()
+	s, err := hw.ReadInstances(hw.FS{}, hw.InstancesPath(config.GetBinFolderPath()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, in := range s.Instances {
+		got = append(got, in.Name)
+		if pinned := hw.NewCPUSet(xray.ProcessCPUs(pidOf(t, in.Name))...).List(); in.CPUs != pinned {
+			t.Errorf("instances.json: %s on %q, its core on %q", in.Name, in.CPUs, pinned)
+		}
+	}
+	if strings.Join(got, ",") != strings.Join(names, ",") {
+		t.Fatalf("instances.json lists %v, want %v", got, names)
+	}
+}
+
 func TestXrayInstancesIntegration(t *testing.T) {
 	integrationCore(t)
 	var xs XrayService
@@ -179,6 +201,7 @@ func TestXrayInstancesIntegration(t *testing.T) {
 	if got := xray.ProcessCPUs(p1); len(got) != len(procOf("xray-1").CPUs()) {
 		t.Fatalf("xray-1 kernel mask %v, recorded %v", got, procOf("xray-1").CPUs())
 	}
+	checkInstancesFile(t, "xray-1", "xray-2")
 	// The two cores answer on different API ports, and each runs only its
 	// own inbound.
 	if XrayAPIPortForTag(a.Tag) == XrayAPIPortForTag(b.Tag) || XrayAPIPortForTag(a.Tag) == 0 {
@@ -204,6 +227,7 @@ func TestXrayInstancesIntegration(t *testing.T) {
 		if got := xray.ProcessCPUs(p2); len(got) != total-2 {
 			t.Fatalf("xray-2 (auto) on %v, want %d CPUs", got, total-2)
 		}
+		checkInstancesFile(t, "xray-1", "xray-2")
 		if !listening(a.Port) {
 			t.Fatal("inbound lost")
 		}
@@ -435,6 +459,7 @@ func TestStopStartInstance(t *testing.T) {
 	if pidOf(t, "xray-1") != p1 || len(xray.ProcessCPUs(p1)) != total {
 		t.Fatalf("xray-1 should keep running and take every CPU: %v", xray.ProcessCPUs(p1))
 	}
+	checkInstancesFile(t, "xray-1")
 	if xs.DidXrayCrash() {
 		t.Fatal("a stopped instance counts as a crash")
 	}
@@ -467,6 +492,7 @@ func TestStopStartInstance(t *testing.T) {
 	if n1, n2 := len(xray.ProcessCPUs(p1)), len(procOf("xray-2").CPUs()); n1+n2 != total {
 		t.Fatalf("CPUs not shared again: %d + %d", n1, n2)
 	}
+	checkInstancesFile(t, "xray-1", "xray-2")
 
 	// After a full stop, starting one instance starts that one only.
 	if err := xs.StopXray(); err != nil {

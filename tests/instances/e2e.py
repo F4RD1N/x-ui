@@ -7,9 +7,13 @@ XUI_PASS, TARGET) the traffic checks only pass if that panel's routing sends
 TARGET to a freedom outbound.
 
 Creates test inbounds through the panel API, checks which cores run, how
-they are pinned, that real VLESS traffic is counted, that TCP connections
-are counted per instance, and that the panel's existing inbounds keep
-running (same pid) throughout. Removes everything it created.
+they are pinned (and that bin/instances.json says so), that real VLESS
+traffic is counted, that TCP connections are counted per instance, and that
+the panel's existing inbounds keep running (same pid) throughout. Removes
+everything it created.
+
+With FAKE_TOPO=1 (run-isolated.sh) the panel sees the fake two-node CPU
+topology in XUI_HW_ROOT, and the test checks that instances stay on one node.
 """
 import json, os, socket, subprocess, sys, tempfile, threading, time, uuid
 import http.server, socketserver
@@ -23,6 +27,10 @@ XRAY = os.environ.get("XRAY", "/usr/local/x-ui/bin/xray-linux-amd64")
 TARGET = os.environ.get("TARGET", "5.75.198.163")
 # Only count cores whose binary path starts with this (isolated test panel).
 BINPREFIX = os.environ.get("BINPREFIX", "")
+# The panel's bin folder, where it writes instances.json.
+BINDIR = BINPREFIX.rstrip("/") if BINPREFIX else os.path.dirname(XRAY)
+FAKE_TOPO = bool(os.environ.get("FAKE_TOPO"))
+HWROOT = os.environ.get("XUI_HW_ROOT", "")
 
 s = requests.Session()
 results = []
@@ -57,6 +65,57 @@ def expand(lst):
         a, _, b = part.partition("-")
         n += (int(b) - int(a) + 1) if b else 1
     return n
+
+
+def cpuset(lst):
+    out = set()
+    for part in (lst or "").split(","):
+        if part.strip():
+            a, _, b = part.partition("-")
+            out.update(range(int(a), int(b or a) + 1))
+    return out
+
+
+def pinned(pid):
+    """the CPUs a core is pinned to, None when its threads disagree"""
+    masks = cores_of_pid(pid)
+    return cpuset(masks.pop()) if len(masks) == 1 else None
+
+
+def check_instances_file(label, total):
+    """bin/instances.json lists exactly the running cores, each with the
+    CPUs it is pinned to, and the panel's CPUs as allowed."""
+    end = time.time() + 5
+    while True:
+        try:
+            with open(os.path.join(BINDIR, "instances.json")) as f:
+                doc = json.load(f)
+        except (OSError, ValueError):
+            doc = None
+        now = procs()
+        listed = {}
+        for i in (doc or {}).get("instances", []):
+            listed[os.path.basename(i["config"]).split("config-", 1)[1].rsplit(".json", 1)[0]] = cpuset(i["cpus"])
+        ok = (doc is not None and doc.get("version") == 1 and len(cpuset(doc.get("allowed"))) == total
+              and set(listed) == set(now) and all(listed[n] == pinned(p) for n, p in now.items()))
+        if ok or time.time() > end:
+            break
+        time.sleep(0.2)
+    check(f"instances.json lists the running cores on their CPUs ({label})", ok,
+          (doc, {n: sorted(pinned(p) or []) for n, p in now.items()}))
+
+
+def fake_topology():
+    """the fake topology's nodes (id -> CPUs) and cores (CPU -> its core's CPUs)"""
+    base = os.path.join(HWROOT, "sys/devices/system")
+    nodes = {}
+    for d in os.listdir(base + "/node"):
+        if d.startswith("node") and d[4:].isdigit():
+            nodes[int(d[4:])] = cpuset(open(f"{base}/node/{d}/cpulist").read().strip())
+    cores = {}
+    for c in set().union(*nodes.values()):
+        cores[c] = cpuset(open(f"{base}/cpu/cpu{c}/topology/core_cpus_list").read().strip())
+    return nodes, cores
 
 
 def procs():
@@ -171,6 +230,15 @@ def main():
     before = procs()
     live = {n: p for n, p in before.items()}
     print("existing cores:", live)
+    check_instances_file("existing cores", total)
+    if FAKE_TOPO:
+        nodes, cores = fake_topology()
+        print("fake topology: nodes", {n: sorted(c) for n, c in nodes.items()})
+        if len(before) == 2:
+            sets = [pinned(p) for p in before.values()]
+            check("two auto cores each on one fake node of their own",
+                  all(c and any(c <= n for n in nodes.values()) for c in sets) and not (sets[0] & sets[1]),
+                  [sorted(c or []) for c in sets])
 
     baseline = list(created)
     tmp = tempfile.mkdtemp()
@@ -190,6 +258,7 @@ def main():
         autos = len(now)
         shares = sorted(ncpus(p) for p in now.values())
         check(f"{autos} auto cores split {total} CPUs", sum(shares) == total and shares[-1] - shares[0] <= 1, shares)
+        check_instances_file("after A", total)
 
         # --- B: named instance with fixed cores
         pb, cb, eb = free_port(), str(uuid.uuid4()), f"e2e-b-{int(time.time())}"
@@ -200,6 +269,13 @@ def main():
         check("B listening", listening(pb))
         now = procs()
         check("B's core has exactly 4 CPUs", ncpus(now["e2e-big"]) == 4, cores_of_pid(now["e2e-big"]))
+        check_instances_file("after B", total)
+        if FAKE_TOPO:
+            big = pinned(now["e2e-big"]) or set()
+            whole = any(big <= n for n in nodes.values()) and all(cores[c] <= big for c in big)
+            if any(len(n) == 4 for n in nodes.values()):
+                whole = big in nodes.values()
+            check("B's 4 fixed CPUs are whole cores of one fake node", whole, sorted(big))
         rest = [ncpus(p) for n, p in now.items() if n != "e2e-big"]
         check("auto cores share the other CPUs", sum(rest) == total - 4 if len(rest) <= total - 4 else True, rest)
         check("existing cores still not restarted", all(now.get(n) == p for n, p in live.items()), (live, now))
@@ -413,10 +489,12 @@ def main():
         check("overview shows it stopped", big["state"] == "stop", big["state"])
         time.sleep(3)  # the crash check runs every second: it must leave it stopped
         check("the crash check leaves it stopped", "e2e-big" not in procs())
+        check_instances_file("e2e-big stopped", total)
         res = api("POST", "/panel/api/server/startXrayInstance", data={"name": "e2e-big"})
         check("start e2e-big", res["success"], res.get("msg"))
         now = procs()
         check("e2e-big back on its 4 CPUs, listening", "e2e-big" in now and ncpus(now["e2e-big"]) == 4 and listening(pb))
+        check_instances_file("e2e-big started", total)
 
         # --- outgoing IP: refused unless it is the server's and reaches out
         addrs = api("GET", "/panel/api/server/hostAddresses")["obj"]
@@ -463,6 +541,7 @@ def main():
     check("existing cores never restarted", all(end_procs.get(n) == p for n, p in live.items()), (live, end_procs))
     shares = sorted(ncpus(p) for p in end_procs.values())
     check("existing cores share all CPUs again", sum(shares) == total, shares)
+    check_instances_file("at the end", total)
     failed = [n for n, ok in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed")
     sys.exit(1 if failed else 0)
