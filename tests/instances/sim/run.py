@@ -26,8 +26,16 @@ Every 5 s the run records each core's CPU, memory, threads, goroutines and
 GC, the busy share of the core, users and sites CPUs, and the core
 namespace's sockets and TCP counters. Per phase it writes the users' view
 (latency, failures, traffic) next to the server's.
+
+Alongside real users (--real-xui, default /usr/local/x-ui) it also records
+the host: free memory, every CPU's busy share, the real panel's cores (CPU,
+memory, pids) and, every 30 s, the real inbounds' connections (count,
+smoothed RTT, queued data) -- counts and distributions only, no addresses.
+A baseline of --baseline seconds is taken before the devices start. The
+run stops early (and says why) when free memory falls under --min-mem-gb,
+when a real core's pid disappears or changes, or after --max-seconds.
 """
-import argparse, glob, json, os, re, shutil, signal, sqlite3, subprocess, sys, threading, time, urllib.parse, urllib.request, uuid
+import argparse, glob, json, os, re, resource, shutil, signal, sqlite3, subprocess, sys, threading, time, urllib.parse, urllib.request, uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 NS_U, NS_C, NS_S = "xs-u", "xs-c", "xs-s"
@@ -57,6 +65,35 @@ def cpu_list(s):
 
 def fmt_cpus(cpus):
     return ",".join(map(str, cpus))
+
+
+def cpus_of(spec):
+    """a CPU list, or every CPU for 'all'"""
+    return list(range(os.cpu_count())) if spec == "all" else cpu_list(spec)
+
+
+def gen_prefix(cpus, nice):
+    """nice and taskset for a generator process; "all" leaves it unpinned"""
+    out = []
+    if nice:
+        out += ["nice", "-n", str(nice)]
+    if cpus != "all":
+        out += ["taskset", "-c", cpus]
+    return out
+
+
+def raise_nofile(want=2097152):
+    """the real panel's unit has LimitNOFILE=2097152; the throwaway panel and
+    its cores inherit this process's limit"""
+    try:
+        want = min(want, int(open("/proc/sys/fs/nr_open").read()))
+    except (OSError, ValueError):
+        pass
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (want, want))
+    except (ValueError, OSError):
+        pass
+    return resource.getrlimit(resource.RLIMIT_NOFILE)[0]
 
 
 # ------------------------------------------------------------ network
@@ -143,7 +180,7 @@ def src_spec(model):
 # ------------------------------------------------------------ panel
 
 class Panel:
-    def __init__(self, xui, out, cpus, template):
+    def __init__(self, xui, out, cpus, template, env=None):
         self.xui, self.dir, self.cpus = xui, os.path.join(out, "panel"), cpus
         shutil.rmtree(self.dir, ignore_errors=True)
         for d in ("bin", "db", "log"):
@@ -151,6 +188,7 @@ class Panel:
         for f in ["xray-linux-amd64", "geoip.dat", "geosite.dat"]:
             os.symlink(os.path.join(xui, "bin", f), os.path.join(self.dir, "bin", f))
         self.env = dict(os.environ, XUI_DB_FOLDER=self.dir + "/db", XUI_BIN_FOLDER=self.dir + "/bin", XUI_LOG_FOLDER=self.dir + "/log")
+        self.env.update(env or {})
         self.base = "http://127.0.0.1:2053/sim"
         subprocess.run(["ip", "netns", "exec", NS_C, os.path.join(xui, "x-ui"), "setting", "-username", "sim", "-password", "sim",
                         "-port", "2053", "-webBasePath", "/sim/"], env=self.env, check=True, capture_output=True)
@@ -371,6 +409,158 @@ class Sampler(threading.Thread):
             time.sleep(max(0, 5 - (time.time() - now)))
 
 
+def real_ports(xui):
+    ports = set()
+    for f in glob.glob(os.path.join(xui, "bin", "config-*.json")):
+        try:
+            for i in json.load(open(f)).get("inbounds", []):
+                if i.get("tag") != "api" and i.get("port"):
+                    ports.add(int(i["port"]))
+        except (OSError, ValueError, TypeError):
+            pass
+    return sorted(ports)
+
+
+def real_cores(xui):
+    """the real panel's cores: name -> pid (cwd is the panel's directory)"""
+    out = {}
+    for p in os.listdir("/proc"):
+        if not p.isdigit():
+            continue
+        try:
+            cmd = open(f"/proc/{p}/cmdline", "rb").read().split(b"\0")
+            cwd = os.readlink(f"/proc/{p}/cwd")
+        except OSError:
+            continue
+        if len(cmd) >= 3 and cmd[0].endswith(b"xray-linux-amd64") and cwd == xui:
+            out[os.path.basename(cmd[2].decode())[len("config-"):-len(".json")]] = int(p)
+    return out
+
+
+def meminfo():
+    out = {}
+    for line in open("/proc/meminfo"):
+        k, _, v = line.partition(":")
+        if k in ("MemTotal", "MemAvailable"):
+            out[k] = int(v.split()[0]) / 1048576  # GiB
+    return out
+
+
+def pct(vals, p):
+    if not vals:
+        return None
+    vals = sorted(vals)
+    return vals[min(len(vals) - 1, int(p * len(vals)))]
+
+
+def real_sockets(ports):
+    """the real inbounds' established connections, seen from the host's
+    namespace: count, smoothed RTT and queued data. Nothing else is kept."""
+    if not ports:
+        return {}
+    filt = " or ".join(f"sport = :{p}" for p in ports)
+    r = subprocess.run(["nsenter", "--net=/proc/1/ns/net", "ss", "-tniH", "state", "established", f"( {filt} )"],
+                       capture_output=True, text=True)
+    rtts, sendq = [], []
+    for line in r.stdout.splitlines():
+        if line[:1] in (" ", "\t"):
+            i = line.find(" rtt:")
+            if i >= 0:
+                try:
+                    rtts.append(float(line[i + 5:].split("/", 1)[0]))
+                except ValueError:
+                    pass
+            continue
+        f = line.split(None, 2)
+        if len(f) >= 2:
+            try:
+                sendq.append(int(f[1]))
+            except ValueError:
+                pass
+    n = len(sendq)
+    return {"conns": n, "srttP50": pct(rtts, .5), "srttP90": pct(rtts, .9), "srttP99": pct(rtts, .99),
+            "sendqShare": (sum(1 for q in sendq if q > 0) / n) if n else None, "sendqP90": pct(sendq, .9)}
+
+
+class HostSampler(threading.Thread):
+    """the machine and its real users, next to the simulation"""
+
+    def __init__(self, xui, groups):
+        super().__init__(daemon=True)
+        self.xui, self.groups = xui, groups
+        self.ports = real_ports(xui)
+        self.baseline_pids = real_cores(xui)
+        self.samples, self.sockets, self.stop_flag = [], [], False
+        self.mem_avail = None
+        self.pids_changed = None
+        threading.Thread(target=self.sock_loop, daemon=True).start()
+
+    def sock_loop(self):
+        while not self.stop_flag:
+            t = time.time()
+            try:
+                self.sockets.append({"t": t, **real_sockets(self.ports)})
+            except Exception as e:  # keep sampling
+                self.sockets.append({"t": t, "error": str(e)})
+            time.sleep(max(0, 30 - (time.time() - t)))
+
+    def run(self):
+        hz = os.sysconf("SC_CLK_TCK")
+        prev = None
+        while not self.stop_flag:
+            now = time.time()
+            pids = real_cores(self.xui)
+            if self.baseline_pids and self.pids_changed is None:
+                for n, p in self.baseline_pids.items():
+                    if pids.get(n) != p:
+                        self.pids_changed = f"real core {n}: pid {p} -> {pids.get(n)}"
+                        break
+            mem = meminfo()
+            self.mem_avail = mem.get("MemAvailable")
+            cur = {"t": now, "ticks": {n: ticks(p) for n, p in pids.items()}, "cpus": cpu_times(), "sockstat": sockstat_of(1)}
+            if prev:
+                dt = now - prev["t"]
+                row = {"t": now, "memAvailGB": mem.get("MemAvailable"), "memTotalGB": mem.get("MemTotal"), "realCores": {}, "groups": {},
+                       "sockstat": cur["sockstat"]}
+                for n, (tk, st) in cur["ticks"].items():
+                    a = prev["ticks"].get(n, (None, {}))[0]
+                    if tk is not None and a is not None:
+                        row["realCores"][n] = {"cpu": (tk - a) / hz / dt, "rssMB": st.get("VmRSS", 0) / 1024, "pid": pids[n]}
+                for g, ids in self.groups.items():
+                    busy = soft = tot = 0
+                    for i in ids:
+                        k = f"cpu{i}"
+                        if k in cur["cpus"] and k in prev["cpus"]:
+                            busy += cur["cpus"][k][0] - prev["cpus"][k][0]
+                            soft += cur["cpus"][k][1] - prev["cpus"][k][1]
+                            tot += cur["cpus"][k][2] - prev["cpus"][k][2]
+                    row["groups"][g] = {"busy": busy / tot if tot else None, "softirq": soft / tot if tot else None}
+                self.samples.append(row)
+            prev = cur
+            time.sleep(max(0, 5 - (time.time() - now)))
+
+
+def summarize_host(host, a, b):
+    rows = [r for r in host.samples if a <= r["t"] <= b]
+    socks = [r for r in host.sockets if a <= r["t"] <= b and "conns" in r]
+    if not rows:
+        return {}
+    def mean(vals):
+        vals = [v for v in vals if v is not None]
+        return sum(vals) / len(vals) if vals else None
+    names = sorted({n for r in rows for n in r["realCores"]})
+    out = {"memAvailGBMin": min(r["memAvailGB"] for r in rows), "memAvailGB": mean([r["memAvailGB"] for r in rows]),
+           "realCoreCPU": mean([sum(c["cpu"] for c in r["realCores"].values()) for r in rows]),
+           "realCoreRSSGB": mean([sum(c["rssMB"] for c in r["realCores"].values()) / 1024 for r in rows]),
+           "realCores": {n: {"cpu": mean([r["realCores"][n]["cpu"] for r in rows if n in r["realCores"]])} for n in names},
+           "groups": {g: {k: mean([r["groups"][g][k] for r in rows if g in r["groups"]]) for k in ("busy", "softirq")}
+                      for g in rows[0]["groups"]},
+           "hostTCP": mean([(r["sockstat"] or {}).get("TCP.inuse") for r in rows])}
+    if socks:
+        out["real"] = {k: mean([s.get(k) for s in socks]) for k in ("conns", "srttP50", "srttP90", "srttP99", "sendqShare", "sendqP90")}
+    return out
+
+
 def summarize(samples, a, b):
     rows = [r for r in samples if a <= r["t"] <= b]
     if not rows:
@@ -421,6 +611,12 @@ def main():
     ap.add_argument("--warm", type=float, default=120)
     ap.add_argument("--out", default=os.path.join(HERE, "results"))
     ap.add_argument("--keep", action="store_true", help="keep the namespaces afterwards")
+    ap.add_argument("--gen-nice", type=int, default=0, help="nice level for the users and the sites")
+    ap.add_argument("--panel-env", default="", help="KEY=VALUE,... for the throwaway panel (e.g. GOGC=150,GOMEMLIMIT=40GiB)")
+    ap.add_argument("--real-xui", default="/usr/local/x-ui", help="the real panel, watched alongside")
+    ap.add_argument("--baseline", type=float, default=60, help="seconds of the host watched before the devices start")
+    ap.add_argument("--min-mem-gb", type=float, default=12, help="stop when free memory falls under this")
+    ap.add_argument("--max-seconds", type=float, default=0, help="stop after this long (0 = no limit)")
     ap.add_argument("--inner", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
     if os.geteuid() != 0:
@@ -435,12 +631,20 @@ def main():
             print("namespaces ready:", NS_U, NS_C, NS_S)
             return
         # the rest runs inside the core namespace, where the panel is
-        for k in ("xsim", "model", "template", "out", "xui"):
+        for k in ("xsim", "model", "template", "out", "xui", "real_xui"):
             setattr(a, k, os.path.abspath(getattr(a, k)))
+        os.makedirs(a.out, exist_ok=True)
+        # what the model asks for at 1x, to set the achieved load against
+        fit = subprocess.run(["nice", "-n", "19", a.xsim, "fit", "-model", a.model, "-json", "-measure", "300"],
+                             capture_output=True, text=True)
+        if fit.returncode == 0:
+            open(os.path.join(a.out, "fit1x.json"), "w").write(fit.stdout)
         args = [a.mode, "--inner", "--phases", a.phases, "--instances", str(a.instances), "--port", str(a.port),
                 "--xray-cpus", a.xray_cpus, "--users-cpus", a.users_cpus, "--sites-cpus", a.sites_cpus, "--xui", a.xui,
                 "--xsim", a.xsim, "--model", a.model, "--template", a.template, "--ramp", str(a.ramp), "--warm", str(a.warm),
-                "--out", a.out] + (["--keep"] if a.keep else [])
+                "--out", a.out, "--gen-nice", str(a.gen_nice), "--panel-env", a.panel_env, "--real-xui", a.real_xui,
+                "--baseline", str(a.baseline), "--min-mem-gb", str(a.min_mem_gb), "--max-seconds", str(a.max_seconds)] + \
+            (["--keep"] if a.keep else [])
         child = subprocess.Popen(["ip", "netns", "exec", NS_C, sys.executable, os.path.abspath(__file__)] + args)
         stop = lambda *_: child.send_signal(signal.SIGTERM)
         signal.signal(signal.SIGINT, stop)
@@ -452,18 +656,25 @@ def main():
             teardown_net()
         sys.exit(rc)
     os.makedirs(a.out, exist_ok=True)
+    # a SIGTERM (the outer run, or its time limit) stops the devices like a
+    # guard does, so what was measured is kept and everything is cleaned up
+    term = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *_: term.set())
+    signal.signal(signal.SIGINT, lambda *_: term.set())
     xcpus = cpu_list(a.xray_cpus)
     run_dir = os.path.join(a.out, a.mode)
     os.makedirs(run_dir, exist_ok=True)
     procs = []
     panel = None
     try:
+        nofile = raise_nofile()
         slog = open(os.path.join(run_dir, "sites.log"), "w")
-        sites = subprocess.Popen(["ip", "netns", "exec", NS_S, "taskset", "-c", a.sites_cpus, a.xsim, "sites",
+        sites = subprocess.Popen(["ip", "netns", "exec", NS_S] + gen_prefix(a.sites_cpus, a.gen_nice) + [a.xsim, "sites",
                                   "-ips", ",".join(f"1.2.{3 + k}.1-1.2.{3 + k}.8" for k in range(len(model["sites"]))),
                                   "-tcp", SITE_TCP, "-udp", SITE_UDP], stdout=slog, stderr=slog)
         procs.append(sites)
-        panel = Panel(a.xui, run_dir, xcpus, a.template)
+        penv = dict(kv.split("=", 1) for kv in a.panel_env.split(",") if "=" in kv)
+        panel = Panel(a.xui, run_dir, xcpus, a.template, penv)
         cid = str(uuid.uuid4())
         if a.mode == "single":
             make_inbound(panel, a.port, cid, len(xcpus))
@@ -483,33 +694,95 @@ def main():
                 break
             time.sleep(0.2)
         time.sleep(3)
-        print(f"{a.mode}: cores {sorted(panel.xray_pids())} on CPUs {a.xray_cpus}", flush=True)
+        print(f"{a.mode}: cores {sorted(panel.xray_pids())} on CPUs {a.xray_cpus}; nofile {nofile}; panel env {penv}", flush=True)
+        # the host and its real users, from before the devices start
+        hgroups = {"all": list(range(os.cpu_count())), "xray": xcpus,
+                   "rest": [i for i in range(os.cpu_count()) if i not in set(xcpus)]}
+        base_from = time.time()
+        host = HostSampler(a.real_xui, hgroups)
+        host.start()
+        print(f"real cores {sorted(host.baseline_pids)}; real inbound ports {host.ports}", flush=True)
+        term.wait(a.baseline)
+        base_to = time.time()
         ulog = open(os.path.join(run_dir, "users.log"), "w")
-        users = subprocess.Popen(["ip", "netns", "exec", NS_U, "taskset", "-c", a.users_cpus, a.xsim, "users",
+        users = subprocess.Popen(["ip", "netns", "exec", NS_U] + gen_prefix(a.users_cpus, a.gen_nice) + [a.xsim, "users",
                                   "-model", a.model, "-inbounds", ",".join(f"10.77.0.1:{p}" for p in ports), "-uuid", cid,
                                   "-dialect", "4", "-src", src_spec(model), "-sites", site_spec(model), "-dead", f"{DEAD_NET}.1-{DEAD_NET}.8",
                                   "-phases", a.phases, "-ramp", str(a.ramp), "-warm", str(a.warm), "-nft",
                                   "-out", os.path.join(run_dir, "users.json")], stdout=subprocess.DEVNULL, stderr=ulog)
         procs.append(users)
-        groups = {"xray": xcpus, "users": cpu_list(a.users_cpus), "sites": cpu_list(a.sites_cpus)}
-        sampler = Sampler(panel, groups, {"users": users.pid, "sites": sites.pid})
+        groups = {"xray": xcpus, "users": cpus_of(a.users_cpus), "sites": cpus_of(a.sites_cpus)}
+        # the generator's own pids: past "ip netns exec", nice and taskset
+        def leaf(p):
+            for _ in range(50):
+                try:
+                    exe = os.readlink(f"/proc/{p.pid}/exe")
+                    if exe.endswith("xsim"):
+                        return p.pid
+                except OSError:
+                    pass
+                time.sleep(0.1)
+            return p.pid
+        sampler = Sampler(panel, groups, {"users": leaf(users), "sites": leaf(sites)})
         sampler.start()
-        users.wait()
+        # guards: free memory, the real cores, the time limit
+        started, guard = time.time(), None
+        while users.poll() is None:
+            time.sleep(2)
+            if term.is_set():
+                guard = "stopped from outside (signal)"
+            elif host.mem_avail is not None and host.mem_avail < a.min_mem_gb:
+                guard = f"free memory {host.mem_avail:.1f} GiB < {a.min_mem_gb:g} GiB"
+            elif host.pids_changed:
+                guard = host.pids_changed
+            elif a.max_seconds and time.time() - started > a.max_seconds:
+                guard = f"time limit {a.max_seconds:g} s"
+            if guard:
+                print(f"GUARD: {guard} -- stopping the devices", flush=True)
+                guard = {"reason": guard, "at": time.time()}
+                users.send_signal(signal.SIGTERM)
+                try:
+                    users.wait(120)
+                except subprocess.TimeoutExpired:
+                    users.kill()
+                break
         sampler.stop_flag = True
         sampler.join(15)
-        u = json.load(open(os.path.join(run_dir, "users.json")))
+        host.stop_flag = True
+        host.join(15)
+        try:
+            u = json.load(open(os.path.join(run_dir, "users.json")))
+        except (OSError, ValueError):
+            u = {"phases": []}
         phases = []
-        for p in u["phases"]:
-            phases.append({"users": p, "server": summarize(sampler.samples, p["measureFromUnix"], p["endUnix"])})
+        for p in u.get("phases") or []:
+            phases.append({"users": p, "server": summarize(sampler.samples, p["measureFromUnix"], p["endUnix"]),
+                           "host": summarize_host(host, p["measureFromUnix"], p["endUnix"])})
+        fit1x = None
+        try:
+            fit1x = json.load(open(os.path.join(a.out, "fit1x.json")))
+        except (OSError, ValueError):
+            pass
         res = {"mode": a.mode, "instances": 1 if a.mode == "single" else a.instances, "xrayCPUs": a.xray_cpus,
-               "usersCPUs": a.users_cpus, "sitesCPUs": a.sites_cpus, "phases": phases, "samples": sampler.samples}
+               "usersCPUs": a.users_cpus, "sitesCPUs": a.sites_cpus, "genNice": a.gen_nice, "panelEnv": penv,
+               "phasesPlanned": a.phases, "modelOnline": model["devices"]["online"], "fit1x": fit1x, "guard": guard,
+               "baseline": summarize_host(host, base_from, base_to), "realPorts": host.ports,
+               "realPidsBefore": host.baseline_pids, "realPidsAfter": real_cores(a.real_xui),
+               "phases": phases, "samples": sampler.samples, "hostSamples": host.samples, "realSockets": host.sockets}
         json.dump(res, open(os.path.join(a.out, f"{a.mode}.json"), "w"), indent=1)
+        b = res["baseline"].get("real") or {}
+        print(f"baseline: real conns {b.get('conns') or 0:.0f} srtt p50/p90 {b.get('srttP50') or 0:.0f}/{b.get('srttP90') or 0:.0f} ms "
+              f"real cores CPU {res['baseline'].get('realCoreCPU') or 0:.1f} mem free {res['baseline'].get('memAvailGB') or 0:.0f} GiB", flush=True)
         for p in phases:
-            uu, ss = p["users"], p["server"]
+            uu, ss, hh = p["users"], p["server"], p["host"]
+            r = hh.get("real") or {}
             print(f"scale {uu['scale']:g}: devices {uu['devices']:.0f} mux {uu['mux']:.0f} sessions {uu['tcpSessions']:.0f}+{uu['udpSessions']:.0f} "
-                  f"down {uu['perSec'].get('downBytes', 0) / 1e6:.0f} MB/s | core CPU {ss.get('coreCPU', 0):.2f} "
-                  f"({(ss.get('groups', {}).get('xray', {}).get('busy') or 0) * 100:.0f}% of its CPUs) | "
-                  f"TTFB p50/p99 {uu['ttfbMs']['p50']:.0f}/{uu['ttfbMs']['p99']:.0f} ms | failed {uu['totals'].get('sessionsFailed', 0)}", flush=True)
+                  f"down {uu['perSec'].get('downBytes', 0) / 1e6:.0f} MB/s | sim cores CPU {ss.get('coreCPU', 0):.2f} real {hh.get('realCoreCPU') or 0:.1f} "
+                  f"| box busy {(hh.get('groups', {}).get('all', {}).get('busy') or 0) * 100:.0f}% | "
+                  f"TTFB p50/p99 {uu['ttfbMs']['p50']:.0f}/{uu['ttfbMs']['p99']:.0f} ms | failed {uu['totals'].get('sessionsFailed', 0)} | "
+                  f"real srtt p50/p90 {r.get('srttP50') or 0:.0f}/{r.get('srttP90') or 0:.0f} | free {hh.get('memAvailGBMin') or 0:.0f} GiB", flush=True)
+        if guard:
+            print("stopped early:", guard["reason"], flush=True)
         print("wrote", os.path.join(a.out, f"{a.mode}.json"))
     finally:
         for p in procs:

@@ -133,6 +133,65 @@ def main():
             calib = ("<h2>The simulation at 1× next to the live server</h2><div class='card tbl'><table><tr><th></th>" +
                      "".join(f"<th>{html.escape(k)}</th>" for k in live) + "</tr><tr><td>live (10 cores × 5 CPUs)</td>" +
                      "".join(f"<td>{fmt(v, 1)}</td>" for v in live.values()) + "</tr>" + "".join(trs2) + "</table></div>")
+    # target against achieved, the real users and the box, and any guard
+    extra_html = ""
+    for m, r in res.items():
+        guard = r.get("guard")
+        if guard:
+            extra_html += (f"<div class='card warn'><b>{html.escape(labels[m])}: stopped early</b> — {html.escape(guard['reason'])}"
+                           f" (after {len(r['phases'])} of {len(r.get('phasesPlanned', '').split(','))} load steps)</div>")
+        fit = r.get("fit1x") or {}
+        online = r.get("modelOnline")
+        if fit or online:
+            trs3 = []
+            for p in r["phases"]:
+                u, sc = p["users"], p["users"]["scale"]
+                def pair(ach, tgt, d=0):
+                    if tgt is None:
+                        return f"<td>{fmt(ach, d)}</td><td>–</td><td>–</td>"
+                    share = 100 * ach / tgt if tgt else None
+                    return f"<td>{fmt(ach, d)}</td><td>{fmt(tgt, d)}</td><td>{fmt(share, 0)}%</td>"
+                trs3.append(f"<tr><td>{sc:g}×</td>" + pair(u["devices"], online * sc if online else None) +
+                            pair(u["mux"], fit.get("mux_standing", 0) * sc if fit else None) +
+                            pair(u["tcpSessions"], fit.get("tcp_standing", 0) * sc if fit else None) +
+                            pair(u["udpSessions"], fit.get("udp_standing", 0) * sc if fit else None) +
+                            pair(u["perSec"].get("downBytes", 0) / 1e6, fit.get("down_MBps", 0) * sc if fit else None, 0) + "</tr>")
+            hdr = "".join(f"<th>{t}</th><th>target</th><th>reached</th>" for t in ("devices", "mux conns", "TCP sessions", "UDP sessions", "down MB/s"))
+            extra_html += (f"<h2>{html.escape(labels[m])}: load asked for and load reached</h2><p class='sub'>Targets are the model at 1× (xsim fit) times the step. "
+                           f"The devices and sites run on the same machine at low priority, so when it runs out of CPU they fall short first.</p>"
+                           f"<div class='card tbl'><table><tr><th>step</th>{hdr}</tr>{''.join(trs3)}</table></div>")
+        if r.get("baseline") is not None and any(p.get("host") for p in r["phases"]):
+            def hrow(name, h, sim_cpu=None, ttfb=None, fail=None):
+                rr = h.get("real") or {}
+                g = h.get("groups") or {}
+                busy = lambda k: f"{(g.get(k) or {}).get('busy') * 100:.0f}%" if (g.get(k) or {}).get("busy") is not None else "–"
+                return (f"<tr><td>{name}</td><td>{fmt(h.get('realCoreCPU'), 1)}</td><td>{fmt(sim_cpu, 1)}</td><td>{busy('all')}</td><td>{busy('xray')}</td>"
+                        f"<td>{busy('rest')}</td><td>{fmt(rr.get('conns'), 0)}</td><td>{fmt(rr.get('srttP50'), 0)}</td><td>{fmt(rr.get('srttP90'), 0)}</td>"
+                        f"<td>{fmt(rr.get('srttP99'), 0)}</td><td>{fmt((rr.get('sendqShare') or 0) * 100, 0)}%</td><td>{fmt((rr.get('sendqP90') or 0) / 1024, 1)}</td>"
+                        f"<td>{fmt(h.get('memAvailGBMin'), 0)}</td><td>{fmt(ttfb, 0)}</td><td>{fmt(fail, 2)}</td></tr>")
+            trs4 = [hrow("before (no simulation)", r["baseline"])]
+            for p in r["phases"]:
+                u = p["users"]
+                sess = max(1, u["totals"].get("sessions", 0))
+                trs4.append(hrow(f"{u['scale']:g}×", p.get("host") or {}, (p.get("server") or {}).get("coreCPU"), u["ttfbMs"]["p99"],
+                                 100 * u["totals"].get("sessionsFailed", 0) / sess))
+            extra_html += ("<h2>The real users and the server</h2><p class='sub'>Real cores: the live panel's 10 cores and their users, measured alongside. "
+                           "srtt is the kernel's smoothed round trip on the real inbound connections; queued is the share of them with data waiting "
+                           "to be sent (and the 90th percentile of how much).</p><div class='card tbl'><table><tr><th>step</th><th>real cores CPU</th>"
+                           "<th>simulated cores CPU</th><th>server busy</th><th>CPUs 0-49 busy</th><th>other CPUs busy</th><th>real conns</th>"
+                           "<th>real srtt p50 ms</th><th>p90</th><th>p99</th><th>real queued</th><th>queued p90 KB</th><th>free GiB (min)</th>"
+                           "<th>simulated TTFB p99 ms</th><th>simulated failed %</th></tr>" + "".join(trs4) + "</table></div>")
+            # charts against the step
+            for key, title, unit, f in [("busy", "Server CPU busy (all CPUs)", "%", lambda p: ((p.get("host") or {}).get("groups", {}).get("all") or {}).get("busy")),
+                                        ("srtt90", "Real users: smoothed RTT, p90", "ms", lambda p: ((p.get("host") or {}).get("real") or {}).get("srttP90")),
+                                        ("queued", "Real users: connections with data queued", "%", lambda p: ((p.get("host") or {}).get("real") or {}).get("sendqShare"))]:
+                pts = []
+                for p in r["phases"]:
+                    v = f(p)
+                    if v is not None and unit == "%":
+                        v *= 100
+                    pts.append((p["users"]["scale"], v))
+                charts.append(chart(title, unit, {m: pts}))
     first = next(iter(res.values()))
     page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>User simulation</title>
@@ -154,11 +213,13 @@ th {{ color:var(--muted); font-weight:600; }}
 .chart {{ width:100%; height:auto; }} .ct {{ font-size:13px; font-weight:600; fill:var(--text); }}
 .ax {{ font-size:11px; fill:var(--muted); }} .grid {{ stroke:var(--line); }} .ln {{ fill:none; stroke-width:2.5; }}
 .legend span {{ margin-right:16px; }}
+.warn {{ border-color:#d4483b; margin:0 0 14px; }}
 </style></head><body><main>
-<h1>Simulated users: one xray core against several</h1>
+<h1>Simulated users{': one xray core against several' if len(res) > 1 else ''}</h1>
 <p class="sub">Devices modelled on the live server's users (Xray mux clients, VLESS over TCP with the HTTP header, dialect 4), at multiples of its load.
 xray on CPUs {html.escape(first['xrayCPUs'])}; users on {html.escape(first['usersCPUs'])}; sites on {html.escape(first['sitesCPUs'])}.</p>
 <p class="legend">{''.join(f"<span><span class='dot' style='background:{COLORS[m]}'></span>{html.escape(labels[m])}</span>" for m in res)}</p>
+{extra_html}
 <div class="grid2">{''.join(f'<div class="card">{c}</div>' for c in charts if c)}</div>
 {calib}
 <h2>All numbers</h2>
