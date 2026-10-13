@@ -148,6 +148,24 @@ func TestWarnings(t *testing.T) {
 	}
 }
 
+// irqbalance started with x-ui's policy script, in each form irqbalance
+// takes (the ones "x-ui tune" recognises too), is not warned about.
+func TestIRQBalancePolicyForms(t *testing.T) {
+	const pol = "/var/lib/x-ui/tune/irqbalance-policy"
+	for _, args := range []string{"--policyscript=" + pol, "--policyscript\x00" + pol, "-l" + pol, "-l\x00" + pol} {
+		f := productionAfter(t)
+		f.b.WriteFile("/proc/812/comm", "irqbalance\n")
+		f.b.WriteFile("/proc/812/cmdline", "/usr/sbin/irqbalance\x00--foreground\x00"+args+"\x00")
+		c := f.gather(0)
+		if !c.irqb.Running || !c.irqb.Policy {
+			t.Errorf("%q: running %v, policy %v", args, c.irqb.Running, c.irqb.Policy)
+		}
+		if contains(c.r.Warnings, "irqbalance runs without") {
+			t.Errorf("%q: warned:\n%s", args, strings.Join(c.r.Warnings, "\n"))
+		}
+	}
+}
+
 func contains(list []string, part string) bool {
 	for _, s := range list {
 		if strings.Contains(s, part) {

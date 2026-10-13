@@ -641,8 +641,11 @@ func (c *ctx) irqbalance() {
 		}
 		c.irqb.Running, c.irqb.Installed = true, true
 		args := strings.Split(strings.TrimRight(fs.ReadTrim(d+"/cmdline"), "\x00"), "\x00")
+		// The same forms "x-ui tune" accepts: --policyscript=P, -lP, or the
+		// flag and P as two words.
 		for i, a := range args {
-			if a == policyFlag+"="+irqbalancePol || ((a == policyFlag || a == "-l") && i+1 < len(args) && args[i+1] == irqbalancePol) {
+			if a == policyFlag+"="+irqbalancePol || a == "-l"+irqbalancePol ||
+				((a == policyFlag || a == "-l") && i+1 < len(args) && args[i+1] == irqbalancePol) {
 				c.irqb.Policy = true
 			}
 		}

@@ -369,7 +369,8 @@ func productionAfter(t *testing.T) *fixture {
 	b.Settle()
 	b.WriteFile("/var/lib/x-ui/tune/state.json", `{"version": 1, "nics": {"0000:82:00.0": {"name": "eno1", "driver": "ixgbe"}}}`+"\n")
 	b.WriteFile("/var/lib/x-ui/tune/irqbalance-policy", "#!/bin/sh\n# Written by x-ui tune\ncase \"${1##*/}\" in\n0000:82:00.0) echo ban=true ;;\nesac\nexit 0\n")
-	b.WriteFile("/etc/systemd/system/irqbalance.service.d/90-x-ui.conf", "# Written by x-ui tune\n[Service]\nEnvironment=\"IRQBALANCE_ARGS=--policyscript=/var/lib/x-ui/tune/irqbalance-policy\"\n")
+	b.WriteFile("/etc/systemd/system/irqbalance.service.d/90-x-ui.conf", "# Written by x-ui tune\n[Service]\nEnvironmentFile=-/var/lib/x-ui/tune/irqbalance.env\n")
+	b.WriteFile("/var/lib/x-ui/tune/irqbalance.env", "# Written by x-ui tune\nIRQBALANCE_ARGS=\"--policyscript=/var/lib/x-ui/tune/irqbalance-policy\"\n")
 	var insts []fakeInst
 	for n := 1; n <= 10; n++ {
 		insts = append(insts, fakeInst{name: fmt.Sprintf("xray-%d", n), cpus: afterCPUs[n-1], cores: 5,
