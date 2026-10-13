@@ -541,6 +541,14 @@ func (s *ServerService) RestartXrayInstance(name string) error {
 	return s.xrayService.RestartInstance(name)
 }
 
+func (s *ServerService) HostAddresses() ([]HostAddress, error) {
+	return s.xrayService.HostAddresses()
+}
+
+func (s *ServerService) SetXrayInstanceEgress(name, ip string) error {
+	return s.xrayService.SetInstanceEgress(name, ip)
+}
+
 func (s *ServerService) RestartXrayService() error {
 	err := s.xrayService.RestartXray(true)
 	if err != nil {

@@ -53,6 +53,8 @@ func (a *ServerController) initRouter(g *gin.RouterGroup) {
 	g.POST("/restartXrayInstance", a.restartXrayInstance)
 	g.POST("/stopXrayInstance", a.stopXrayInstance)
 	g.POST("/startXrayInstance", a.startXrayInstance)
+	g.GET("/hostAddresses", a.hostAddresses)
+	g.POST("/setXrayInstanceEgress", a.setXrayInstanceEgress)
 	g.POST("/updatePanel", a.updatePanel)
 	g.POST("/updateGeofile", a.updateGeofile)
 	g.POST("/updateGeofile/:fileName", a.updateGeofile)
@@ -189,6 +191,27 @@ func (a *ServerController) startXrayInstance(c *gin.Context) {
 		return
 	}
 	jsonMsg(c, I18nWeb(c, "pages.index.xrayInstanceStarted"), nil)
+}
+
+// hostAddresses lists the server's addresses an instance can send from.
+func (a *ServerController) hostAddresses(c *gin.Context) {
+	list, err := a.serverService.HostAddresses()
+	if err != nil {
+		jsonMsg(c, "", err)
+		return
+	}
+	jsonObj(c, list, nil)
+}
+
+// setXrayInstanceEgress sets the outgoing IP of one instance ("" for the
+// server's default); its core restarts, the others keep running.
+func (a *ServerController) setXrayInstanceEgress(c *gin.Context) {
+	err := a.serverService.SetXrayInstanceEgress(c.PostForm("name"), c.PostForm("ip"))
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.index.xrayInstanceEgressError"), err)
+		return
+	}
+	jsonMsg(c, I18nWeb(c, "pages.index.xrayInstanceEgressSaved"), nil)
 }
 
 // getLogs retrieves the application logs based on count, level, and syslog filters.

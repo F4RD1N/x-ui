@@ -19,3 +19,4 @@ signing.properties
 # simulator binary and results
 tests/instances/sim/xsim
 tests/instances/sim/results/
+__pycache__/

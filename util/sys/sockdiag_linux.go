@@ -134,7 +134,28 @@ func portFilter(ports []int) []byte {
 	return bc
 }
 
+// UDPSockets calls fn with the local address and port of every UDP socket,
+// IPv4 and IPv6. A socket bound to all addresses has IP "".
+func UDPSockets(fn func(LocalEndpoint)) error {
+	for _, family := range []uint8{unix.AF_INET, unix.AF_INET6} {
+		err := dumpSockets(family, unix.IPPROTO_UDP, ^uint32(0), nil, func(ep LocalEndpoint) {
+			if ep.IP == "0.0.0.0" || ep.IP == "::" {
+				ep.IP = ""
+			}
+			fn(ep)
+		})
+		if err != nil && family == unix.AF_INET {
+			return err
+		}
+	}
+	return nil
+}
+
 func dumpTCP(family uint8, bytecode []byte, fn func(LocalEndpoint)) error {
+	return dumpSockets(family, unix.IPPROTO_TCP, 1<<tcpEstablished, bytecode, fn)
+}
+
+func dumpSockets(family, proto uint8, states uint32, bytecode []byte, fn func(LocalEndpoint)) error {
 	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, unix.NETLINK_SOCK_DIAG)
 	if err != nil {
 		return err
@@ -150,8 +171,8 @@ func dumpTCP(family uint8, bytecode []byte, fn func(LocalEndpoint)) error {
 	// nlmsghdr + inet_diag_req_v2 (+ bytecode attribute)
 	req := make([]byte, 16+56)
 	req[16] = family
-	req[17] = unix.IPPROTO_TCP
-	binary.NativeEndian.PutUint32(req[20:], 1<<tcpEstablished)
+	req[17] = proto
+	binary.NativeEndian.PutUint32(req[20:], states)
 	if len(bytecode) > 0 {
 		attr := make([]byte, 4+len(bytecode))
 		binary.NativeEndian.PutUint16(attr[0:], uint16(len(attr)))

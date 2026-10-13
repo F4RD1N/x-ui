@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -223,6 +224,62 @@ func updateTgbotEnableSts(status bool) {
 }
 
 // updateTgbotSetting updates Telegram bot settings including token, chat ID, and runtime schedule.
+// updateXrayEgress sets instances' outgoing IPs from "name=ip,name=ip". An
+// empty ip sends that instance from the server's default address again. A
+// running panel applies it when it restarts.
+func updateXrayEgress(spec string) {
+	err := database.InitDB(config.GetDBPath())
+	if err != nil {
+		fmt.Println("Error initializing database:", err)
+		return
+	}
+	settingService := service.SettingService{}
+	m, err := settingService.GetInstanceEgress()
+	if err != nil {
+		fmt.Println("Error reading the outgoing IPs:", err)
+		return
+	}
+	names, err := service.XrayInstanceNames()
+	if err != nil {
+		fmt.Println("Error reading the inbounds:", err)
+		return
+	}
+	for _, part := range strings.Split(spec, ",") {
+		name, ip, ok := strings.Cut(strings.TrimSpace(part), "=")
+		name, ip = strings.TrimSpace(name), strings.TrimSpace(ip)
+		if !ok || name == "" {
+			fmt.Printf("Expected name=ip, got %q\n", part)
+			return
+		}
+		if !names[name] {
+			fmt.Printf("Warning: no inbound runs in %s yet\n", name)
+		}
+		if ip == "" {
+			delete(m, name)
+			continue
+		}
+		norm, err := service.CheckEgressIP(ip)
+		if err != nil {
+			fmt.Printf("%s: %v\n", name, err)
+			return
+		}
+		m[name] = norm
+	}
+	if err := settingService.SetInstanceEgress(m); err != nil {
+		fmt.Println("Error saving the outgoing IPs:", err)
+		return
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Printf("%s -> %s\n", k, m[k])
+	}
+	fmt.Println("Saved. Restart the panel (x-ui restart) to apply.")
+}
+
 func updateTgbotSetting(tgBotToken string, tgBotChatid string, tgBotRuntime string) {
 	err := database.InitDB(config.GetDBPath())
 	if err != nil {
@@ -528,6 +585,7 @@ func main() {
 	var show bool
 	var getCert bool
 	var resetTwoFactor bool
+	var xrayEgress string
 	settingCmd.BoolVar(&reset, "reset", false, "Reset all settings")
 	settingCmd.BoolVar(&show, "show", false, "Display current settings")
 	settingCmd.IntVar(&port, "port", 0, "Set panel port number")
@@ -544,6 +602,7 @@ func main() {
 	settingCmd.StringVar(&tgbotRuntime, "tgbotRuntime", "", "Set cron time for Telegram bot notifications")
 	settingCmd.StringVar(&tgbotchatid, "tgbotchatid", "", "Set chat ID for Telegram bot notifications")
 	settingCmd.BoolVar(&enabletgbot, "enabletgbot", false, "Enable notifications via Telegram bot")
+	settingCmd.StringVar(&xrayEgress, "xrayEgress", "", `Set xray instances' outgoing IPs: "xray-1=IP,xray-2=IP" (an empty IP clears it); applied at the next panel restart`)
 
 	oldUsage := flag.Usage
 	flag.Usage = func() {
@@ -615,6 +674,9 @@ func main() {
 		}
 		if enabletgbot {
 			updateTgbotEnableSts(enabletgbot)
+		}
+		if xrayEgress != "" {
+			updateXrayEgress(xrayEgress)
 		}
 	case "cert":
 		err := settingCmd.Parse(os.Args[2:])

@@ -718,6 +718,11 @@ func (s *XrayService) applyInstances(force bool) error {
 	if err != nil {
 		return err
 	}
+	egress, err := s.settingService.GetInstanceEgress()
+	if err != nil {
+		logger.Warning(err)
+	}
+	applyEgress(plan, egress)
 	// Keep every inbound port, and every core's API and metrics port, out
 	// of the ephemeral range before any core (re)starts.
 	reserve := map[int]bool{}

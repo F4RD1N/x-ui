@@ -63,6 +63,27 @@ const check = (name, ok, detail) => {
       await page.waitForSelector(`${card} .xi-stop`, { timeout: 15000 });
       const started = await page.textContent(`${card} .xi-state`);
       check('desktop: Start brings it back to Running', /Running/.test(started), started);
+
+      // Outgoing IP: the dialog lists the server's addresses, and one that
+      // reaches nothing (this namespace has no route out) is refused.
+      const card1 = '.xi-card:has(.xi-name:text-is("xray-1"))';
+      const facts = await page.textContent(`${card1} .xi-facts`);
+      check('desktop: card shows the outgoing IP and UDP ports', /Outgoing IP\s*Server default/.test(facts) && /UDP ports\s*[\d.]+k? \/ [\d.]+k/.test(facts), facts.replace(/\s+/g, ' '));
+      await page.click(`${card1} .xi-egress-edit`);
+      await page.waitForSelector('#egress-modal .ant-select', { state: 'visible' });
+      await page.click('#egress-modal .ant-select');
+      const listed = await page.waitForSelector('.ant-select-dropdown-menu-item:has-text("1.2.3.4")', { timeout: 10000 }).then(() => true, () => false);
+      check('desktop: the outgoing IP dialog lists the server addresses', listed);
+      if (listed) {
+        await page.click('.ant-select-dropdown-menu-item:has-text("1.2.3.4")');
+        await page.click('#egress-modal .ant-btn-primary');
+        const err = await page.waitForSelector('.ant-message-error', { timeout: 15000 }).then((e) => e.textContent(), () => '');
+        check('desktop: an IP that reaches nothing is refused with a message', /outgoing IP/.test(err) && /answers/.test(err), err);
+        check('desktop: the dialog stays open after a refusal', await page.isVisible('#egress-modal .ant-select'));
+        await page.screenshot({ path: `${SHOTS}/desktop-egress.png` });
+      }
+      await page.click('#egress-modal .ant-modal-footer .ant-btn:not(.ant-btn-primary)');
+      await page.waitForSelector('#egress-modal .ant-select', { state: 'hidden' });
     }
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
     check(label + ': overview has no horizontal scroll', overflow <= 0, overflow + 'px');

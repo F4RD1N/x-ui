@@ -194,3 +194,28 @@ func TestKernelAppliesPortFilter(t *testing.T) {
 		}
 	}
 }
+
+func TestUDPSockets(t *testing.T) {
+	wild, err := net.ListenPacket("udp", ":0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wild.Close()
+	lo, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lo.Close()
+	wildPort := wild.LocalAddr().(*net.UDPAddr).Port
+	loPort := lo.LocalAddr().(*net.UDPAddr).Port
+	found := map[LocalEndpoint]bool{}
+	if err := UDPSockets(func(ep LocalEndpoint) { found[ep] = true }); err != nil {
+		t.Fatal(err)
+	}
+	if !found[LocalEndpoint{IP: "", Port: wildPort}] {
+		t.Errorf("the wildcard socket on port %d was not reported as IP \"\"", wildPort)
+	}
+	if !found[LocalEndpoint{IP: "127.0.0.1", Port: loPort}] {
+		t.Errorf("the socket on 127.0.0.1:%d was not reported", loPort)
+	}
+}

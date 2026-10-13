@@ -94,3 +94,17 @@ func TestExponentialBackoff(t *testing.T) {
 		t.Error("duration: ", v)
 	}
 }
+
+func TestStopEndsRetries(t *testing.T) {
+	calls := 0
+	err := Timed(5, 1).On(func() error {
+		calls++
+		return Stop(errors.New("out of ports"))
+	})
+	if calls != 1 {
+		t.Fatalf("%d calls, want 1", calls)
+	}
+	if errors.Cause(err) != ErrRetryFailed {
+		t.Fatalf("error %v is not a retry failure", err)
+	}
+}

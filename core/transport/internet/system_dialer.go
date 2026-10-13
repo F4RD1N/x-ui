@@ -116,7 +116,10 @@ func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest ne
 		KeepAliveConfig: keepAliveConfig,
 	}
 
-	if sockopt != nil || len(d.controllers) > 0 {
+	// A TCP connection from a set source address (sendThrough) gets its
+	// port from connect(), so the address's ports are shared by destination.
+	bindNoPort := dialer.LocalAddr != nil && dest.Network == net.Network_TCP
+	if sockopt != nil || len(d.controllers) > 0 || bindNoPort {
 		if sockopt != nil && sockopt.TcpMptcp {
 			dialer.SetMultipathTCP(true)
 		}
@@ -127,6 +130,11 @@ func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest ne
 				}
 			}
 			return c.Control(func(fd uintptr) {
+				if bindNoPort {
+					if err := setBindAddressNoPort(fd); err != nil {
+						errors.LogInfoInner(ctx, err, "failed to set IP_BIND_ADDRESS_NO_PORT")
+					}
+				}
 				if sockopt != nil {
 					if err := applyOutboundSocketOptions(network, address, fd, sockopt); err != nil {
 						errors.LogInfoInner(ctx, err, "failed to apply socket options")

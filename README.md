@@ -154,6 +154,20 @@ and a change of cores moves running processes to their new CPUs in place.
 On upgrade, each existing inbound gets its own instance. An imported inbound
 also gets a new one.
 
+**Outgoing IP** (the pencil on an instance's card) makes the instance's
+freedom outbounds send from one of the server's own addresses (`sendThrough`).
+Every UDP flow a user opens (DNS, QUIC, calls) holds a local port of its own,
+and all instances sending from the default address share its ~64k ports: near
+full, every new flow's port search spins in the kernel, the CPU goes to 100% and
+traffic collapses, however big the server. With an address each, an instance has
+the whole port range to itself, as a separate server would, and its TCP
+connections still share ports by destination (`IP_BIND_ADDRESS_NO_PORT`). An
+address is accepted only if it is on the server and reaches the internet;
+setting it restarts that instance only. The card also shows the **UDP ports**
+in use where the instance takes them from, orange from 80% and red from 90%.
+From the shell: `x-ui setting -xrayEgress "xray-1=IP,xray-2=IP"` (applied at
+the next panel restart).
+
 **Multi Instance** (the inbound's ⋮ menu) manages the inbound's
 **sub-inbounds**: the same inbound on other ports, each in an xray instance of
 its own. A sub-inbound has only four settings of its own — port, instance, CPU

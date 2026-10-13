@@ -413,6 +413,20 @@ def main():
         now = procs()
         check("e2e-big back on its 4 CPUs, listening", "e2e-big" in now and ncpus(now["e2e-big"]) == 4 and listening(pb))
 
+        # --- outgoing IP: refused unless it is the server's and reaches out
+        addrs = api("GET", "/panel/api/server/hostAddresses")["obj"]
+        check("host addresses list the server's address", any(a["ip"] == TARGET for a in addrs), addrs)
+        old = procs()
+        res = api("POST", "/panel/api/server/setXrayInstanceEgress", data={"name": "e2e-big", "ip": "198.51.100.7"})
+        check("an address not on the server is refused", not res["success"] and "not an address of this server" in res.get("msg", ""), res.get("msg"))
+        res = api("POST", "/panel/api/server/setXrayInstanceEgress", data={"name": "e2e-big", "ip": TARGET})
+        check("an address that reaches nothing is refused", not res["success"] and "answers" in res.get("msg", ""), res.get("msg"))
+        res = api("POST", "/panel/api/server/setXrayInstanceEgress", data={"name": "e2e-big", "ip": ""})
+        check("server default is accepted", res["success"], res.get("msg"))
+        check("refused or unchanged outgoing IPs restart nothing", procs() == old, (old, procs()))
+        big = next(i for i in status()["xrayInstances"] if i["name"] == "e2e-big")
+        check("overview shows the outgoing IP and UDP ports", big["egress"] == "" and big["udpPorts"] >= 0 and big["udpPool"] > 1000, big)
+
         # --- move A into e2e-big
         old = procs()
         res = api("POST", f"/panel/api/inbounds/update/{a['id']}", data=inbound_payload(pa, ea, ca, instance="e2e-big", cores=4))

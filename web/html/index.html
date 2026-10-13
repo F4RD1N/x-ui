@@ -21,6 +21,10 @@
   .xi-inbounds { margin-top: 14px; }
   .xi-inbounds .ant-tag { margin: 0 4px 4px 0; }
   .xi-error { color: #e04141; font-size: 12px; margin-top: 6px; word-break: break-word; }
+  .xi-egress { display: flex; align-items: center; gap: 2px; }
+  .xi-egress-ip { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .xi-egress .ant-btn { flex: 0 0 auto; height: 22px; padding: 0 4px; }
+  .xi-gone { color: #cf3c3c; font-size: 12px; }
   @media (max-width: 480px) {
     .xi-body { gap: 12px; }
     .xi-gauge .ant-progress-inner { width: 84px !important; height: 84px !important; font-size: 18px !important; }
@@ -414,6 +418,18 @@
                         <div class="xi-label">{{ i18n "pages.index.operationHours" }}</div>
                         <div class="xi-value">[[ inst.uptime ? TimeFormatter.formatSecond(inst.uptime) : '–' ]]</div>
                       </div>
+                      <div class="xi-fact">
+                        <div class="xi-label">{{ i18n "pages.index.xrayInstanceEgress" }}</div>
+                        <div class="xi-value xi-egress">
+                          <span class="xi-egress-ip">[[ inst.egress || '{{ i18n "pages.index.xrayInstanceEgressDefault" }}' ]]</span>
+                          <a-button type="link" size="small" icon="edit" class="xi-egress-edit" @click="openEgress(inst)"></a-button>
+                        </div>
+                        <div v-if="inst.egressGone" class="xi-gone">{{ i18n "pages.index.xrayInstanceEgressGone" }}</div>
+                      </div>
+                      <div class="xi-fact">
+                        <div class="xi-label">{{ i18n "pages.index.xrayInstanceUdpPorts" }}</div>
+                        <div class="xi-value xi-udp" :style="{ color: udpColor(inst) }">[[ udpText(inst) ]]</div>
+                      </div>
                     </div>
                   </div>
                   <div class="xi-inbounds">
@@ -430,6 +446,18 @@
       </a-spin>
     </a-layout-content>
   </a-layout>
+  <a-modal id="egress-modal" v-model="egressModal.visible" :class="themeSwitcher.currentTheme"
+    :title="egressModal.name + ' · {{ i18n "pages.index.xrayInstanceEgress" }}'"
+    :confirm-loading="egressModal.saving" :ok-button-props="{ props: { disabled: egressModal.loading } }"
+    ok-text='{{ i18n "save" }}' cancel-text='{{ i18n "cancel" }}' @ok="saveEgress">
+    <a-select v-model="egressModal.ip" show-search class="w-100" :loading="egressModal.loading"
+      :dropdown-class-name="themeSwitcher.currentTheme">
+      <a-select-option value="">{{ i18n "pages.index.xrayInstanceEgressDefault" }}</a-select-option>
+      <a-select-option v-for="a in egressModal.addresses" :key="a.ip" :value="a.ip">
+        [[ a.ip ]]<span v-if="egressOthers(a).length" class="xi-muted"> &middot; [[ egressOthers(a).join(', ') ]]</span>
+      </a-select-option>
+    </a-select>
+  </a-modal>
   <a-modal id="version-modal" v-model="versionModal.visible" title='Geofiles'
     :closable="true" @ok="() => versionModal.visible = false" :class="themeSwitcher.currentTheme" footer="">
     <a-collapse default-active-key="2">
@@ -1060,6 +1088,7 @@
     data: {
       themeSwitcher,
       xiBusy: {},
+      egressModal: { visible: false, name: '', ip: '', addresses: [], loading: false, saving: false },
       loadingStates: {
         fetched: false,
         spinning: false
@@ -1374,6 +1403,40 @@
         } finally {
           this.$set(this.xiBusy, key, false);
         }
+      },
+      // The outgoing IP dialog: the server's addresses load when it opens.
+      async openEgress(inst) {
+        const m = this.egressModal;
+        Object.assign(m, { visible: true, name: inst.name, ip: inst.egress || '', addresses: [], loading: true, saving: false });
+        try {
+          const msg = await HttpUtil.get('/panel/api/server/hostAddresses');
+          if (msg.success && m.name === inst.name) m.addresses = msg.obj || [];
+        } finally {
+          m.loading = false;
+        }
+      },
+      async saveEgress() {
+        const m = this.egressModal;
+        m.saving = true;
+        try {
+          const msg = await HttpUtil.post('/panel/api/server/setXrayInstanceEgress', { name: m.name, ip: m.ip });
+          if (msg.success) m.visible = false;
+        } finally {
+          m.saving = false;
+        }
+      },
+      egressOthers(a) {
+        return (a.usedBy || []).filter((n) => n !== this.egressModal.name);
+      },
+      udpText(inst) {
+        if (!(inst.udpPorts >= 0) || !inst.udpPool) return '–';
+        const k = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n));
+        return k(inst.udpPorts) + ' / ' + k(inst.udpPool);
+      },
+      udpColor(inst) {
+        if (!(inst.udpPorts >= 0) || !inst.udpPool) return '';
+        const p = (100 * inst.udpPorts) / inst.udpPool;
+        return p < 80 ? '' : p < 90 ? '#f37b24' : '#cf3c3c';
       },
       xiAnyBusy(name) {
         return ['start', 'stop', 'restart'].some((a) => this.xiBusy[name + ':' + a]);

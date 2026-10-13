@@ -270,6 +270,11 @@ func (h *Handler) dial(ctx context.Context, dialer internet.Dialer, inbound *ses
 
 		rawConn, err := dialer.Dial(ctx, dialDest)
 		if err != nil {
+			if outOfLocalPorts(err) {
+				// Every try searches the whole port table again, which is
+				// what makes a host that ran out of ports spin in the kernel.
+				return retry.Stop(err)
+			}
 			return err
 		}
 

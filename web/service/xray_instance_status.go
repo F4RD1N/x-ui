@@ -20,20 +20,24 @@ const Idle ProcessState = "idle"
 
 // XrayInstanceStatus is one core as the overview shows it.
 type XrayInstanceStatus struct {
-	Name     string                `json:"name"`
-	State    ProcessState          `json:"state"`
-	ErrorMsg string                `json:"errorMsg"`
-	Pid      int                   `json:"pid"`
-	Cores    int                   `json:"cores"`    // configured; 0 = auto
-	Cpus     []int                 `json:"cpus"`     // CPUs it is pinned to
-	CpuUsage float64               `json:"cpuUsage"` // % of its own CPUs
-	CpuBusy  float64               `json:"cpuBusy"`  // CPUs' worth of work
-	Mem      uint64                `json:"mem"`      // resident bytes
-	Threads  int                   `json:"threads"`
-	Uptime   uint64                `json:"uptime"`
-	TcpCount int                   `json:"tcpCount"` // established client connections; -1 = unknown
-	RetryIn  int                   `json:"retryIn"`  // seconds until a failed core is tried again
-	Inbounds []XrayInstanceInbound `json:"inbounds"`
+	Name       string                `json:"name"`
+	State      ProcessState          `json:"state"`
+	ErrorMsg   string                `json:"errorMsg"`
+	Pid        int                   `json:"pid"`
+	Cores      int                   `json:"cores"`    // configured; 0 = auto
+	Cpus       []int                 `json:"cpus"`     // CPUs it is pinned to
+	CpuUsage   float64               `json:"cpuUsage"` // % of its own CPUs
+	CpuBusy    float64               `json:"cpuBusy"`  // CPUs' worth of work
+	Mem        uint64                `json:"mem"`      // resident bytes
+	Threads    int                   `json:"threads"`
+	Uptime     uint64                `json:"uptime"`
+	TcpCount   int                   `json:"tcpCount"`   // established client connections; -1 = unknown
+	Egress     string                `json:"egress"`     // outgoing IP; "" = the host's default
+	EgressGone bool                  `json:"egressGone"` // the outgoing IP is not on the host: it sends from the default
+	UdpPorts   int                   `json:"udpPorts"`   // local ports held where its UDP sockets get theirs; -1 = unknown
+	UdpPool    int                   `json:"udpPool"`    // ports there are to hold
+	RetryIn    int                   `json:"retryIn"`    // seconds until a failed core is tried again
+	Inbounds   []XrayInstanceInbound `json:"inbounds"`
 }
 
 // XrayCpuSummary is how the CPUs are shared out.
@@ -110,6 +114,27 @@ func (s *XrayService) XrayInstancesStatus() ([]XrayInstanceStatus, XrayCpuSummar
 	}
 
 	counts := s.instanceTCPCounts(inbounds)
+	egress, _ := s.settingService.GetInstanceEgress()
+	udp := currentUDPPortUse()
+	var hostIPs map[string]bool
+	if len(egress) > 0 {
+		hostIPs = hostAddressSet()
+	}
+	for name, st := range byName {
+		st.Egress = egress[name]
+		if st.Egress != "" && !hostIPs[st.Egress] {
+			st.EgressGone = true
+		}
+		st.UdpPorts = -1
+		if udp != nil {
+			from := st.Egress
+			if st.EgressGone {
+				from = ""
+			}
+			st.UdpPorts = udp.used(from)
+			st.UdpPool = udp.pool
+		}
+	}
 	now := time.Now()
 	statMu.Lock()
 	seen := map[int]bool{}

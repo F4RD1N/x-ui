@@ -1,12 +1,23 @@
 package retry // import "github.com/xtls/xray-core/common/retry"
 
 import (
+	goerrors "errors"
 	"time"
 
 	"github.com/xtls/xray-core/common/errors"
 )
 
 var ErrRetryFailed = errors.New("all retry attempts failed")
+
+// Stop marks an error that trying again cannot fix: On returns it at once.
+func Stop(err error) error {
+	return &stopError{err}
+}
+
+type stopError struct{ err error }
+
+func (e *stopError) Error() string { return e.err.Error() }
+func (e *stopError) Unwrap() error { return e.err }
 
 // Strategy is a way to retry on a specific function.
 type Strategy interface {
@@ -27,6 +38,10 @@ func (r *retryer) On(method func() error) error {
 		err := method()
 		if err == nil {
 			return nil
+		}
+		var stop *stopError
+		if goerrors.As(err, &stop) {
+			return errors.New(append(accumulatedError, stop.err)).Base(ErrRetryFailed)
 		}
 		numErrors := len(accumulatedError)
 		if numErrors == 0 || err.Error() != accumulatedError[numErrors-1].Error() {

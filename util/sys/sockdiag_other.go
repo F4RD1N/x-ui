@@ -14,3 +14,8 @@ type LocalEndpoint struct {
 func CountEstablishedTCP(ports []int) (map[LocalEndpoint]int, error) {
 	return nil, errors.New("not supported on this platform")
 }
+
+// UDPSockets is only implemented on Linux.
+func UDPSockets(fn func(LocalEndpoint)) error {
+	return errors.New("not supported on this platform")
+}

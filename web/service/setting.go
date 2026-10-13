@@ -26,6 +26,7 @@ var xrayTemplateConfig string
 
 var defaultValueMap = map[string]string{
 	"xrayTemplateConfig":          xrayTemplateConfig,
+	"xrayInstanceEgress":          "{}",
 	"webListen":                   "",
 	"webDomain":                   "",
 	"webPort":                     "2053",
