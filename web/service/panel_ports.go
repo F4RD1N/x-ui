@@ -35,9 +35,9 @@ func panelPortUser(listen string, port int) string {
 }
 
 // checkServerPort refuses port for the panel's server what ("Web" or "Sub")
-// when an inbound or a sub-inbound has it, or when something on the host
-// holds it now.
-func checkServerPort(what, listen string, port int) error {
+// when an inbound or a sub-inbound has it, or, when probe is set, when
+// something on the host holds it now.
+func checkServerPort(what, listen string, port int, probe bool) error {
 	var inbounds InboundService
 	if exist, err := inbounds.checkPortExist(listen, port, 0); err != nil {
 		return err
@@ -49,12 +49,23 @@ func checkServerPort(what, listen string, port int) error {
 	} else if name != "" {
 		return common.NewErrorf("%s port %d is already used by a sub-inbound of %s", what, port, name)
 	}
+	if !probe {
+		return nil
+	}
 	l, err := net.Listen("tcp", net.JoinHostPort(listen, strconv.Itoa(port)))
 	if err != nil {
 		return common.NewErrorf("%s port %d cannot be used: %v", what, port, err)
 	}
 	l.Close()
 	return nil
+}
+
+// holdsPort says whether a server listening on oldListen:oldPort holds
+// listen:port itself: the same port at an overlapping address. A probe there
+// fails on the server's own socket, so it cannot tell whether anything else
+// holds the port; the inbound checks still apply.
+func holdsPort(oldListen string, oldPort int, listen string, port int) bool {
+	return port == oldPort && (wildcardListen(listen) || wildcardListen(oldListen) || listen == oldListen)
 }
 
 // checkServerPorts runs checkServerPort for the web and the subscription
@@ -64,7 +75,7 @@ func (s *SettingService) checkServerPorts(webListen string, webPort int, subEnab
 	oldListen, _ := s.GetListen()
 	oldPort, _ := s.GetPort()
 	if webPort != oldPort || webListen != oldListen {
-		if err := checkServerPort("Web", webListen, webPort); err != nil {
+		if err := checkServerPort("Web", webListen, webPort, !holdsPort(oldListen, oldPort, webListen, webPort)); err != nil {
 			return err
 		}
 	}
@@ -77,7 +88,7 @@ func (s *SettingService) checkServerPorts(webListen string, webPort int, subEnab
 	if wasOn && subPort == oldSubPort && subListen == oldSubListen {
 		return nil
 	}
-	return checkServerPort("Sub", subListen, subPort)
+	return checkServerPort("Sub", subListen, subPort, !(wasOn && holdsPort(oldSubListen, oldSubPort, subListen, subPort)))
 }
 
 // addPanelPorts adds the panel's own web port, and the subscription port
