@@ -286,13 +286,19 @@ func (np *nicPlan) summary() []string {
 	}
 	if ib := np.IRQBalance; ib != nil && (ib.Unit != "" || ib.Running) {
 		names := strings.Join(ib.nics, ", ")
+		paren := func(s string) string {
+			if names == "" {
+				return ""
+			}
+			return " (" + names + s + ")"
+		}
 		switch {
-		case ib.Running && ib.Ours:
-			out = append(out, "irqbalance: running ("+names+" banned)")
+		case ib.Running && ib.Ours && !ib.Shadow:
+			out = append(out, "irqbalance: running"+paren(" banned"))
 		case ib.Running:
-			out = append(out, "irqbalance: running without x-ui's policy ("+names+" left to it)")
+			out = append(out, "irqbalance: running without x-ui's policy"+paren(" left to it"))
 		case len(ib.Banned) > 0:
-			out = append(out, "irqbalance: not running ("+names+" banned when it runs)")
+			out = append(out, "irqbalance: not running"+paren(" banned when it runs"))
 		default:
 			out = append(out, "irqbalance: not running")
 		}

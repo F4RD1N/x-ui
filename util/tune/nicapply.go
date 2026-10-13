@@ -24,6 +24,7 @@ func (e *Env) applyNICs(f *Facts, st *State, o ApplyOptions, r *Result) {
 	host := !o.Auto || o.Host
 	no := nicOpts{Instances: o.Instances, Host: host}
 	e.endAttempts(st, r)
+	e.settlePending(st)
 	np := e.planNICs(f, st, no)
 	for _, n := range np.Notes {
 		if np.Skip == "" {
@@ -40,7 +41,9 @@ func (e *Env) applyNICs(f *Facts, st *State, o ApplyOptions, r *Result) {
 	if e.syncNICState(st, np, o.TakeIRQs) {
 		np = e.planNICs(f, st, no)
 	}
-	if host && e.applyIRQBalance(np, st, r) {
+	// x-ui's irqbalance files change on a fresh install or a manual apply;
+	// any apply removes them where they hide an admin's IRQBALANCE_ARGS.
+	if ib := np.IRQBalance; (host || (ib != nil && ib.Shadow)) && e.applyIRQBalance(np, st, r) {
 		np = e.planNICs(f, st, no) // irqbalance restarted: what does it run with now?
 	}
 	if ib := np.IRQBalance; ib != nil && ib.Note != "" {
@@ -54,6 +57,16 @@ func (e *Env) applyNICs(f *Facts, st *State, o ApplyOptions, r *Result) {
 	np = e.applyNICKernel(f, st, np, no, r)
 	e.recordQueues(st, np, r)
 	e.applyNICUnit(f, st, r)
+}
+
+// state is the NIC's state entry, nil when there is none or it is about
+// another card (another driver) at the same address.
+func (it *nicItem) state(st *State) *NICState {
+	ns := st.NICs[it.Key]
+	if ns == nil || ns.Driver != it.NIC.Driver {
+		return nil
+	}
+	return ns
 }
 
 // syncNICState makes the state entries of the uplinks: a new one for a NIC
@@ -95,13 +108,24 @@ func (e *Env) endAttempts(st *State, r *Result) {
 }
 
 // applyNICKernel writes the planned kernel state of the NICs that have a
-// state entry: UDP hashing, interrupt CPUs, XPS, RPS. A NIC whose
-// interrupts turn out to be kernel-managed is planned again with them kept.
+// state entry (of the same driver: another card at that address is not
+// x-ui's until an apply makes its entry): UDP hashing, interrupt CPUs, XPS,
+// RPS. A NIC whose interrupts turn out to be kernel-managed is planned again
+// with them kept.
 func (e *Env) applyNICKernel(f *Facts, st *State, np *nicPlan, no nicOpts, r *Result) *nicPlan {
+	defer dropPending(st)
 	for round := 0; round < 3; round++ {
+		// Write ahead: a run killed between the writes and the state's
+		// save leaves the values it was writing known as x-ui's.
+		if markPending(st, np) {
+			if err := e.saveState(st, nil); err != nil {
+				r.problem("NIC: not changed: saving the state: %v", err)
+				return np
+			}
+		}
 		managed := false
 		for _, it := range np.NICs {
-			ns := st.NICs[it.Key]
+			ns := it.state(st)
 			if ns == nil {
 				continue
 			}
@@ -115,7 +139,7 @@ func (e *Env) applyNICKernel(f *Facts, st *State, np *nicPlan, no nicOpts, r *Re
 			continue
 		}
 		for _, it := range np.NICs {
-			if ns := st.NICs[it.Key]; ns != nil {
+			if ns := it.state(st); ns != nil {
 				e.writeQueueFiles(f, np, it, ns, r)
 			}
 		}
@@ -137,11 +161,13 @@ func (e *Env) writeHash(f *Facts, it *nicItem, ns *NICState, r *Result) {
 		}
 		if err := e.eth().SetFlowHash(it.NIC.Name, fl, hw.HashIPsPorts); err != nil {
 			r.problem("%s: %s hashing: %s", it.NIC.Name, ip.Key, ethNote(err))
+			unmark(ns.Hash, ip.Key)
 			continue
 		}
 		bits, err := e.eth().FlowHash(it.NIC.Name, fl)
 		if err != nil || bits != hw.HashIPsPorts {
 			r.problem("%s: %s hashing did not take (%s)", it.NIC.Name, ip.Key, hw.HashLetters(bits))
+			unmark(ns.Hash, ip.Key)
 			continue
 		}
 		if ns.Hash == nil {
@@ -152,7 +178,7 @@ func (e *Env) writeHash(f *Facts, it *nicItem, ns *NICState, r *Result) {
 			ks = &KeyState{Orig: ip.Live}
 			ns.Hash[ip.Key] = ks
 		}
-		ks.Written = ip.Want
+		ks.Written, ks.Pending = ip.Want, ""
 		done = append(done, ip.Key)
 		from, to = hashWords(ip.Live), hashWords(ip.Want)
 		ip.Live, ip.Want, ip.Note = ip.Want, "", "was "+hashWords(ks.Orig)
@@ -210,6 +236,12 @@ func (e *Env) writeIRQs(f *Facts, np *nicPlan, it *nicItem, ns *NICState, r *Res
 				note = "no interrupt vector left on that CPU"
 			}
 			r.problem("%s: IRQ %d to CPU %s: %s", it.NIC.Name, ip.IRQ, ip.Want, note)
+			if is := ns.IRQ[ip.Key]; is != nil {
+				is.Pending = ""
+				if is.Written == "" {
+					delete(ns.IRQ, ip.Key)
+				}
+			}
 			continue
 		}
 		if ns.IRQ == nil {
@@ -222,7 +254,7 @@ func (e *Env) writeIRQs(f *Facts, np *nicPlan, it *nicItem, ns *NICState, r *Res
 			is = &IRQState{IRQ: ip.IRQ, Orig: ip.Live}
 			ns.IRQ[ip.Key] = is
 		}
-		is.Written = ip.Want
+		is.Written, is.Pending = ip.Want, ""
 		ip.Live, ip.Want = ip.Want, ""
 		moved++
 	}
@@ -238,6 +270,7 @@ func (e *Env) writeQueueFiles(f *Facts, np *nicPlan, it *nicItem, ns *NICState, 
 		if err := e.writeKernel(ip.Path, val); err != nil {
 			_, note := errState(err, f)
 			r.problem("%s: %s: %s", it.NIC.Name, ip.Key, note)
+			unmark(m, ip.Key)
 			return m, false
 		}
 		if m == nil {
@@ -248,7 +281,7 @@ func (e *Env) writeQueueFiles(f *Facts, np *nicPlan, it *nicItem, ns *NICState, 
 			ks = &KeyState{Orig: ip.Live}
 			m[ip.Key] = ks
 		}
-		ks.Written = ip.Want
+		ks.Written, ks.Pending = ip.Want, ""
 		ip.Live, ip.Want = ip.Want, ""
 		return m, true
 	}
@@ -284,6 +317,138 @@ func (e *Env) writeQueueFiles(f *Facts, np *nicPlan, it *nicItem, ns *NICState, 
 	}
 	if len(rps) > 0 {
 		r.change("%s: RPS/RFS: %s", it.NIC.Name, strings.Join(rps, ", "))
+	}
+}
+
+// markPending records in the state the values the plan is about to write
+// (Pending), with the values to go back to for new entries. It reports
+// whether there is any.
+func markPending(st *State, np *nicPlan) bool {
+	marked := false
+	keys := func(m map[string]*KeyState, items []*itemPlan) map[string]*KeyState {
+		for _, ip := range items {
+			if ip.Want == "" {
+				continue
+			}
+			if m == nil {
+				m = map[string]*KeyState{}
+			}
+			ks := m[ip.Key]
+			if ks == nil || (ks.Orig == "" && ks.Written == "") {
+				ks = &KeyState{Orig: ip.Live}
+				m[ip.Key] = ks
+			}
+			ks.Pending = ip.Want
+			marked = true
+		}
+		return m
+	}
+	for _, it := range np.NICs {
+		ns := it.state(st)
+		if ns == nil {
+			continue
+		}
+		ns.Hash = keys(ns.Hash, it.Hash)
+		ns.XPS = keys(ns.XPS, it.XPS)
+		ns.RPS = keys(ns.RPS, it.RPS)
+		for _, ip := range it.IRQs {
+			if ip.Want == "" {
+				continue
+			}
+			if ns.IRQ == nil {
+				ns.IRQ = map[string]*IRQState{}
+			}
+			is := ns.IRQ[ip.Key]
+			if is == nil || is.IRQ != ip.IRQ || (is.Orig == "" && is.Written == "") {
+				is = &IRQState{IRQ: ip.IRQ, Orig: ip.Live}
+				ns.IRQ[ip.Key] = is
+			}
+			is.Pending = ip.Want
+			marked = true
+		}
+	}
+	return marked
+}
+
+// unmark forgets a value that was not written: its entry goes when x-ui
+// never wrote it.
+func unmark(m map[string]*KeyState, key string) {
+	if ks := m[key]; ks != nil {
+		ks.Pending = ""
+		if ks.Written == "" {
+			delete(m, key)
+		}
+	}
+}
+
+// dropPending forgets every value still marked as being written (the run
+// did not get to it).
+func dropPending(st *State) {
+	for _, ns := range st.NICs {
+		for _, m := range []map[string]*KeyState{ns.Hash, ns.XPS, ns.RPS} {
+			for k, ks := range m {
+				if ks.Pending != "" {
+					unmark(m, k)
+				}
+			}
+		}
+		for k, is := range ns.IRQ {
+			if is.Pending != "" {
+				is.Pending = ""
+				if is.Written == "" {
+					delete(ns.IRQ, k)
+				}
+			}
+		}
+	}
+}
+
+// settlePending ends the writes a dead run left marked: a value that is
+// live now is x-ui's (it was written), any other is forgotten.
+func (e *Env) settlePending(st *State) {
+	for _, key := range sortedStrings(st.NICs) {
+		ns := st.NICs[key]
+		name := e.nicNameOf(key)
+		for k, is := range ns.IRQ {
+			if is.Pending == "" {
+				continue
+			}
+			if l, err := hw.ParseList(e.readTrim(fmt.Sprintf("/proc/irq/%d/smp_affinity_list", is.IRQ))); err == nil && name != "" && l.List() == is.Pending {
+				is.Written = is.Pending
+			}
+			is.Pending = ""
+			if is.Written == "" {
+				delete(ns.IRQ, k)
+			}
+		}
+		for _, g := range []struct {
+			m    map[string]*KeyState
+			live func(k string) string
+		}{
+			{ns.XPS, func(k string) string { return e.rpsLive("/sys/class/net/" + name + "/queues/" + k + "/xps_cpus") }},
+			{ns.RPS, func(k string) string { return e.rpsLive("/sys/class/net/" + name + "/queues/" + k) }},
+			{ns.Hash, func(k string) string {
+				fl := hw.FlowUDP4
+				if k == "udp6" {
+					fl = hw.FlowUDP6
+				}
+				bits, err := e.eth().FlowHash(name, fl)
+				if err != nil {
+					return ""
+				}
+				return hw.HashLetters(bits)
+			}},
+		} {
+			for k, ks := range g.m {
+				if ks.Pending == "" {
+					continue
+				}
+				if name != "" && g.live(k) == ks.Pending {
+					ks.Written = ks.Pending
+				}
+				unmark(g.m, k)
+			}
+		}
 	}
 }
 
@@ -379,6 +544,7 @@ func (e *Env) revertNICs(f *Facts, st *State, dry bool, r *Result) {
 	if f.Container() || len(st.NICs) == 0 {
 		return
 	}
+	e.settlePending(st)
 	nr := 0
 	if t, err := hw.ReadTopology(e.hw()); err == nil {
 		nr = e.nrCPUs(t)
@@ -391,6 +557,15 @@ func (e *Env) revertNICs(f *Facts, st *State, dry bool, r *Result) {
 			continue
 		}
 		n := hw.ReadNIC(e.hw(), e.eth(), name)
+		if n.Driver == "" {
+			if di, err := e.eth().DrvInfo(name); err == nil {
+				n.Driver = di.Driver
+			}
+		}
+		if ns.Driver != "" && n.Driver != ns.Driver {
+			r.problem("%s (%s) is another card now (%s, was %s): x-ui changed nothing on it", name, key, orDefault(n.Driver, "unknown driver"), ns.Driver)
+			continue
+		}
 		// Interrupts and XPS are counted per NIC; RPS and hashing named.
 		counted := map[string]int{}
 		back := func(what, live, written, orig string, set func() error) {

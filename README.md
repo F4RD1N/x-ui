@@ -84,6 +84,9 @@ Every install and update also tunes the server for x-ui (`x-ui tune`):
   a package you removed is not installed again. x-ui no longer installs
   irqbalance: when it is installed, x-ui only takes the uplink NICs'
   interrupts away from it (a policy script) and it keeps balancing the rest.
+  If you set `IRQBALANCE_ARGS` yourself, add
+  `--policyscript=/var/lib/x-ui/tune/irqbalance-policy` to it and run
+  `x-ui tune apply`; until then the NICs' interrupts stay with irqbalance.
 
 The NIC's interrupts are placed by the xray instances' CPU split: the queues
 RSS spreads by hash go one per physical core, NIC-local cores first, shared

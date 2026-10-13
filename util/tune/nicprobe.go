@@ -17,9 +17,12 @@ import (
 
 // sysProber reaches the gateway for real: an ICMP echo on a raw socket
 // bound to the route's device, or, when the gateway does not answer echo,
-// its neighbour entry (one datagram to its discard port makes the kernel
-// resolve it; the kernel flushes neighbours when the carrier drops, so a
-// reachable entry after a change is a fresh answer).
+// its neighbour entry. That probe first deletes the entry (unless it is a
+// static one), then one datagram to the gateway's discard port makes the
+// kernel resolve it again: only an answer after the probe started makes it
+// reachable. (An entry left from before a queue change says nothing: the
+// kernel flushes neighbours only on a carrier drop that link watch sees,
+// and many drivers turn the carrier back on within the change.)
 type sysProber struct{}
 
 func (sysProber) Pick(routes []hw.Route, deadline time.Time) string {
@@ -167,14 +170,21 @@ func icmpEcho(dev string, gw net.IP, timeout time.Duration) error {
 	}
 }
 
-// neighReach makes the kernel resolve the gateway and waits for its
-// neighbour entry to be reachable.
+// neighReach forgets the gateway's neighbour entry, makes the kernel
+// resolve it again and waits for the entry to be reachable.
 func neighReach(dev string, gw net.IP, timeout time.Duration) error {
 	link, err := netlink.LinkByName(dev)
 	if err != nil {
 		return err
 	}
 	sa, fam := sockaddr(dev, gw, 9)
+	family := netlink.FAMILY_V4
+	if fam == unix.AF_INET6 {
+		family = netlink.FAMILY_V6
+	}
+	if err := neighForget(link.Attrs().Index, family, gw); err != nil {
+		return err
+	}
 	fd, err := unix.Socket(fam, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
 		return err
@@ -184,10 +194,6 @@ func neighReach(dev string, gw net.IP, timeout time.Duration) error {
 		return err
 	}
 	_ = unix.Sendto(fd, []byte("x-ui"), unix.MSG_DONTWAIT, sa)
-	family := netlink.FAMILY_V4
-	if fam == unix.AF_INET6 {
-		family = netlink.FAMILY_V6
-	}
 	end := time.Now().Add(timeout)
 	for {
 		neighs, err := netlink.NeighList(link.Attrs().Index, family)
@@ -204,4 +210,23 @@ func neighReach(dev string, gw net.IP, timeout time.Duration) error {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// neighForget deletes the gateway's neighbour entry, so that only a fresh
+// answer makes it reachable. A static (permanent or no-ARP) entry is kept:
+// it is never reachable, so the probe fails on it as it should.
+func neighForget(index, family int, gw net.IP) error {
+	neighs, err := netlink.NeighList(index, family)
+	if err != nil {
+		return err
+	}
+	for _, n := range neighs {
+		if !n.IP.Equal(gw) || n.State&(netlink.NUD_PERMANENT|netlink.NUD_NOARP) != 0 {
+			continue
+		}
+		if err := netlink.NeighDel(&n); err != nil && !errors.Is(err, unix.ENOENT) {
+			return err
+		}
+	}
+	return nil
 }

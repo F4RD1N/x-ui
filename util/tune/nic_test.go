@@ -645,6 +645,47 @@ func TestNICSideVector(t *testing.T) {
 	}
 }
 
+// A state entry about another card at the same PCI address (replaced
+// since, no apply after): "tune nic" and revert change nothing on the new
+// card (a bnxt_en would reset its link for a hash change) and say why.
+func TestNICOtherCardAtAddress(t *testing.T) {
+	e, b := onHW(t, hwtest.Production())
+	instances(t, b, "0-55", prodFixed...)
+	mustApply(t, e, ApplyOptions{Auto: true})
+	state := e.readTrim(StateFile)
+
+	m := hwtest.Production()
+	m.NICs[0].Driver, m.NICs[0].Vendor, m.NICs[0].Device = "bnxt_en", "14e4", "16d7"
+	m.NICs[0].Hash = map[string]uint64{"tcp4": hw.HashIPsPorts, "udp4": hw.HashIPsPorts, "tcp6": hw.HashIPsPorts, "udp6": hw.HashIPsPorts}
+	e2, b2 := onHW(t, m)
+	instances(t, b2, "0-55", prodAuto...)
+	writeT(t, e2.Root, StateFile, state+"\n")
+	b2.Settle()
+	before := irqSnapshot(t, b2)
+	if r, err := e2.RunNIC(NICOptions{}); err != nil || len(r.Changed) != 0 {
+		t.Errorf("tune nic on another card: %v %v", r.Changed, err)
+	}
+	for _, purge := range []bool{false, true} {
+		rv, err := e2.Revert(false, purge)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.ContainsFunc(rv.Problems, func(p string) bool {
+			return strings.Contains(p, "eno1 (0000:82:00.0) is another card now (bnxt_en, was ixgbe)")
+		}) {
+			t.Errorf("revert: %v %v", rv.Changed, rv.Problems)
+		}
+		writeT(t, e2.Root, StateFile, state+"\n")
+	}
+	if c := calls(b2, "Set"); len(c) != 0 || b2.Eth.Devs["eno1"].Resets != 0 {
+		t.Errorf("changes on the other card: %v, %d resets", c, b2.Eth.Devs["eno1"].Resets)
+	}
+	b2.Settle()
+	if d := diffMaps(before, irqSnapshot(t, b2)); len(d) > 0 {
+		t.Errorf("interrupts or queue files changed: %v", d[:min(3, len(d))])
+	}
+}
+
 // irqbalanceOn installs a distribution's irqbalance unit and defaults.
 func irqbalanceOn(t *testing.T, b *hwtest.Built, distro string) {
 	t.Helper()
@@ -761,7 +802,7 @@ func TestIRQBalanceCases(t *testing.T) {
 	if e.exists(IRQBalanceDropIn) || e.exists(IRQBalanceScript) {
 		t.Error("files written against the admin's IRQBALANCE_ARGS")
 	}
-	if !strings.Contains(strings.Join(r.Problems, "\n"), "IRQBALANCE_ARGS is set in /etc/default/irqbalance; add --policyscript=/var/lib/x-ui/tune/irqbalance-policy there to let x-ui place eno1's interrupts") {
+	if !strings.Contains(strings.Join(r.Problems, "\n"), "IRQBALANCE_ARGS is set in /etc/default/irqbalance; add --policyscript=/var/lib/x-ui/tune/irqbalance-policy there and run 'x-ui tune apply' to let x-ui place eno1's interrupts") {
 		t.Errorf("not reported: %v", r.Problems)
 	}
 	// An Environment= of the admin's in a drop-in.
@@ -826,6 +867,153 @@ func TestIRQBalanceCases(t *testing.T) {
 	mustApply(t, e, ApplyOptions{Auto: true})
 	if d := diffMaps(before, irqSnapshot(t, b)); len(d) > 0 {
 		t.Errorf("placed though irqbalance's policy does not ban eno1: %v", d[:min(3, len(d))])
+	}
+}
+
+// irqbalanceArgs sets the fake irqbalance's command line (as systemd
+// would start it after a restart).
+func irqbalanceCmd(b *hwtest.Built, args ...string) {
+	b.WriteFile(fmt.Sprintf("/proc/%d/cmdline", hwtest.IRQBalancePID), strings.Join(append([]string{"/usr/sbin/irqbalance", "--foreground"}, args...), "\x00")+"\x00")
+}
+
+// irqbalance running since boot (Ubuntu's default) has put every queue
+// interrupt on a CPU of its choosing: that is not an admin's placement. A
+// fresh install (and a manual apply) gives it the policy, and once it runs
+// with it, x-ui places them. An admin's --banirq still marks the
+// interrupts as the admin's.
+func TestIRQBalancePlacedByIt(t *testing.T) {
+	for _, distro := range []string{"debian12", "ubuntu2404", "rhel9", "upstream"} {
+		for _, o := range []ApplyOptions{{Auto: true, Host: true}, {}} {
+			m := hwtest.Production()
+			m.IRQBalance = "running"
+			e, b := onHW(t, m)
+			irqbalanceOn(t, b, distro)
+			fakeCommands(e, nil, "systemctl daemon-reload", "systemctl try-restart")
+			for i, irq := range b.QueueIRQs("eno1") {
+				b.WriteFile(fmt.Sprintf("/proc/irq/%d/smp_affinity_list", irq), fmt.Sprintf("%d\n", (2*i+3)%56))
+			}
+			b.Settle()
+			before := irqSnapshot(t, b)
+			r := mustApply(t, e, o)
+			name := fmt.Sprintf("%s %+v", distro, o)
+			if !e.exists(IRQBalanceScript) || !e.exists(IRQBalanceDropIn) || !strings.Contains(strings.Join(r.Changed, "\n"), "irqbalance: eno1's interrupts banned for it") {
+				t.Errorf("%s: policy not written: %v %v", name, r.Changed, r.Problems)
+			}
+			probs := strings.Join(r.Problems, "\n")
+			if strings.Contains(probs, "placed by someone else") || !strings.Contains(probs, "eno1: interrupts left to irqbalance, which runs without x-ui's policy ('systemctl restart irqbalance' applies it)") {
+				t.Errorf("%s: problems %v", name, r.Problems)
+			}
+			if d := diffMaps(before, irqSnapshot(t, b)); len(d) > 0 {
+				t.Errorf("%s: moved while irqbalance runs without the policy: %v", name, d[:min(3, len(d))])
+			}
+			if sum := e.summary(); !slices.Contains(sum, "irqbalance: running without x-ui's policy (eno1 left to it)") {
+				t.Errorf("%s: summary %q", name, sum)
+			}
+			// irqbalance restarted with the policy: x-ui places them.
+			irqbalanceCmd(b, "--policyscript="+IRQBalanceScript)
+			r = mustApply(t, e, ApplyOptions{Auto: true})
+			if !strings.Contains(strings.Join(r.Changed, "\n"), "eno1: 56 interrupts moved") || len(r.Problems) > 0 && strings.Contains(strings.Join(r.Problems, "\n"), "interrupts") {
+				t.Errorf("%s: with the policy: %v %v", name, r.Changed, r.Problems)
+			}
+		}
+	}
+	// The admin bans one of them from irqbalance and pins it: kept.
+	m := hwtest.Production()
+	m.IRQBalance = "running"
+	e, b := onHW(t, m)
+	irqbalanceCmd(b, "--banirq=105")
+	b.WriteFile("/proc/irq/105/smp_affinity_list", "4\n")
+	b.Settle()
+	if np := nicPlanOf(t, e); np.NICs[0].keep != "foreign" || np.NICs[0].example != "IRQ 105 on CPU 4" {
+		t.Errorf("--banirq: kept as %q (%s)", np.NICs[0].keep, np.NICs[0].example)
+	}
+}
+
+// An IRQBALANCE_ARGS the admin sets after x-ui's drop-in would be hidden by
+// it: x-ui stops placing the interrupts at once (the panel's "tune nic"),
+// and the next apply, an update too, removes its files and restarts
+// irqbalance so the admin's value counts.
+func TestIRQBalanceAdminArgsLater(t *testing.T) {
+	m := hwtest.Production()
+	m.IRQBalance = "running"
+	e, b := onHW(t, m)
+	irqbalanceOn(t, b, "debian12")
+	instances(t, b, "0-55", prodFixed...)
+	fakeCommands(e, nil, "systemctl daemon-reload", "systemctl try-restart")
+	mustApply(t, e, ApplyOptions{Auto: true, Host: true})
+	irqbalanceCmd(b, "--policyscript="+IRQBalanceScript)
+	mustApply(t, e, ApplyOptions{Auto: true})
+	b.Settle()
+
+	b.WriteFile("/etc/default/irqbalance", "IRQBALANCE_ARGS=\"--banirq=45\"\n")
+	instances(t, b, "0-55", prodAuto...)
+	before := irqSnapshot(t, b)
+	e.Ran = nil
+	if r, _ := e.RunNIC(NICOptions{}); len(r.Changed) != 0 {
+		t.Errorf("tune nic placed them: %v", r.Changed)
+	}
+	if d := diffMaps(before, irqSnapshot(t, b)); len(d) > 0 || len(e.Ran) > 0 || !e.exists(IRQBalanceDropIn) {
+		t.Errorf("tune nic: %v, ran %v", d[:min(3, len(d))], e.Ran)
+	}
+	if got := statusText(t, e); !strings.Contains(got, "x-ui's 90-x-ui.conf hides the IRQBALANCE_ARGS set in /etc/default/irqbalance: 'x-ui tune apply' removes it") {
+		t.Errorf("status:\n%s", got)
+	}
+	r := mustApply(t, e, ApplyOptions{Auto: true})
+	if e.exists(IRQBalanceDropIn) || e.exists(IRQBalanceEnv) || e.exists(IRQBalanceScript) || !strings.Contains(strings.Join(e.Ran, "\n"), "systemctl try-restart irqbalance") {
+		t.Errorf("update: files left, ran %v", e.Ran)
+	}
+	if !slices.Contains(r.Changed, "irqbalance: x-ui's policy removed, so the IRQBALANCE_ARGS in /etc/default/irqbalance count again") || strings.Contains(strings.Join(r.Changed, "\n"), "interrupts moved") {
+		t.Errorf("update: %v", r.Changed)
+	}
+}
+
+// Following x-ui's advice (--policyscript=<x-ui's script> in IRQBALANCE_ARGS
+// or in the unit's ExecStart) makes x-ui write the script and nothing else;
+// irqbalance running with it then leaves the NIC to x-ui.
+func TestIRQBalanceAdminPassesScript(t *testing.T) {
+	flag := "--policyscript=" + IRQBalanceScript
+	// After x-ui's own files: they go, the script stays.
+	e, b := onHW(t, hwtest.Production())
+	irqbalanceOn(t, b, "debian12")
+	fakeCommands(e, nil, "systemctl daemon-reload", "systemctl try-restart")
+	mustApply(t, e, ApplyOptions{Auto: true, Host: true})
+	b.WriteFile("/etc/default/irqbalance", "IRQBALANCE_ARGS=\""+flag+"\"\n")
+	mustApply(t, e, ApplyOptions{})
+	if !e.exists(IRQBalanceScript) || e.exists(IRQBalanceEnv) || e.exists(IRQBalanceDropIn) {
+		t.Errorf("after x-ui's files: script %v env %v drop-in %v", e.exists(IRQBalanceScript), e.exists(IRQBalanceEnv), e.exists(IRQBalanceDropIn))
+	}
+	// From the admin's own value, the flag added as advised.
+	e, b = onHW(t, hwtest.Production())
+	irqbalanceOn(t, b, "debian12")
+	fakeCommands(e, nil, "systemctl daemon-reload", "systemctl try-restart")
+	b.WriteFile("/etc/default/irqbalance", "IRQBALANCE_ARGS=\"--hintpolicy=exact\"\n")
+	mustApply(t, e, ApplyOptions{})
+	b.WriteFile("/etc/default/irqbalance", "IRQBALANCE_ARGS=\"--hintpolicy=exact "+flag+"\"\n")
+	r := mustApply(t, e, ApplyOptions{})
+	if !e.exists(IRQBalanceScript) || e.exists(IRQBalanceDropIn) || strings.Contains(strings.Join(r.Problems, "\n"), "IRQBALANCE_ARGS is set") {
+		t.Errorf("flag added: script %v, %v", e.exists(IRQBalanceScript), r.Problems)
+	}
+	// Running with it (the admin's args) and the script there: placed.
+	m := hwtest.Production()
+	m.IRQBalance = "running-ours"
+	e, b = onHW(t, m)
+	b.WriteFile("/etc/default/irqbalance", "IRQBALANCE_ARGS=\"--hintpolicy=exact "+flag+"\"\n")
+	fakeCommands(e, nil, "systemctl daemon-reload", "systemctl try-restart")
+	r = mustApply(t, e, ApplyOptions{Auto: true, Host: true})
+	if np := nicPlanOf(t, e); np.NICs[0].keep != "" || !strings.Contains(strings.Join(r.Changed, "\n"), "interrupts moved") {
+		t.Errorf("running with it: keep %q, %v %v", np.NICs[0].keep, r.Changed, r.Problems)
+	}
+	if got := statusText(t, e); strings.Contains(got, "runs without x-ui's policy") || !strings.Contains(got, "irqbalance  running with x-ui's policy (0000:82:00.0 banned)") {
+		t.Errorf("status:\n%s", got)
+	}
+	// In the unit's ExecStart.
+	e, b = onHW(t, hwtest.Production())
+	irqbalanceOn(t, b, "debian12")
+	fakeCommands(e, nil, "systemctl daemon-reload", "systemctl try-restart")
+	b.WriteFile("/etc/systemd/system/irqbalance.service.d/exec.conf", "[Service]\nExecStart=\nExecStart=/usr/sbin/irqbalance --foreground "+flag+"\n")
+	r = mustApply(t, e, ApplyOptions{})
+	if !e.exists(IRQBalanceScript) || e.exists(IRQBalanceDropIn) || strings.Contains(strings.Join(r.Problems, "\n"), "does not pass") {
+		t.Errorf("ExecStart: script %v, %v", e.exists(IRQBalanceScript), r.Problems)
 	}
 }
 
@@ -1029,7 +1217,7 @@ func TestNICWatchdog(t *testing.T) {
 	e.Probe = &fakeProbe{reach: []bool{false}}
 	r, _ = e.Queues(QueuesOptions{Now: true})
 	cs = chanState(t, e, "0000:3b:00.0")
-	if b.Eth.Devs["eth1"].Channels.Combined != 16 || !strings.HasPrefix(cs.Failed, "the gateway did not answer within 20s") {
+	if b.Eth.Devs["eth1"].Channels.Combined != 16 || !strings.HasPrefix(cs.Failed, "the gateway did not answer within 45s") {
 		t.Errorf("gateway lost: %d, %+v %v", b.Eth.Devs["eth1"].Channels.Combined, cs, r.Problems)
 	}
 
@@ -1061,6 +1249,91 @@ func TestNICWatchdog(t *testing.T) {
 	r, _ = e.Queues(QueuesOptions{Now: true})
 	if cs := chanState(t, e, "0000:3b:00.0"); cs.Failed != "" || !strings.Contains(strings.Join(r.Problems, "\n"), "device busy") {
 		t.Errorf("busy: %+v %v", cs, r.Problems)
+	}
+}
+
+// timedClock is a fakeClock that runs events when their time comes.
+type timedClock struct {
+	fakeClock
+	events []timedEvent
+}
+
+type timedEvent struct {
+	at time.Time
+	fn func()
+}
+
+func (c *timedClock) Sleep(d time.Duration) {
+	c.now = c.now.Add(d)
+	var left []timedEvent
+	for _, ev := range c.events {
+		if c.now.Before(ev.at) {
+			left = append(left, ev)
+			continue
+		}
+		ev.fn()
+	}
+	c.events = left
+}
+
+func (c *timedClock) after(d time.Duration, fn func()) {
+	c.events = append(c.events, timedEvent{c.now.Add(d), fn})
+}
+
+// lateProbe is a gateway that answers from a given time on.
+type lateProbe struct {
+	clk  *timedClock
+	from time.Time
+}
+
+func (p *lateProbe) Pick([]hw.Route, time.Time) string { return "fake gateway" }
+
+func (p *lateProbe) Reach(_ string, deadline time.Time) bool {
+	if p.from.After(deadline) {
+		p.clk.Sleep(deadline.Sub(p.clk.now))
+		return false
+	}
+	if p.from.After(p.clk.now) {
+		p.clk.Sleep(p.from.Sub(p.clk.now))
+	}
+	return true
+}
+
+// Spanning tree delays the way back after a link reset: a Linux bridge
+// with STP on keeps the route's device down for twice its forward delay
+// after the NIC's link, and a switch port without portfast forwards 30 s
+// after it. Both are waited for: the raise holds, with no second reset.
+func TestNICWatchdogSTP(t *testing.T) {
+	m := hwtest.ProxmoxBridge()
+	m.NICs[0].Channels = hw.Channels{MaxOther: 1, MaxCombined: 63, Other: 1, Combined: 8}
+	for _, c := range []string{"bridge", "switch"} {
+		e, b := onHW(t, m)
+		mustApply(t, e, ApplyOptions{Auto: true})
+		if cs := chanState(t, e, "0000:01:00.0"); cs == nil || cs.Want != 16 {
+			t.Fatalf("%s: plan %+v", c, cs)
+		}
+		clk := &timedClock{fakeClock: *e.Clock.(*fakeClock)}
+		e.Clock = clk
+		bridge := "/sys/class/net/vmbr0/"
+		switch c {
+		case "bridge":
+			b.WriteFile(bridge+"bridge/stp_state", "1\n")
+			b.WriteFile(bridge+"bridge/forward_delay", "1500\n")
+			b.Eth.DuringReset = func(string) {
+				b.WriteFile(bridge+"operstate", "down\n")
+				clk.after(2*time.Second+30*time.Second+500*time.Millisecond, func() { b.WriteFile(bridge+"operstate", "up\n") })
+			}
+		case "switch":
+			b.Eth.DuringReset = func(string) { e.Probe = &lateProbe{clk: clk, from: clk.now.Add(32 * time.Second)} }
+		}
+		r, err := e.RunNIC(NICOptions{Boot: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cs := chanState(t, e, "0000:01:00.0")
+		if got := calls(b, "SetChannels"); len(got) != 1 || cs.Failed != "" || b.Eth.Devs["eno1"].Channels.Combined != 16 {
+			t.Errorf("%s: calls %v, state %+v, problems %v", c, got, cs, r.Problems)
+		}
 	}
 }
 
@@ -1193,6 +1466,16 @@ func TestNICQueueSkips(t *testing.T) {
 		{"interfaces", nil, [2]string{"/etc/network/interfaces", "iface eth1 inet dhcp\n    post-up ethtool -L eth1 combined 16\n"}, "", "an admin sets the queue count (/etc/network/interfaces)"},
 		{"rc.local", nil, [2]string{"/etc/rc.local", "#!/bin/sh\n/sbin/ethtool --set-channels eth1 combined 16\n"}, "", "an admin sets the queue count"},
 		{"NetworkManager", nil, [2]string{"/etc/NetworkManager/system-connections/eth1.nmconnection", "[connection]\ninterface-name=eth1\n[ethtool]\nchannels-combined=16\n"}, "", "an admin sets the queue count"},
+		{"if-up.d", nil, [2]string{"/etc/network/if-up.d/queues", "#!/bin/sh\n[ \"$IFACE\" = eth1 ] && ethtool -L \"$IFACE\" combined 16\n"}, "", "an admin sets the queue count (/etc/network/if-up.d/queues)"},
+		{"if-pre-up.d", nil, [2]string{"/etc/network/if-pre-up.d/queues", "#!/bin/sh\n/usr/sbin/ethtool -L $IFACE combined 16\n"}, "", "an admin sets the queue count (/etc/network/if-pre-up.d/queues)"},
+		{"NM dispatcher pre-up.d", nil, [2]string{"/etc/NetworkManager/dispatcher.d/pre-up.d/10-queues", "#!/bin/sh\nethtool -L \"$1\" combined 16\n"}, "", "an admin sets the queue count (/etc/NetworkManager/dispatcher.d/pre-up.d/10-queues)"},
+		{"ifcfg", nil, [2]string{"/etc/sysconfig/network-scripts/ifcfg-eth1", "DEVICE=eth1\nETHTOOL_OPTS=\"-L eth1 combined 16\"\n"}, "", "an admin sets the queue count (/etc/sysconfig/network-scripts/ifcfg-eth1)"},
+		{"SUSE ifcfg", nil, [2]string{"/etc/sysconfig/network/ifcfg-eth1", "ETHTOOL_OPTIONS='--set-channels eth1 combined 16'\n"}, "", "an admin sets the queue count (/etc/sysconfig/network/ifcfg-eth1)"},
+		{"systemd unit", nil, [2]string{"/etc/systemd/system/nic-queues.service", "[Service]\nType=oneshot\nExecStart=/usr/sbin/ethtool -L eth1 combined 16\n"}, "", "an admin sets the queue count (/etc/systemd/system/nic-queues.service)"},
+		{"rc.d/rc.local", nil, [2]string{"/etc/rc.d/rc.local", "ethtool -L eth1 combined 16\n"}, "", "an admin sets the queue count (/etc/rc.d/rc.local)"},
+		{"cron @reboot", nil, [2]string{"/etc/cron.d/queues", "@reboot root /sbin/ethtool -L eth1 combined 16\n"}, "", "an admin sets the queue count (/etc/cron.d/queues)"},
+		{"other ethtool option", nil, [2]string{"/etc/network/if-up.d/ring", "ethtool --set-ring eth1 rx 4096\n"}, "", ""},
+		{"package's hook", nil, [2]string{"/etc/network/if-up.d/ethtool", "[ -z \"$S\" ] || $ETHTOOL --set-channels \"$IFACE\" $S\n"}, "", ""},
 		{"commented", nil, [2]string{"/etc/rc.local", "#ethtool -L eth1 combined 16\n"}, "", ""},
 		{"other device", nil, [2]string{"/etc/rc.local", "ethtool -L eth9 combined 2\n"}, "", ""},
 		{"VF", func(m *hwtest.Machine) { m.NICs[0].VF = true }, [2]string{}, "", "SR-IOV VF"},
@@ -1213,6 +1496,7 @@ func TestNICQueueSkips(t *testing.T) {
 			if c.init != "" {
 				mm.init = c.init
 			}
+			mm.vendor = append(mm.vendor, "/etc/network/if-up.d/ethtool")
 		})
 		b.WriteFile("/sys/class/net/eth9/ifindex", "9\n")
 		if c.file[0] != "" {
@@ -1228,6 +1512,91 @@ func TestNICQueueSkips(t *testing.T) {
 		if q.State != "skip" || !strings.Contains(q.Note, c.want) {
 			t.Errorf("%s: %+v", c.name, q)
 		}
+	}
+}
+
+// A NIC set to separate RX and TX channels (ethtool -L rx 16 tx 16): its
+// RX count is its queue count, and it is kept as it is (bnxt_en refuses a
+// combined count beside them).
+func TestNICSeparateChannels(t *testing.T) {
+	m := raiseMachine("bnxt_en", 0)
+	m.NICs[0].Vendor, m.NICs[0].Device = "14e4", "16d7"
+	m.NICs[0].Channels = hw.Channels{MaxRx: 63, MaxTx: 63, MaxCombined: 63, Rx: 16, Tx: 16}
+	e, b := onHW(t, m)
+	b.Eth.Fail["SetChannels eth1"] = fmt.Errorf("ethtool: %w", syscall.EINVAL)
+	if q := nicPlanOf(t, e).NICs[0].Queues; q.State != "kept" || q.Current != 16 || q.Max != 63 || q.Want != 0 || q.Note != "separate RX and TX channels" {
+		t.Errorf("plan %+v", q)
+	}
+	r := mustApply(t, e, ApplyOptions{Auto: true})
+	if e.exists(NICUnitFile) || strings.Contains(strings.Join(r.Changed, "\n"), "at the next boot") {
+		t.Errorf("a raise planned: %v", r.Changed)
+	}
+	if got := statusText(t, e); !strings.Contains(got, "queues      16 of 63: kept (separate RX and TX channels)") {
+		t.Errorf("status:\n%s", got)
+	}
+	if _, err := e.Queues(QueuesOptions{Now: true}); err != nil || len(calls(b, "SetChannels")) != 0 {
+		t.Errorf("queues --now: %v %v", err, b.Eth.Calls)
+	}
+	if cs := chanState(t, e, "0000:3b:00.0"); cs != nil {
+		t.Errorf("state %+v", cs)
+	}
+}
+
+// A "tune nic" killed halfway through moving the interrupts (the panel
+// stopped, the 20 s limit): the next run finds the moved ones still x-ui's
+// (they were saved before they were written), places the rest, and revert
+// puts every one back.
+func TestNICKilledHalfway(t *testing.T) {
+	e, b := onHW(t, hwtest.Production())
+	b.Settle()
+	orig := irqSnapshot(t, b)
+	instances(t, b, "0-55", prodFixed...)
+	mustApply(t, e, ApplyOptions{Auto: true})
+	b.Settle()
+	instances(t, b, "0-55", prodAuto...)
+	type killed struct{}
+	writes := 0
+	e.beforeWrite = func(abs string) {
+		if strings.HasPrefix(abs, "/proc/irq/") {
+			if writes++; writes > 20 {
+				panic(killed{})
+			}
+		}
+	}
+	func() {
+		defer func() {
+			if v := recover(); v != (killed{}) {
+				panic(v)
+			}
+		}()
+		e.RunNIC(NICOptions{})
+		t.Fatal("not killed")
+	}()
+	e.beforeWrite = nil
+	b.Settle()
+
+	r, err := e.RunNIC(NICOptions{})
+	if err != nil || len(r.Problems) > 0 || !strings.Contains(strings.Join(r.Changed, "\n"), "interrupts moved") {
+		t.Errorf("the run after: %v %v %v", r.Changed, r.Problems, err)
+	}
+	if np := nicPlanOf(t, e); np.NICs[0].keep != "" {
+		t.Errorf("kept as %q: %s", np.NICs[0].keep, np.NICs[0].IRQNote)
+	}
+	if d, _ := e.Status(false); len(d) != 0 {
+		t.Errorf("drift: %v", d)
+	}
+	st, _, _ := e.loadState()
+	for k, is := range st.NICs["0000:82:00.0"].IRQ {
+		if is.Pending != "" {
+			t.Errorf("%s still pending: %+v", k, is)
+		}
+	}
+	if _, err := e.Revert(false, false); err != nil {
+		t.Fatal(err)
+	}
+	b.Settle()
+	if d := diffMaps(orig, irqSnapshot(t, b)); len(d) > 0 {
+		t.Errorf("revert left %d differences: %v", len(d), d[:min(3, len(d))])
 	}
 }
 

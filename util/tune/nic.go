@@ -294,15 +294,20 @@ func (e *Env) planNICs(f *Facts, st *State, o nicOpts) *nicPlan {
 
 	// Whose interrupts are they? irqbalance running with x-ui's policy
 	// script, which bans the NIC, has left them to x-ui: where it put them
-	// earlier is not an admin's choice.
-	ibRunning, ibOurs := e.irqbalanceRunning()
+	// earlier is not an admin's choice. irqbalance running without it
+	// places them itself: where they are is irqbalance's doing, unless an
+	// admin keeps them from it (--banirq, or a policy script of their own).
+	ibRunning, ibArgs := e.irqbalanceProc()
+	ibOurs, ibOther, ibBans := irqbalanceArgs(ibArgs)
+	_, shadow := e.irqbalanceShadowed()
 	var banned []string
 	if s, err := e.read(IRQBalanceScript); err == nil && e.isOurs(IRQBalanceScript) {
 		banned = scriptPCIs(s)
 	}
 	for _, it := range np.NICs {
 		n, ns := it.NIC, it.ns
-		released := ibRunning && ibOurs && slices.Contains(banned, n.PCI)
+		released := ibRunning && ibOurs && !shadow && slices.Contains(banned, n.PCI)
+		balanced := ibRunning && !released && !ibOther && !slices.ContainsFunc(n.IRQs, func(q hw.QueueIRQ) bool { return ibBans[q.IRQ] })
 		switch {
 		case n.RxQueues <= 1 && n.TxQueues <= 1:
 			it.keep = "single"
@@ -312,7 +317,7 @@ func (e *Env) planNICs(f *Facts, st *State, o nicOpts) *nicPlan {
 			it.keep = "managed"
 		case e.OnlyNet:
 			it.keep = "readonly"
-		case released:
+		case released, balanced:
 		default:
 			if q := e.foreignIRQ(n, ns, t); q != nil {
 				it.keep, it.example = "foreign", fmt.Sprintf("IRQ %d on CPU %s", q.IRQ, q.Affinity.List())
@@ -322,9 +327,9 @@ func (e *Env) planNICs(f *Facts, st *State, o nicOpts) *nicPlan {
 	np.IRQBalance = e.irqbalancePlan(np, st, o)
 	// While irqbalance runs without the policy for a NIC, it moves that
 	// NIC's interrupts: they are left to it.
-	if ib := np.IRQBalance; ib.Running && !(o.Assume && ib.DropIn != "") {
+	if ib := np.IRQBalance; ib.Running && !(o.Assume && ib.Script != "") {
 		for _, it := range np.NICs {
-			if it.keep == "" && (!ib.Ours || !slices.Contains(ib.Banned, it.NIC.PCI)) {
+			if it.keep == "" && (!ib.Ours || ib.Shadow || !slices.Contains(ib.Banned, it.NIC.PCI)) {
 				it.keep = "irqbalance"
 			}
 		}
@@ -370,7 +375,7 @@ func (e *Env) foreignIRQ(n *hw.NIC, ns *NICState, t *hw.Topology) *hw.QueueIRQ {
 		case def != nil && a.Equal(def):
 		case a.Equal(t.Online):
 		case len(q.Hint) > 0 && a.Equal(q.Hint.And(t.Online)):
-		case ns != nil && ns.IRQ[irqKey(q)] != nil && ns.IRQ[irqKey(q)].IRQ == q.IRQ && ns.IRQ[irqKey(q)].Written == a.List():
+		case ns != nil && ns.IRQ[irqKey(q)] != nil && ns.IRQ[irqKey(q)].IRQ == q.IRQ && slices.Contains([]string{ns.IRQ[irqKey(q)].Written, ns.IRQ[irqKey(q)].Pending}, a.List()):
 		default:
 			return &q
 		}
@@ -425,12 +430,23 @@ func sortedKeys(m map[int]int) []int {
 	return out
 }
 
-// chanCount is the queue count channels give: combined, else RX.
+// chanCount is the queue count channels give: combined, else RX (also on a
+// NIC set to separate RX and TX channels).
 func chanCount(c hw.Channels) (cur, maxN uint32) {
-	if c.MaxCombined > 0 {
+	if c.MaxCombined > 0 && !separateChannels(c) {
 		return c.Combined, c.MaxCombined
 	}
+	if c.MaxRx == 0 {
+		return c.Rx, c.MaxCombined
+	}
 	return c.Rx, c.MaxRx
+}
+
+// separateChannels says whether a NIC that has combined channels runs on
+// dedicated RX or TX ones (ethtool -L rx N tx N): x-ui keeps that as it is
+// (bnxt_en and ice refuse combined and dedicated ones together).
+func separateChannels(c hw.Channels) bool {
+	return c.MaxCombined > 0 && (c.Rx > 0 || c.Tx > 0)
 }
 
 // withCount is c with its queue count set to n.
@@ -461,6 +477,10 @@ func (e *Env) planQueues(f *Facts, t *hw.Topology, eligible hw.CPUSet, n *hw.NIC
 	q.Current, q.Max = chanCount(*n.Channels)
 	if q.Max == 0 {
 		q.State, q.Note = "unsupported", "queue counts not readable"
+		return q
+	}
+	if separateChannels(*n.Channels) {
+		q.State, q.Note = "kept", "separate RX and TX channels"
 		return q
 	}
 	var cs *ChanState
@@ -533,11 +553,16 @@ func (e *Env) planQueues(f *Facts, t *hw.Topology, eligible hw.CPUSet, n *hw.NIC
 }
 
 // adminChannelFiles finds queue counts an admin persists (best effort): by
-// device name, or "*" for a file that names no uplink.
+// device name, or "*" for a file that names no uplink. It looks where they
+// are set at boot: systemd .link files, ifupdown (interfaces and its hook
+// directories), NetworkManager (connections and dispatcher scripts),
+// networkd-dispatcher, RHEL and SUSE ifcfg files (ETHTOOL_OPTS), systemd
+// units, rc.local, udev rules and cron's @reboot lines. Hook scripts a
+// package ships (Debian's ethtool hooks) are not an admin's.
 func (e *Env) adminChannelFiles() map[string]string {
 	type hit struct{ file, data string }
 	var hits []hit
-	scan := func(files []string, match func(line string) bool) {
+	scan := func(files []string, hooks bool, match func(line string) bool) {
 		for _, f := range files {
 			data, err := e.read(f)
 			if err != nil {
@@ -549,16 +574,16 @@ func (e *Env) adminChannelFiles() map[string]string {
 					continue
 				}
 				if match(l) {
-					hits = append(hits, hit{f, data})
+					if !hooks || !e.pkgOwned(f) {
+						hits = append(hits, hit{f, data})
+					}
 					break
 				}
 			}
 		}
 	}
-	ethtoolL := func(l string) bool {
-		return strings.Contains(l, "ethtool") && (strings.Contains(l, " -L ") || strings.Contains(l, " --set-channels "))
-	}
-	scan(e.glob("/etc/systemd/network/*.link"), func(l string) bool {
+	ethtoolL := func(l string) bool { return strings.Contains(l, "ethtool") && setsChannels(l) }
+	scan(e.glob("/etc/systemd/network/*.link"), false, func(l string) bool {
 		for _, k := range []string{"CombinedChannels=", "RxChannels=", "TxChannels="} {
 			if strings.HasPrefix(l, k) {
 				return true
@@ -566,14 +591,25 @@ func (e *Env) adminChannelFiles() map[string]string {
 		}
 		return false
 	})
-	var files []string
-	files = append(files, "/etc/network/interfaces", "/etc/rc.local")
-	for _, g := range []string{"/etc/network/interfaces.d/*", "/etc/udev/rules.d/*", "/etc/NetworkManager/dispatcher.d/*"} {
+	var files, hooks []string
+	files = append(files, "/etc/network/interfaces", "/etc/rc.local", "/etc/rc.d/rc.local", "/etc/crontab")
+	for _, g := range []string{"/etc/network/interfaces.d/*", "/etc/udev/rules.d/*", "/etc/cron.d/*", "/var/spool/cron/*", "/var/spool/cron/crontabs/*"} {
 		files = append(files, e.glob(g)...)
 	}
-	files = append(files, e.walk("/etc/networkd-dispatcher")...)
-	scan(files, ethtoolL)
-	scan(e.glob("/etc/NetworkManager/system-connections/*"), func(l string) bool { return strings.HasPrefix(l, "channels-") })
+	files = append(files, e.walk("/etc/systemd/system")...)
+	for _, d := range []string{"/etc/network/if-pre-up.d", "/etc/network/if-up.d", "/etc/network/if-post-up.d", "/etc/NetworkManager/dispatcher.d", "/etc/networkd-dispatcher"} {
+		hooks = append(hooks, e.walk(d)...)
+	}
+	scan(files, false, ethtoolL)
+	scan(hooks, true, ethtoolL)
+	scan(e.glob("/etc/NetworkManager/system-connections/*"), false, func(l string) bool { return strings.HasPrefix(l, "channels-") })
+	var ifcfg []string
+	for _, g := range []string{"/etc/sysconfig/network-scripts/ifcfg-*", "/etc/sysconfig/network/ifcfg-*"} {
+		ifcfg = append(ifcfg, e.glob(g)...)
+	}
+	scan(ifcfg, false, func(l string) bool {
+		return (strings.HasPrefix(l, "ETHTOOL_OPTS") || strings.HasPrefix(l, "ETHTOOL_OPTIONS")) && setsChannels(l)
+	})
 
 	out := map[string]string{}
 	if len(hits) == 0 {
@@ -602,6 +638,18 @@ func (e *Env) adminChannelFiles() map[string]string {
 		}
 	}
 	return out
+}
+
+// setsChannels says whether a line passes ethtool's -L (--set-channels).
+func setsChannels(l string) bool {
+	for _, w := range strings.FieldsFunc(l, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '"' || r == '\'' || r == ';' || r == '=' || r == '`' || r == '('
+	}) {
+		if w == "-L" || w == "--set-channels" {
+			return true
+		}
+	}
+	return false
 }
 
 // mentions says whether a file names a device (as a whole word).
@@ -696,9 +744,15 @@ func (e *Env) planIRQs(np *nicPlan, it *nicItem) {
 		it.IRQNote = "managed by the kernel: kept"
 	case "irqbalance":
 		it.IRQNote = "left to irqbalance, which runs without x-ui's policy"
-		if ib := np.IRQBalance; ib != nil && ib.DropIn != "" {
+		switch ib := np.IRQBalance; {
+		case ib == nil:
+		case ib.Shadow:
+			it.IRQNote = "left to irqbalance (" + ib.Note + ")"
+		case ib.Script != "" && ib.current:
+			it.IRQNote += " ('systemctl restart irqbalance' applies it)"
+		case ib.Script != "":
 			it.IRQNote += " ('x-ui tune apply' adds it)"
-		} else if ib != nil && ib.Note != "" {
+		case ib.Note != "":
 			it.IRQNote += " (" + ib.Note + ")"
 		}
 	case "unknown":
@@ -815,7 +869,7 @@ func (e *Env) planRPS(np *nicPlan, it *nicItem, ns *NICState) {
 		if k == "rx-0/rps_flow_cnt" {
 			want, zero = fmt.Sprint(np.rpsF), live == "0"
 		}
-		ours := ns != nil && ns.RPS[k] != nil && ns.RPS[k].Written == live
+		ours := ns != nil && ns.RPS[k] != nil && (ns.RPS[k].Written == live || ns.RPS[k].Pending == live)
 		switch {
 		case live == want:
 		case zero || ours:

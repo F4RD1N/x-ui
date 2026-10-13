@@ -41,15 +41,44 @@ type Prober interface {
 	Reach(probe string, deadline time.Time) bool
 }
 
-// The watchdog's waits.
+// The watchdog's waits. The gateway's covers a switch port that runs
+// classic STP without portfast (listening and learning: 30 s after the
+// link); a Linux bridge with STP on adds its own forward delay twice to the
+// link's (stpDelay).
 const (
-	pickWait    = 20 * time.Second // a probe that works, before the change
-	linkWait    = 30 * time.Second // carrier and operstate after it
-	reachWait   = 20 * time.Second // the gateway after it
-	aggWait     = 90 * time.Second // an 802.3ad slave back in the bond's aggregator
-	pollEvery   = 250 * time.Millisecond
-	bootReserve = 4 * time.Minute // what a raise and its undoing may take
+	pickWait  = 20 * time.Second // a probe that works, before the change
+	linkWait  = 30 * time.Second // carrier and operstate after it
+	reachWait = 45 * time.Second // the gateway after it
+	aggWait   = 90 * time.Second // an 802.3ad slave back in the bond's aggregator
+	pollEvery = 250 * time.Millisecond
 )
+
+// raiseReserve is what a raise and its undoing may take on a NIC: two queue
+// changes (the raise, and the old count back when RSS does not use the new
+// queues), each with its probe and two waits for the link and the gateway
+// (after it, and after putting the old count back).
+func (e *Env) raiseReserve(n *hw.NIC) time.Duration {
+	return 2 * (pickWait + 2*(linkWait+e.stpDelay(n)+reachWait))
+}
+
+// stpDelay is how much longer a bridge with STP on keeps the route's device
+// down after the NIC's link is back: its ports listen and learn for the
+// forward delay each before they forward (plus a margin).
+func (e *Env) stpDelay(n *hw.NIC) time.Duration {
+	var d time.Duration
+	for _, dev := range routeDevs(n) {
+		br := "/sys/class/net/" + dev + "/bridge/"
+		if st := e.readTrim(br + "stp_state"); st == "" || st == "0" {
+			continue
+		}
+		fd, err := strconv.Atoi(e.readTrim(br + "forward_delay")) // in 1/100 s
+		if err != nil || fd < 0 {
+			fd = 1500
+		}
+		d = max(d, 2*time.Duration(fd)*10*time.Millisecond+2*time.Second)
+	}
+	return d
+}
 
 func (e *Env) prober() Prober {
 	if e.Probe != nil {
@@ -136,8 +165,8 @@ func (e *Env) linkBack(c *critical, n *hw.NIC, probe string) (bool, string) {
 		}
 		return true
 	}
-	if !e.until(c, linkWait, up) {
-		return false, fmt.Sprintf("the link did not come back within %s", linkWait)
+	if wait := linkWait + e.stpDelay(n); !e.until(c, wait, up) {
+		return false, fmt.Sprintf("the link did not come back within %s", wait)
 	}
 	if b := n.Bond; b != nil {
 		if !e.until(c, linkWait, func() bool { return e.readTrim(base+"/bonding_slave/mii_status") == "up" }) {
@@ -304,7 +333,7 @@ func (e *Env) raise(st *State, it *nicItem, to uint32, r *Result) raiseResult {
 func (e *Env) raisePending(st *State, np *nicPlan, boot bool, deadline time.Time, r *Result) bool {
 	any := false
 	for _, it := range np.NICs {
-		ns := st.NICs[it.Key]
+		ns := it.state(st)
 		if ns == nil || it.NIC.Channels == nil || it.Queues.State != "raise" {
 			continue
 		}
@@ -319,7 +348,7 @@ func (e *Env) raisePending(st *State, np *nicPlan, boot bool, deadline time.Time
 		if to == 0 || to <= cur {
 			continue
 		}
-		if !deadline.IsZero() && e.clock().Now().Add(bootReserve).After(deadline) {
+		if !deadline.IsZero() && e.clock().Now().Add(e.raiseReserve(it.NIC)).After(deadline) {
 			r.problem("%s: queues not raised: out of time", it.NIC.Name)
 			return any
 		}
@@ -376,6 +405,7 @@ func (e *Env) Queues(o QueuesOptions) (*Result, error) {
 		return r, nil
 	}
 	e.endAttempts(st, r)
+	e.settlePending(st)
 	no := nicOpts{Retry: true}
 	np := e.planNICs(f, st, no)
 	if np.Skip != "" {

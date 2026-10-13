@@ -48,6 +48,7 @@ func (e *Env) RunNIC(o NICOptions) (*Result, error) {
 	}
 	before := stateSnapshot(st)
 	e.endAttempts(st, r)
+	e.settlePending(st)
 	only := map[string]bool{}
 	for k := range st.NICs {
 		if e.nicNameOf(k) != "" {

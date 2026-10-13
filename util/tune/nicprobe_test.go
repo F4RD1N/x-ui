@@ -17,7 +17,9 @@ import (
 
 // The real probes, in throwaway network namespaces (root, XUI_TUNE_LIVE=1):
 // a veth pair with its peer in a second namespace as the gateway. ICMP echo
-// works; with echo ignored there, the neighbour probe does; with the peer
+// works; with echo ignored there, the neighbour probe does; with the
+// gateway's address gone (the carrier up, the old neighbour entry still
+// reachable) it fails, and works again with the address back; with the peer
 // down, nothing answers. The thread that made the namespaces is never
 // unlocked, so Go ends it with the goroutine and the namespaces go with it.
 func TestProbesLive(t *testing.T) {
@@ -29,6 +31,7 @@ func TestProbesLive(t *testing.T) {
 	}
 	type result struct {
 		icmp, neigh, none string
+		stale, back       bool
 		err               error
 	}
 	done := make(chan result, 1)
@@ -108,6 +111,29 @@ func TestProbesLive(t *testing.T) {
 			}
 		}
 		r.neigh = p.Pick(routes, time.Now().Add(5*time.Second))
+		gwAddr := func(add bool) func() error {
+			return func() error {
+				l, err := netlink.LinkByName("xuip1")
+				if err != nil {
+					return err
+				}
+				ip, _ := netlink.ParseAddr("192.0.2.1/24")
+				if add {
+					return netlink.AddrAdd(l, ip)
+				}
+				return netlink.AddrDel(l, ip)
+			}
+		}
+		inB(gwAddr(false))
+		if r.err != nil {
+			return
+		}
+		r.stale = p.Reach(r.neigh, time.Now().Add(3*time.Second))
+		inB(gwAddr(true))
+		if r.err != nil {
+			return
+		}
+		r.back = p.Reach(r.neigh, time.Now().Add(5*time.Second))
 		inB(func() error {
 			l, err := netlink.LinkByName("xuip1")
 			if err != nil {
@@ -131,6 +157,12 @@ func TestProbesLive(t *testing.T) {
 	}
 	if !strings.HasPrefix(r.neigh, "neigh xuip0 192.0.2.1") {
 		t.Errorf("neighbour: %q", r.neigh)
+	}
+	if r.stale {
+		t.Error("the neighbour probe answered from an entry made before the gateway went away")
+	}
+	if !r.back {
+		t.Error("the neighbour probe did not answer with the gateway back")
 	}
 	if r.none != "none" {
 		t.Error("a probe answered with the gateway down")

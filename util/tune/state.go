@@ -20,6 +20,7 @@ type KeyState struct {
 	Orig    string `json:"orig,omitempty"`    // live value before x-ui first changed it
 	Written string `json:"written,omitempty"` // value x-ui last wrote live
 	File    string `json:"file,omitempty"`    // value x-ui persisted in its sysctl file
+	Pending string `json:"pending,omitempty"` // a NIC value x-ui is writing (saved before it does)
 }
 
 // Moved is a file x-ui moved aside, to be put back by revert.
@@ -84,6 +85,7 @@ type IRQState struct {
 	IRQ     int    `json:"irq"`
 	Orig    string `json:"orig,omitempty"`
 	Written string `json:"written,omitempty"`
+	Pending string `json:"pending,omitempty"` // being written (saved before it is)
 }
 
 func newState() *State { return &State{Version: 1, Keys: map[string]*KeyState{}} }
