@@ -26,7 +26,6 @@ import (
 var (
 	reservedPortsPath = "/proc/sys/net/ipv4/ip_local_reserved_ports"
 	reservedMu        sync.Mutex
-	reservedLast      string // what the panel last reserved, "" before the first sync
 )
 
 func reservedStatePath() string {
@@ -81,43 +80,51 @@ func formatPortList(set map[int]bool) string {
 	return strings.Join(parts, ",")
 }
 
-// mergeReserved replaces the panel's old reservations in current with its
-// new ones, leaving everyone else's.
-func mergeReserved(current, oldOurs string, ours map[int]bool) string {
-	set := parsePortList(current)
-	for p := range parsePortList(oldOurs) {
-		delete(set, p)
-	}
-	for p := range ours {
-		if p > 0 && p <= 65535 {
-			set[p] = true
+// mergeReserved replaces the panel's old reservations in current with the
+// ports it wants now, leaving everyone else's, and returns the result with
+// the ports that are now the panel's own: those it reserved itself. A port
+// someone else had reserved before the panel wanted it stays theirs, and
+// stays reserved once the panel no longer needs it. A port of the panel's
+// that someone else removed is reserved again.
+func mergeReserved(current, oldOurs, want map[int]bool) (merged, ours map[int]bool) {
+	merged, ours = map[int]bool{}, map[int]bool{}
+	for p := range current {
+		if !oldOurs[p] || want[p] {
+			merged[p] = true
 		}
 	}
-	return formatPortList(set)
+	for p := range want {
+		if p < 1 || p > 65535 {
+			continue
+		}
+		if oldOurs[p] || !current[p] {
+			ours[p] = true
+		}
+		merged[p] = true
+	}
+	return merged, ours
 }
 
-// syncReservedPorts makes ports the panel's reservations.
+// syncReservedPorts makes ports the panel's reservations. It reads the
+// kernel's list every time: another program may have changed it.
 func syncReservedPorts(ports map[int]bool) {
 	reservedMu.Lock()
 	defer reservedMu.Unlock()
-	want := formatPortList(ports)
-	if want == reservedLast {
-		return
-	}
 	cur, err := os.ReadFile(reservedPortsPath)
 	if err != nil {
 		return // not Linux, or no such sysctl
 	}
 	old, _ := os.ReadFile(reservedStatePath())
-	merged := mergeReserved(string(cur), string(old), ports)
-	if merged != strings.TrimSpace(string(cur)) {
-		if err := os.WriteFile(reservedPortsPath, []byte(merged+"\n"), 0o644); err != nil {
+	merged, ours := mergeReserved(parsePortList(string(cur)), parsePortList(string(old)), ports)
+	if m := formatPortList(merged); m != strings.TrimSpace(string(cur)) {
+		if err := os.WriteFile(reservedPortsPath, []byte(m+"\n"), 0o644); err != nil {
 			logger.Warning("reserve inbound ports in ip_local_reserved_ports:", err)
 			return
 		}
 	}
-	if err := os.WriteFile(reservedStatePath(), []byte(want+"\n"), 0o600); err != nil {
-		logger.Warning("remember the reserved inbound ports:", err)
+	if o := formatPortList(ours); o != strings.TrimSpace(string(old)) {
+		if err := os.WriteFile(reservedStatePath(), []byte(o+"\n"), 0o600); err != nil {
+			logger.Warning("remember the reserved inbound ports:", err)
+		}
 	}
-	reservedLast = want
 }

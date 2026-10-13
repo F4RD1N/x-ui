@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 // The wire formats xsim speaks: the VLESS request (with the dialect version

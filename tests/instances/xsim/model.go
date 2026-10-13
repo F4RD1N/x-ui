@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 // The simulation model: what the users' devices do. sim/model.json holds the

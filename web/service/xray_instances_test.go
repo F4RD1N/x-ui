@@ -181,7 +181,7 @@ func TestBuildPlanSplitsInbounds(t *testing.T) {
 		testInbound(3, "xray-2", 6, 41003, true),
 		testInbound(4, "xray-3", 0, 41004, false), // disabled: no core
 	}
-	plan, err := buildPlan(fullConfig(t, inbounds), inbounds, nil)
+	plan, err := buildPlan(fullConfig(t, inbounds), inbounds, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestBuildPlanSplitsInbounds(t *testing.T) {
 func TestBuildPlanKeepsRunningPorts(t *testing.T) {
 	inbounds := []*model.Inbound{testInbound(1, "xray-1", 0, 41001, true), testInbound(2, "xray-2", 0, 41002, true)}
 	ports := map[string]runningPorts{"xray-2": {api: 50123, metrics: 50124}}
-	plan, err := buildPlan(fullConfig(t, inbounds), inbounds, ports)
+	plan, err := buildPlan(fullConfig(t, inbounds), inbounds, ports, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +249,7 @@ func TestBuildPlanAvoidsBusyAndInboundPorts(t *testing.T) {
 	json.Unmarshal([]byte(tpl), c)
 	in := testInbound(1, "xray-1", 0, busy+1, true)
 	c.InboundConfigs = append(c.InboundConfigs, *in.GenXrayInboundConfig())
-	plan, err := buildPlan(c, []*model.Inbound{in}, nil)
+	plan, err := buildPlan(c, []*model.Inbound{in}, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +260,7 @@ func TestBuildPlanAvoidsBusyAndInboundPorts(t *testing.T) {
 
 func TestBuildPlanWithoutEnabledInbounds(t *testing.T) {
 	inbounds := []*model.Inbound{testInbound(1, "edge-b", 0, 41001, false), testInbound(2, "edge-a", 0, 41002, false)}
-	plan, err := buildPlan(fullConfig(t, inbounds), inbounds, nil)
+	plan, err := buildPlan(fullConfig(t, inbounds), inbounds, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +268,7 @@ func TestBuildPlanWithoutEnabledInbounds(t *testing.T) {
 	if !reflect.DeepEqual(plan.order, []string{"edge-a"}) {
 		t.Fatalf("order: %v", plan.order)
 	}
-	plan, _ = buildPlan(fullConfig(t, nil), nil, nil)
+	plan, _ = buildPlan(fullConfig(t, nil), nil, nil, "")
 	if !reflect.DeepEqual(plan.order, []string{"xray-1"}) {
 		t.Fatalf("no inbounds: %v", plan.order)
 	}
@@ -276,7 +276,7 @@ func TestBuildPlanWithoutEnabledInbounds(t *testing.T) {
 
 func TestSameRunning(t *testing.T) {
 	inbounds := []*model.Inbound{testInbound(1, "xray-1", 0, 41001, true), testInbound(2, "xray-1", 0, 41002, true)}
-	have, _ := buildPlan(fullConfig(t, inbounds), inbounds, map[string]runningPorts{"xray-1": {api: 50001, metrics: 50002}})
+	have, _ := buildPlan(fullConfig(t, inbounds), inbounds, map[string]runningPorts{"xray-1": {api: 50001, metrics: 50002}}, "")
 	cfg := have.configs["xray-1"]
 	if !sameRunning(cfg, cfg, nil) {
 		t.Fatal("identical configs differ")
@@ -285,7 +285,7 @@ func TestSameRunning(t *testing.T) {
 	// An inbound edited in the database...
 	edited := []*model.Inbound{testInbound(1, "xray-1", 0, 41001, true), testInbound(2, "xray-1", 0, 41002, true)}
 	edited[1].Settings = `{"clients":[{"id":"x","email":"a"}]}`
-	want, _ := buildPlan(fullConfig(t, edited), edited, map[string]runningPorts{"xray-1": {api: 50001, metrics: 50002}})
+	want, _ := buildPlan(fullConfig(t, edited), edited, map[string]runningPorts{"xray-1": {api: 50001, metrics: 50002}}, "")
 	if sameRunning(cfg, want.configs["xray-1"], nil) {
 		t.Fatal("changed inbound not noticed")
 	}
@@ -295,7 +295,7 @@ func TestSameRunning(t *testing.T) {
 	}
 	// An inbound added or removed through the API, likewise.
 	added := append(inbounds, testInbound(3, "xray-1", 0, 41003, true))
-	want, _ = buildPlan(fullConfig(t, added), added, map[string]runningPorts{"xray-1": {api: 50001, metrics: 50002}})
+	want, _ = buildPlan(fullConfig(t, added), added, map[string]runningPorts{"xray-1": {api: 50001, metrics: 50002}}, "")
 	if sameRunning(cfg, want.configs["xray-1"], nil) {
 		t.Fatal("added inbound not noticed")
 	}
@@ -415,5 +415,95 @@ func TestFillShadowsocksClientMethod(t *testing.T) {
 	fillShadowsocksClientMethod(model.VLESS, settings, c)
 	if _, ok := c["method"]; ok {
 		t.Fatal("vless client touched")
+	}
+}
+
+func TestBuildPlanTemplateInboundsStay(t *testing.T) {
+	inbounds := []*model.Inbound{testInbound(1, "xray-1", 0, 41001, true), testInbound(2, "xray-2", 0, 41002, true)}
+	has := func(plan *instancePlan, name string) bool {
+		for _, tag := range tags(plan.configs[name]) {
+			if tag == "template-socks" {
+				return true
+			}
+		}
+		return false
+	}
+	plan, _ := buildPlan(fullConfig(t, inbounds), inbounds, nil, "")
+	if plan.templateHost != "xray-1" || !has(plan, "xray-1") || has(plan, "xray-2") {
+		t.Fatalf("first plan: host %q", plan.templateHost)
+	}
+	// A new instance that sorts first does not take them over.
+	added := append(inbounds, testInbound(3, "edge", 0, 41003, true))
+	plan, _ = buildPlan(fullConfig(t, added), added, nil, "xray-1")
+	if plan.templateHost != "xray-1" || !has(plan, "xray-1") || has(plan, "edge") {
+		t.Fatalf("after adding edge: host %q", plan.templateHost)
+	}
+	// Disabling the host's only inbound keeps them, and its core, where
+	// they are; the other cores' configs do not change.
+	inbounds[0].Enable = false
+	plan, _ = buildPlan(fullConfig(t, inbounds), inbounds, nil, "xray-1")
+	if got := tags(plan.configs["xray-1"]); !reflect.DeepEqual(got, []string{"api", "template-socks"}) {
+		t.Fatalf("disabled host runs %v", got)
+	}
+	if has(plan, "xray-2") {
+		t.Fatal("the template's inbounds moved into xray-2")
+	}
+	// Once no inbound names the host, the first instance takes them.
+	plan, _ = buildPlan(fullConfig(t, added[1:]), added[1:], nil, "xray-1")
+	if plan.templateHost != "edge" || !has(plan, "edge") || plan.configs["xray-1"] != nil {
+		t.Fatalf("host gone: host %q, order %v", plan.templateHost, plan.order)
+	}
+	// Without inbounds of its own the template has no host.
+	c := fullConfig(t, inbounds)
+	c.InboundConfigs = c.InboundConfigs[:1]
+	inbounds[0].Enable = true
+	c.InboundConfigs = append(c.InboundConfigs, *inbounds[0].GenXrayInboundConfig(), *inbounds[1].GenXrayInboundConfig())
+	if plan, _ = buildPlan(c, inbounds, nil, "xray-1"); plan.templateHost != "" {
+		t.Fatalf("host without template inbounds: %q", plan.templateHost)
+	}
+}
+
+func TestBuildPlanGivesRunningCoresMetricsPorts(t *testing.T) {
+	// Two cores started from a template without metrics; the template now
+	// has them.
+	inbounds := []*model.Inbound{testInbound(1, "xray-1", 0, 41001, true), testInbound(2, "xray-2", 0, 41002, true)}
+	ports := map[string]runningPorts{"xray-1": {api: 50001}, "xray-2": {api: 50002}}
+	plan, err := buildPlan(fullConfig(t, inbounds), inbounds, ports, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, m1 := metricsListen(plan.configs["xray-1"].Metrics)
+	_, m2 := metricsListen(plan.configs["xray-2"].Metrics)
+	if m1 == 0 || m2 == 0 || m1 == m2 {
+		t.Fatalf("metrics ports %d and %d", m1, m2)
+	}
+}
+
+func TestBuildPlanExitedCoreKeepsItsPorts(t *testing.T) {
+	inbounds := []*model.Inbound{testInbound(1, "xray-1", 0, 41001, true)}
+	api, metrics := freeTCPPort(t), freeTCPPort(t)
+	ports := map[string]runningPorts{"xray-1": {api: api, metrics: metrics, exited: true}}
+	plan, err := buildPlan(fullConfig(t, inbounds), inbounds, ports, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := plan.configs["xray-1"].InboundConfigs[0].Port; p != api {
+		t.Fatalf("exited core's API moved from %d to %d", api, p)
+	}
+	if _, m := metricsListen(plan.configs["xray-1"].Metrics); m != metrics {
+		t.Fatalf("exited core's metrics moved from %d to %d", metrics, m)
+	}
+	// One that another program took meanwhile is not reused.
+	l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", api))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	plan, err = buildPlan(fullConfig(t, inbounds), inbounds, ports, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := plan.configs["xray-1"].InboundConfigs[0].Port; p == api || p == 0 {
+		t.Fatalf("API port %d is taken", p)
 	}
 }

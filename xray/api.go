@@ -27,12 +27,19 @@ import (
 	"github.com/xtls/xray-core/proxy/vless"
 	"github.com/xtls/xray-core/proxy/vmess"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 // errAPINotConnected is returned when the API of a core that is not running
 // is used: the change then reaches the core when it starts.
 var errAPINotConnected = errors.New("xray API is not connected")
+
+// apiCallTimeout bounds a call that changes a core's inbounds or users, so a
+// wedged core fails the call -- and is restarted -- instead of holding up the
+// request or job that made it.
+const apiCallTimeout = 5 * time.Second
 
 // XrayAPI is a gRPC client for managing Xray core configuration, inbounds, outbounds, and statistics.
 type XrayAPI struct {
@@ -76,6 +83,21 @@ func (x *XrayAPI) Close() {
 	x.isConnected = false
 }
 
+// Ready waits, up to timeout, until the core's API answers a call. Any answer
+// counts, an error status included: the API is up.
+func (x *XrayAPI) Ready(timeout time.Duration) error {
+	if x.StatsServiceClient == nil {
+		return errAPINotConnected
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	_, err := (*x.StatsServiceClient).GetSysStats(ctx, &statsService.SysStatsRequest{}, grpc.WaitForReady(true))
+	if st, ok := status.FromError(err); ok && st.Code() != codes.Unavailable && st.Code() != codes.DeadlineExceeded {
+		return nil
+	}
+	return err
+}
+
 // AddInbound adds a new inbound configuration to the Xray core via gRPC.
 func (x *XrayAPI) AddInbound(inbound []byte) error {
 	if x.HandlerServiceClient == nil {
@@ -96,7 +118,9 @@ func (x *XrayAPI) AddInbound(inbound []byte) error {
 	}
 	inboundConfig := command.AddInboundRequest{Inbound: config}
 
-	_, err = client.AddInbound(context.Background(), &inboundConfig)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*apiCallTimeout)
+	defer cancel()
+	_, err = client.AddInbound(ctx, &inboundConfig)
 
 	return err
 }
@@ -107,7 +131,9 @@ func (x *XrayAPI) DelInbound(tag string) error {
 		return errAPINotConnected
 	}
 	client := *x.HandlerServiceClient
-	_, err := client.RemoveInbound(context.Background(), &command.RemoveInboundRequest{
+	ctx, cancel := context.WithTimeout(context.Background(), apiCallTimeout)
+	defer cancel()
+	_, err := client.RemoveInbound(ctx, &command.RemoveInboundRequest{
 		Tag: tag,
 	})
 	return err
@@ -192,7 +218,9 @@ func (x *XrayAPI) AddUser(Protocol string, inboundTag string, user map[string]an
 
 	client := *x.HandlerServiceClient
 
-	_, err := client.AlterInbound(context.Background(), &command.AlterInboundRequest{
+	ctx, cancel := context.WithTimeout(context.Background(), apiCallTimeout)
+	defer cancel()
+	_, err := client.AlterInbound(ctx, &command.AlterInboundRequest{
 		Tag: inboundTag,
 		Operation: serial.ToTypedMessage(&command.AddUserOperation{
 			User: &protocol.User{
@@ -209,7 +237,7 @@ func (x *XrayAPI) RemoveUser(inboundTag, email string) error {
 	if x.HandlerServiceClient == nil {
 		return errAPINotConnected
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), apiCallTimeout)
 	defer cancel()
 
 	op := &command.RemoveUserOperation{Email: email}

@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 // xsim sites: the far end of the simulated users' connections — the web

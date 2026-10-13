@@ -1,3 +1,5 @@
+//go:build linux
+
 // Command xsim simulates the users of a VLESS (TCP + HTTP header) server the
 // way a live one behaves: devices with an Xray mux client, opening sessions
 // to sites of every kind through the core, over slow and distant networks.

@@ -16,6 +16,9 @@ import (
 // The package logs on a successful download; without this the logger is a nil
 // pointer under test.
 func TestMain(m *testing.M) {
+	if code, done := reexecInOwnNetns(); done {
+		os.Exit(code)
+	}
 	logger.InitLogger(logging.ERROR)
 	os.Exit(m.Run())
 }

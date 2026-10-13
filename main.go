@@ -52,6 +52,7 @@ func runWebServer() {
 	}
 
 	godotenv.Load()
+	keepFilesPrivate()
 
 	err := database.InitDB(config.GetDBPath())
 	if err != nil {

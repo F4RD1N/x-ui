@@ -155,6 +155,7 @@
 "xrayInstanceEgressSaved" = "Outgoing IP saved"
 "xrayInstanceEgressError" = "Could not set the outgoing IP"
 "xrayInstanceUdpPorts" = "UDP ports"
+"xrayInstanceUdpAll" = "All addresses"
 "xrayInstanceIdle" = "Idle"
 "systemLoad" = "Beban Sistem"
 "systemLoadDesc" = "Rata-rata beban sistem selama 1, 5, dan 15 menit terakhir"

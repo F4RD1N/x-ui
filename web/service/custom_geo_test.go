@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -154,6 +155,10 @@ func TestCustomGeoValidateURL(t *testing.T) {
 	}
 	if _, err := s.sanitizeURL("ftp://x"); !errors.Is(err, ErrCustomGeoURLScheme) {
 		t.Fatal("ftp")
+	}
+	// The rest resolves the host; the tests' own network namespace has no DNS.
+	if _, err := net.LookupHost("example.com"); err != nil {
+		t.Skip("needs DNS:", err)
 	}
 	if sanitized, err := s.sanitizeURL("https://example.com/a.dat"); err != nil {
 		t.Fatal(err)

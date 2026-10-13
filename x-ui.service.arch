@@ -1,7 +1,7 @@
 [Unit]
 Description=x-ui Service
-After=network.target
-Wants=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 EnvironmentFile=-/etc/conf.d/x-ui

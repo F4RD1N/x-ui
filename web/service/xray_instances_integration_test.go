@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
+	"sync"
 	"testing"
 	"time"
 
@@ -45,8 +45,8 @@ func integrationCore(t *testing.T) {
 	sysctl := filepath.Join(dir, "ip_local_reserved_ports")
 	os.WriteFile(sysctl, nil, 0o644)
 	oldPath := reservedPortsPath
-	reservedPortsPath, reservedLast = sysctl, ""
-	t.Cleanup(func() { reservedPortsPath, reservedLast = oldPath, "" })
+	reservedPortsPath = sysctl
+	t.Cleanup(func() { reservedPortsPath = oldPath })
 	if err := database.InitDB(filepath.Join(dir, "x-ui.db")); err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +327,9 @@ func TestXrayInstancesIntegration(t *testing.T) {
 	})
 
 	t.Run("a crashed core restarts alone", func(t *testing.T) {
-		syscall.Kill(p2, syscall.SIGKILL)
+		if proc, err := os.FindProcess(p2); err == nil {
+			proc.Kill()
+		}
 		deadline := time.Now().Add(5 * time.Second)
 		for !xs.DidXrayCrash() && time.Now().Before(deadline) {
 			time.Sleep(20 * time.Millisecond)
@@ -514,15 +516,18 @@ func TestFailingInstanceBacksOff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	xs.ApplyInboundChanges()
+	// Both cores start together.
+	xs.RestartXray(true)
 	pGood := pidOf(t, good.XrayInstance)
 
-	// The memory limit is shared out by CPUs.
+	// The memory limit is shared out by CPUs: two auto instances share every
+	// CPU, and each gets its half of the limit. (A core that kept running
+	// while others started keeps the limit it started with.)
 	env, _ := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pGood))
-	// Two auto instances share every CPU: each gets its half of the limit.
 	n := len(procOf(good.XrayInstance).CPUs())
-	want := fmt.Sprintf("GOMEMLIMIT=%d", shareMemLimit(8<<30, n, len(xray.AvailableCPUs())))
-	if !strings.Contains(string(env), want+"\x00") {
+	share := shareMemLimit(8<<30, n, len(xray.AvailableCPUs()))
+	want := fmt.Sprintf("GOMEMLIMIT=%d", share)
+	if !strings.Contains(string(env), want+"\x00") || procOf(good.XrayInstance).MemoryLimit() != share {
 		t.Fatalf("core environment lacks %s", want)
 	}
 
@@ -610,5 +615,191 @@ func TestShadowsocksClientWithoutCipherStarts(t *testing.T) {
 	if !listening(port) {
 		p := procOf(in.XrayInstance)
 		t.Fatalf("shadowsocks core not up: %v", p.GetResult())
+	}
+}
+
+// userOn reports whether the core of instance has email on tag: removing it
+// through the core's API succeeds (and takes it off).
+func userOn(t *testing.T, instance, tag, email string) bool {
+	t.Helper()
+	p := procOf(instance)
+	if p == nil || !p.IsRunning() {
+		t.Fatalf("%s is not running", instance)
+	}
+	if !listening(p.GetAPIPort()) {
+		t.Fatalf("the API of %s does not listen", instance)
+	}
+	var api xray.XrayAPI
+	if err := api.Init(p.GetAPIPort()); err != nil {
+		t.Fatal(err)
+	}
+	defer api.Close()
+	err := api.RemoveUser(tag, email)
+	if err != nil && !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("RemoveUser on %s: %v", instance, err)
+	}
+	return err == nil
+}
+
+// A client change that comes in while an apply restarts the core waits for
+// it, and reaches the new core. Lost there, it would stay lost: later
+// changes to the inbound go through the API, and the restart check does
+// not look at an inbound changed that way.
+func TestClientEditDuringRestartIsKept(t *testing.T) {
+	integrationCore(t)
+	var xs XrayService
+	var is InboundService
+	var ss SettingService
+	if err := xs.RestartXray(true); err != nil {
+		t.Fatal(err)
+	}
+	in := vlessInbound(t, "", 0)
+	in.Settings = `{"clients":[{"id":"6b0e9c1c-2d6f-4c6e-9b8a-000000000011","email":"quota","enable":true,"flow":"","totalGB":1000}],"decryption":"none","fallbacks":[]}`
+	in, _, err := is.AddInbound(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := xs.ApplyInboundChanges(); err != nil {
+		t.Fatal(err)
+	}
+	// With an outgoing IP the apply looks up the host's addresses after it
+	// read the database: the edit is sent from there, as if it came in at
+	// that moment.
+	if err := ss.SetInstanceEgress(map[string]string{"xray-1": "127.0.0.2"}); err != nil {
+		t.Fatal(err)
+	}
+	old := hostAddressList
+	t.Cleanup(func() { hostAddressList = old })
+	n := 0
+	addClient := func(email string) {
+		t.Helper()
+		n++
+		needRestart, err := is.AddInboundClient(&model.Inbound{Id: in.Id, Settings: fmt.Sprintf(`{"clients":[{"id":"6b0e9c1c-2d6f-4c6e-9b8a-%012d","email":"%s","enable":true,"flow":""}]}`, 100+n, email)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if needRestart {
+			xs.SetToNeedRestart()
+		}
+	}
+	// restartJob is what the panel's restart check does.
+	restartJob := func() {
+		if xs.IsNeedRestartAndSetFalse() {
+			xs.RestartXray(false)
+		}
+	}
+	duringRestart := func(edit func()) {
+		t.Helper()
+		var once sync.Once
+		done := make(chan struct{})
+		hostAddressList = func() ([]hostIP, error) {
+			once.Do(func() {
+				go func() { edit(); close(done) }()
+				time.Sleep(500 * time.Millisecond)
+			})
+			return []hostIP{{IP: net.ParseIP("127.0.0.2").To4(), Iface: "lo"}}, nil
+		}
+		p := pidOf(t, "xray-1")
+		if err := xs.RestartInstance("xray-1"); err != nil {
+			t.Fatal(err)
+		}
+		<-done
+		if pidOf(t, "xray-1") == p {
+			t.Fatal("the core did not restart")
+		}
+		restartJob()
+	}
+
+	duringRestart(func() { addClient("late") })
+	addClient("after")
+	restartJob()
+	if !userOn(t, "xray-1", in.Tag, "late") {
+		t.Fatal("a client added during the restart is missing from the core")
+	}
+
+	// The traffic job finds a client over its quota during the restart.
+	duringRestart(func() {
+		err, needRestart := is.AddTraffic(nil, []*xray.ClientTraffic{{Email: "quota", Up: 5000}})
+		if err != nil {
+			t.Error(err)
+		}
+		if needRestart {
+			xs.SetToNeedRestart()
+		}
+	})
+	addClient("after2")
+	restartJob()
+	if userOn(t, "xray-1", in.Tag, "quota") {
+		t.Fatal("a client disabled during the restart still runs on the core")
+	}
+}
+
+// A core's API answers as soon as the apply that started it returns.
+func TestClientRightAfterNewInstance(t *testing.T) {
+	integrationCore(t)
+	var xs XrayService
+	var is InboundService
+	if err := xs.RestartXray(true); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		in, _, err := is.AddInbound(vlessInbound(t, "", 0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := xs.ApplyInboundChanges(); err != nil {
+			t.Fatal(err)
+		}
+		needRestart, err := is.AddInboundClient(&model.Inbound{Id: in.Id, Settings: fmt.Sprintf(`{"clients":[{"id":"6b0e9c1c-2d6f-4c6e-9b8a-%012d","email":"next%d","enable":true,"flow":""}]}`, 900+i, i)})
+		if err != nil || needRestart {
+			t.Fatalf("round %d: client added right after %s started: restart=%v err=%v", i, in.XrayInstance, needRestart, err)
+		}
+	}
+	// The cores' configs hold every client's credentials.
+	for _, f := range []string{instanceConfigPath("xray-1"), xray.GetConfigPath()} {
+		if fi, err := os.Stat(f); err != nil {
+			t.Error(err)
+		} else if fi.Mode().Perm() != 0o600 {
+			t.Errorf("%s has mode %v", f, fi.Mode().Perm())
+		}
+	}
+}
+
+// After a full stop, restarting one instance starts that one only, and
+// starting a running one leaves it alone.
+func TestInstanceActionsAfterFullStop(t *testing.T) {
+	integrationCore(t)
+	var xs XrayService
+	var is InboundService
+	if err := xs.RestartXray(true); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, _, err := is.AddInbound(vlessInbound(t, "", 0)); err != nil {
+			t.Fatal(err)
+		}
+		xs.ApplyInboundChanges()
+	}
+	if err := xs.StopXray(); err != nil {
+		t.Fatal(err)
+	}
+	if err := xs.RestartInstance("xray-2"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(running(), ","); got != "xray-2" {
+		t.Fatalf("restarting xray-2 after a full stop runs %q", got)
+	}
+	p2 := pidOf(t, "xray-2")
+	if err := xs.StartInstance("xray-2"); err != nil {
+		t.Fatal(err)
+	}
+	if pidOf(t, "xray-2") != p2 {
+		t.Fatal("starting a running core restarted it")
+	}
+	if err := xs.StartInstance("xray-1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(running(), ","); got != "xray-1,xray-2" || pidOf(t, "xray-2") != p2 {
+		t.Fatalf("after starting xray-1: %q", got)
 	}
 }
