@@ -324,7 +324,7 @@ func (s *XrayService) pruneEgress(egress map[string]string, inbounds []*model.In
 // XrayInstanceNames returns every instance an inbound names, enabled or not.
 func XrayInstanceNames() (map[string]bool, error) {
 	var inbounds []*model.Inbound
-	if err := database.GetDB().Model(model.Inbound{}).Select("id", "tag", "port", "enable", "xray_instance", "xray_cores", "sub_inbounds").
+	if err := database.GetDB().Model(model.Inbound{}).Select("id", "tag", "port", "listen", "enable", "xray_instance", "xray_cores", "sub_inbounds").
 		Find(&inbounds).Error; err != nil {
 		return nil, err
 	}

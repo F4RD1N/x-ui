@@ -158,6 +158,11 @@
         close() {
             this.visible = false;
         },
+        // A unix socket has no port to put sub-inbounds on.
+        onSocket() {
+            const l = (this.inbound && this.inbound.listen) || "";
+            return l.startsWith("/") || l.startsWith("@");
+        },
         async ask(count) {
             return HttpUtil.post(`/panel/api/inbounds/${this.inbound.id}/multiInstance`, {
                 count: count, cores: this.addCores || 0,
@@ -177,6 +182,10 @@
         },
         async add() {
             if (this.adding) return;
+            if (this.onSocket()) {
+                this.error = '{{ i18n "pages.inbounds.subInboundSocket" }}';
+                return;
+            }
             this.adding = true;
             this.error = "";
             try {
@@ -199,6 +208,10 @@
         },
         async save() {
             if (this.saving) return;
+            if (this.rows.length && this.onSocket()) {
+                this.error = '{{ i18n "pages.inbounds.subInboundSocket" }}';
+                return;
+            }
             for (const r of this.rows) {
                 if (!(r.port >= 1 && r.port <= 65535)) {
                     this.error = '{{ i18n "pages.inbounds.subInboundBadPort" }}';

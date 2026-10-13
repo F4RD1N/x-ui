@@ -2,6 +2,7 @@ package xray
 
 import (
 	"bytes"
+	"encoding/json"
 
 	"github.com/mhsanaei/3x-ui/v2/util/json_util"
 )
@@ -25,7 +26,9 @@ type Config struct {
 	Metrics          json_util.RawMessage `json:"metrics"`
 }
 
-// Equals compares two Config instances for deep equality.
+// Equals compares two Config instances for deep equality. Sections that
+// differ only in layout are equal: a template re-indented by the Xray page
+// is the same config, and must not restart a core.
 func (c *Config) Equals(other *Config) bool {
 	if len(c.InboundConfigs) != len(other.InboundConfigs) {
 		return false
@@ -35,38 +38,51 @@ func (c *Config) Equals(other *Config) bool {
 			return false
 		}
 	}
-	if !bytes.Equal(c.LogConfig, other.LogConfig) {
+	if !SameJSON(c.LogConfig, other.LogConfig) {
 		return false
 	}
-	if !bytes.Equal(c.RouterConfig, other.RouterConfig) {
+	if !SameJSON(c.RouterConfig, other.RouterConfig) {
 		return false
 	}
-	if !bytes.Equal(c.DNSConfig, other.DNSConfig) {
+	if !SameJSON(c.DNSConfig, other.DNSConfig) {
 		return false
 	}
-	if !bytes.Equal(c.OutboundConfigs, other.OutboundConfigs) {
+	if !SameJSON(c.OutboundConfigs, other.OutboundConfigs) {
 		return false
 	}
-	if !bytes.Equal(c.Transport, other.Transport) {
+	if !SameJSON(c.Transport, other.Transport) {
 		return false
 	}
-	if !bytes.Equal(c.Policy, other.Policy) {
+	if !SameJSON(c.Policy, other.Policy) {
 		return false
 	}
-	if !bytes.Equal(c.API, other.API) {
+	if !SameJSON(c.API, other.API) {
 		return false
 	}
-	if !bytes.Equal(c.Stats, other.Stats) {
+	if !SameJSON(c.Stats, other.Stats) {
 		return false
 	}
-	if !bytes.Equal(c.Reverse, other.Reverse) {
+	if !SameJSON(c.Reverse, other.Reverse) {
 		return false
 	}
-	if !bytes.Equal(c.FakeDNS, other.FakeDNS) {
+	if !SameJSON(c.FakeDNS, other.FakeDNS) {
 		return false
 	}
-	if !bytes.Equal(c.Metrics, other.Metrics) {
+	if !SameJSON(c.Metrics, other.Metrics) {
 		return false
 	}
 	return true
+}
+
+// SameJSON reports whether a and b are the same JSON text apart from
+// insignificant whitespace.
+func SameJSON(a, b []byte) bool {
+	if bytes.Equal(a, b) {
+		return true
+	}
+	var ca, cb bytes.Buffer
+	if json.Compact(&ca, a) != nil || json.Compact(&cb, b) != nil {
+		return false
+	}
+	return bytes.Equal(ca.Bytes(), cb.Bytes())
 }

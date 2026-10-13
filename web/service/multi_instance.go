@@ -11,7 +11,6 @@ package service
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -47,6 +46,10 @@ type SubPlan struct {
 
 // subPlanMax caps one request.
 const subPlanMax = 1024
+
+// errSocketSubs is why an inbound on a unix socket gets no sub-inbounds:
+// they would have no port, and would fight it for the socket.
+const errSocketSubs = "an inbound on a unix socket cannot have sub-inbounds"
 
 // othersExpanded returns every inbound but id, with their sub-inbounds.
 func othersExpanded(id int) ([]*model.Inbound, error) {
@@ -127,6 +130,8 @@ func (s *InboundService) PlanSubInbounds(id int, current []model.SubInbound, cou
 	}
 	plan.Count = count
 	switch {
+	case model.SocketListen(src.Listen):
+		plan.Error = errSocketSubs
 	case count < 1 && useMax:
 		plan.Error = fmt.Sprintf("no CPU cores are left for new instances (%d in total, %d reserved)", total, reserved)
 	case count < 1:
@@ -137,8 +142,9 @@ func (s *InboundService) PlanSubInbounds(id int, current []model.SubInbound, cou
 		plan.Error = fmt.Sprintf("auto instances need a free CPU core, but all %d are reserved", total)
 	}
 
-	if unixSocketListen(src.Listen) {
-		plan.Error = errSubOnUnixSocket.Error()
+	// A unix socket has no port to put sub-inbounds on: the switch above
+	// gave the reason, and there is nothing to plan.
+	if model.SocketListen(src.Listen) {
 		return plan, nil
 	}
 
@@ -169,14 +175,6 @@ func (s *InboundService) PlanSubInbounds(id int, current []model.SubInbound, cou
 		plan.Error = fmt.Sprintf("only %d free ports are left after %d", len(plan.Items), start)
 	}
 	return plan, nil
-}
-
-var errSubOnUnixSocket = errors.New("an inbound that listens on a Unix socket cannot have sub-inbounds")
-
-// unixSocketListen reports whether listen is a Unix socket: a path, or an
-// abstract name.
-func unixSocketListen(listen string) bool {
-	return strings.HasPrefix(listen, "/") || strings.HasPrefix(listen, "@")
 }
 
 // ownPorts returns the ports the inbound's cores hold now: its own and its
@@ -270,8 +268,8 @@ func (s *InboundService) SaveSubInbounds(id int, subs []model.SubInbound) (*mode
 	if err != nil {
 		return nil, false, err
 	}
-	if len(subs) > 0 && unixSocketListen(src.Listen) {
-		return nil, false, errSubOnUnixSocket
+	if len(subs) > 0 && model.SocketListen(src.Listen) {
+		return nil, false, common.NewError(errSocketSubs)
 	}
 	others, err := othersExpanded(id)
 	if err != nil {

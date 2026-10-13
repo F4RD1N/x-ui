@@ -2,6 +2,8 @@ module github.com/xtls/xray-core
 
 go 1.26.0
 
+// Release builds use this Go: go1.27.0 has stdlib vulnerabilities fixed in
+// go1.27.2, among them an HTTP/2 server crash reachable through XHTTP.
 toolchain go1.27.2
 
 require (

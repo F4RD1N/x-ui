@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/mhsanaei/3x-ui/v2/database"
@@ -362,7 +364,7 @@ func (j *CheckClientIpJob) updateInboundClientIps(inboundClientIps *model.Inboun
 		// Actually disconnect banned IPs by temporarily removing and re-adding user
 		// This forces Xray to drop existing connections from banned IPs
 		if len(bannedIps) > 0 {
-			j.disconnectClientTemporarily(inbound, clientEmail, clients)
+			j.disconnectClientTemporarily(inbound, clientEmail)
 		}
 
 		// Update database with only the currently active (kept) IPs
@@ -389,27 +391,12 @@ func (j *CheckClientIpJob) updateInboundClientIps(inboundClientIps *model.Inboun
 }
 
 // disconnectClientTemporarily removes and re-adds a client to force disconnect banned connections
-func (j *CheckClientIpJob) disconnectClientTemporarily(inbound *model.Inbound, clientEmail string, clients []model.Client) {
+func (j *CheckClientIpJob) disconnectClientTemporarily(inbound *model.Inbound, clientEmail string) {
 	// The client lives in the core that runs its inbound, and in the cores
 	// of the inbound's sub-inbounds.
 	targets := service.XrayAPITargetsForTag(inbound.Tag)
 	if len(targets) == 0 {
 		targets = []service.XrayAPITarget{{Tag: inbound.Tag, Port: j.resolveXrayAPIPort()}}
-	}
-
-	// Find the client config
-	var clientConfig map[string]any
-	for _, client := range clients {
-		if client.Email == clientEmail {
-			// Convert client to map for API
-			clientBytes, _ := json.Marshal(client)
-			json.Unmarshal(clientBytes, &clientConfig)
-			break
-		}
-	}
-
-	if clientConfig == nil {
-		return
 	}
 
 	// Only perform remove/re-add for protocols supported by XrayAPI.AddUser
@@ -422,19 +409,35 @@ func (j *CheckClientIpJob) disconnectClientTemporarily(inbound *model.Inbound, c
 		return
 	}
 
-	// For Shadowsocks, ensure the required "cipher" field is present by
-	// reading it from the inbound settings (e.g., settings["method"]).
-	if string(inbound.Protocol) == "shadowsocks" {
-		var inboundSettings map[string]any
-		if err := json.Unmarshal([]byte(inbound.Settings), &inboundSettings); err != nil {
-			logger.Warningf("[LIMIT_IP] Failed to parse inbound settings for shadowsocks cipher: %v", err)
-		} else {
-			if method, ok := inboundSettings["method"].(string); ok && method != "" {
-				clientConfig["cipher"] = method
+	// The user to add back, with every field AddUser reads: the stored
+	// client lacks "cipher" (shadowsocks) and often "flow" (VLESS), and a
+	// missing one used to crash the panel here.
+	var settings map[string]any
+	if err := json.Unmarshal([]byte(inbound.Settings), &settings); err != nil {
+		logger.Warningf("[LIMIT_IP] Failed to parse the settings of inbound %s: %v", inbound.Tag, err)
+		return
+	}
+	var clientConfig map[string]any
+	list, _ := settings["clients"].([]any)
+	for _, c := range list {
+		if m, ok := c.(map[string]any); ok {
+			if email, _ := m["email"].(string); email == clientEmail {
+				clientConfig = service.ClientAPIUser(settings, m)
+				break
 			}
 		}
 	}
+	if clientConfig == nil {
+		return
+	}
 
+	// lost marks a core that may have lost the client for a restart, which
+	// brings it back from the database.
+	var xrayService service.XrayService
+	lost := func(tag string) {
+		service.MarkCoreDirty(tag)
+		xrayService.SetToNeedRestart()
+	}
 	for _, target := range targets {
 		var xrayAPI xray.XrayAPI
 		if err := xrayAPI.Init(target.Port); err != nil {
@@ -445,15 +448,25 @@ func (j *CheckClientIpJob) disconnectClientTemporarily(inbound *model.Inbound, c
 		if err := xrayAPI.RemoveUser(target.Tag, clientEmail); err != nil {
 			logger.Warningf("[LIMIT_IP] Failed to remove user %s: %v", clientEmail, err)
 			xrayAPI.Close()
+			if !strings.Contains(err.Error(), fmt.Sprintf("User %s not found.", clientEmail)) {
+				// A stalled core may still have removed it.
+				lost(target.Tag)
+			}
 			continue
 		}
 
 		// Wait a moment for disconnection to take effect
 		time.Sleep(100 * time.Millisecond)
 
-		// Re-add user to allow new connections
-		if err := xrayAPI.AddUser(protocol, target.Tag, clientConfig); err != nil {
+		// Re-add user to allow new connections, trying once more on failure
+		err := xrayAPI.AddUser(protocol, target.Tag, clientConfig)
+		if err != nil && !strings.Contains(err.Error(), "already exists") {
+			time.Sleep(100 * time.Millisecond)
+			err = xrayAPI.AddUser(protocol, target.Tag, clientConfig)
+		}
+		if err != nil && !strings.Contains(err.Error(), "already exists") {
 			logger.Warningf("[LIMIT_IP] Failed to re-add user %s: %v", clientEmail, err)
+			lost(target.Tag)
 		}
 		xrayAPI.Close()
 	}

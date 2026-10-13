@@ -2,6 +2,8 @@ module github.com/mhsanaei/3x-ui/v2
 
 go 1.27
 
+// Release builds use this Go: go1.27.0 has stdlib vulnerabilities fixed in
+// go1.27.2, among them an HTTP/2 server crash reachable through XHTTP.
 toolchain go1.27.2
 
 require (

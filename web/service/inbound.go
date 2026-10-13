@@ -366,6 +366,7 @@ func (s *InboundService) DelInbound(id int) (bool, error) {
 		if err1 == nil {
 			logger.Debug("Inbound deleted by api:", tag)
 		} else {
+			// The core that failed was marked for a restart.
 			logger.Debug("Unable to delete inbound by api:", err1)
 			needRestart = true
 		}
@@ -447,8 +448,25 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 			return inbound, false, common.NewError("Port already used by a sub-inbound of this inbound:", inbound.Port)
 		}
 	}
-	if len(oldInbound.Subs()) > 0 && unixSocketListen(inbound.Listen) {
-		return inbound, false, errSubOnUnixSocket
+	// The sub-inbounds listen where the inbound does, so a new address must
+	// be free on their ports too; a unix socket has no ports for them.
+	if subs := (&model.Inbound{SubInbounds: oldInbound.SubInbounds}).Subs(); len(subs) > 0 && inbound.Listen != oldInbound.Listen {
+		if model.SocketListen(inbound.Listen) {
+			return inbound, false, common.NewError("An inbound with sub-inbounds cannot listen on a unix socket")
+		}
+		others, err3 := othersExpanded(inbound.Id)
+		if err3 != nil {
+			return inbound, false, err3
+		}
+		own := map[int]bool{oldInbound.Port: true}
+		for _, sub := range subs {
+			own[sub.Port] = true
+		}
+		for _, sub := range subs {
+			if c := portConflict(inbound, sub.Port, others, own); c != "" {
+				return inbound, false, common.NewErrorf("port %d of a sub-inbound is %s", sub.Port, c)
+			}
+		}
 	}
 	if err = s.prepareXrayInstance(inbound, oldInbound); err != nil {
 		return inbound, false, err
@@ -554,20 +572,32 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 
 	needRestart := false
 	api := newCoreAPI()
-	if api.DelInbound(tag) == nil {
+	if err2 := api.DelInbound(tag); err2 == nil {
 		logger.Debug("Old inbound deleted by api:", tag)
+	} else {
+		// The core that still runs it was marked for a restart.
+		logger.Debug("Unable to delete old inbound by api:", err2)
+		needRestart = true
+	}
+	// markRebuild marks the cores of the inbound and its sub-inbounds, all
+	// of which lost it above, when it cannot be added back through the API.
+	markRebuild := func() {
+		markDirtyInstance(oldInbound.XrayInstance)
+		for _, sub := range oldInbound.Subs() {
+			markDirtyInstance(sub.Instance)
+		}
 	}
 	if inbound.Enable {
 		runtimeInbound, err2 := s.buildRuntimeInboundForAPI(tx, oldInbound)
 		if err2 != nil {
 			logger.Debug("Unable to prepare runtime inbound config:", err2)
-			markDirtyInstance(oldInbound.XrayInstance)
+			markRebuild()
 			needRestart = true
 		} else {
 			inboundJson, err2 := json.MarshalIndent(runtimeInbound.GenXrayInboundConfig(), "", "  ")
 			if err2 != nil {
 				logger.Debug("Unable to marshal updated inbound config:", err2)
-				markDirtyInstance(oldInbound.XrayInstance)
+				markRebuild()
 				needRestart = true
 			} else {
 				err2 = api.AddInbound(oldInbound.XrayInstance, oldInbound.Tag, inboundJson)
@@ -816,7 +846,7 @@ func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
 				}
 			}
 		} else {
-			markDirtyTag(oldInbound.Tag)
+			markDirtyFamily(oldInbound.Tag)
 			needRestart = true
 		}
 	}
@@ -907,6 +937,7 @@ func (s *InboundService) DelInboundClient(inboundId int, clientId string) (bool,
 				if strings.Contains(err1.Error(), fmt.Sprintf("User %s not found.", email)) {
 					logger.Debug("User is already deleted. Nothing to do more...")
 				} else {
+					// RemoveUser marked the core that failed.
 					logger.Debug("Error in deleting client by api:", err1)
 					needRestart = true
 				}
@@ -1064,6 +1095,7 @@ func (s *InboundService) UpdateInboundClient(data *model.Inbound, clientId strin
 				if strings.Contains(err1.Error(), fmt.Sprintf("User %s not found.", oldEmail)) {
 					logger.Debug("User is already deleted. Nothing to do more...")
 				} else {
+					// RemoveUser marked the core that failed.
 					logger.Debug("Error in deleting client by api:", err1)
 					needRestart = true
 				}
@@ -1093,7 +1125,7 @@ func (s *InboundService) UpdateInboundClient(data *model.Inbound, clientId strin
 		api.Close()
 	} else {
 		logger.Debug("Client old email not found")
-		markDirtyTag(oldInbound.Tag)
+		markDirtyFamily(oldInbound.Tag)
 		needRestart = true
 	}
 	return needRestart, tx.Save(oldInbound).Error
@@ -1337,16 +1369,20 @@ func (s *InboundService) autoRenewClients(tx *gorm.DB) (bool, int64, error) {
 					traffics[traffic_index].Up = 0
 					if !traffic.Enable {
 						traffics[traffic_index].Enable = true
-						clientsToAdd = append(clientsToAdd,
-							struct {
-								protocol string
-								tag      string
-								client   map[string]any
-							}{
-								protocol: string(inbounds[inbound_index].Protocol),
-								tag:      inbounds[inbound_index].Tag,
-								client:   c,
-							})
+						// A client the admin switched off stays out of the
+						// core; the renewal only lifts the depletion.
+						if on, ok := c["enable"].(bool); !ok || on {
+							clientsToAdd = append(clientsToAdd,
+								struct {
+									protocol string
+									tag      string
+									client   map[string]any
+								}{
+									protocol: string(inbounds[inbound_index].Protocol),
+									tag:      inbounds[inbound_index].Tag,
+									client:   ClientAPIUser(settings, c),
+								})
+						}
 					}
 					clients[client_index] = any(c)
 					break
@@ -1379,6 +1415,34 @@ func (s *InboundService) autoRenewClients(tx *gorm.DB) (bool, int64, error) {
 	return needRestart, int64(len(traffics)), nil
 }
 
+// ClientAPIUser is the user XrayAPI.AddUser takes for client c, as stored in
+// the settings of its inbound. Every field is there, empty when the client
+// has none: the stored client itself lacks "cipher" (shadowsocks) and often
+// "flow" (VLESS), and a missing key used to crash the panel.
+func ClientAPIUser(settings map[string]any, c map[string]any) map[string]any {
+	str := func(m map[string]any, k string) string {
+		v, _ := m[k].(string)
+		return v
+	}
+	flow := str(c, "flow")
+	if flow == "xtls-rprx-vision-udp443" {
+		flow = "xtls-rprx-vision" // as the config the cores start with has it
+	}
+	cipher := str(c, "method")
+	if cipher == "" {
+		cipher = str(settings, "method")
+	}
+	return map[string]any{
+		"email":    str(c, "email"),
+		"id":       str(c, "id"),
+		"flow":     flow,
+		"password": str(c, "password"),
+		"auth":     str(c, "auth"),
+		"security": str(c, "security"),
+		"cipher":   cipher,
+	}
+}
+
 func (s *InboundService) disableInvalidInbounds(tx *gorm.DB) (bool, int64, error) {
 	now := time.Now().Unix() * 1000
 	needRestart := false
@@ -1398,6 +1462,7 @@ func (s *InboundService) disableInvalidInbounds(tx *gorm.DB) (bool, int64, error
 			if err1 == nil {
 				logger.Debug("Inbound disabled by api:", tag)
 			} else {
+				// The core that failed was marked for a restart.
 				logger.Debug("Error in disabling inbound by api:", err1)
 				needRestart = true
 			}
@@ -1443,6 +1508,7 @@ func (s *InboundService) disableInvalidClients(tx *gorm.DB) (bool, int64, error)
 					if strings.Contains(err1.Error(), fmt.Sprintf("User %s not found.", result.Email)) {
 						logger.Debug("User is already disabled. Nothing to do more...")
 					} else if err1 != errInboundNotRunning {
+						// RemoveUser marked the core that failed.
 						logger.Debug("Error in disabling client by api:", err1)
 						needRestart = true
 					}
@@ -2006,16 +2072,28 @@ func (s *InboundService) ResetClientTraffic(id int, clientEmail string) (bool, e
 	return needRestart, nil
 }
 
-func (s *InboundService) ResetAllClientTraffics(id int) error {
+// ResetAllClientTraffics resets the traffic of every client of inbound id,
+// or of every inbound for -1. The clients it brings back from depletion were
+// taken out of the cores, so they are added again; it reports whether a core
+// needs a restart because that failed.
+func (s *InboundService) ResetAllClientTraffics(id int) (bool, error) {
+	editMu.RLock()
+	defer editMu.RUnlock()
 	db := database.GetDB()
 	now := time.Now().Unix() * 1000
+	var revived []xray.ClientTraffic
 
-	return db.Transaction(func(tx *gorm.DB) error {
+	err := db.Transaction(func(tx *gorm.DB) error {
 		whereText := "inbound_id "
 		if id == -1 {
 			whereText += " > ?"
 		} else {
 			whereText += " = ?"
+		}
+
+		err := tx.Model(xray.ClientTraffic{}).Where(whereText+" and enable = ?", id, false).Find(&revived).Error
+		if err != nil {
+			return err
 		}
 
 		// Reset client traffics
@@ -2041,6 +2119,66 @@ func (s *InboundService) ResetAllClientTraffics(id int) error {
 
 		return result.Error
 	})
+	if err != nil {
+		return false, err
+	}
+	return s.addClientsBack(revived), nil
+}
+
+// addClientsBack adds the clients of rows, which were disabled in the cores
+// and are enabled again in the database, to the cores of their inbounds. A
+// client the admin switched off stays out. It reports whether a core needs a
+// restart because that failed.
+func (s *InboundService) addClientsBack(rows []xray.ClientTraffic) bool {
+	if len(rows) == 0 {
+		return false
+	}
+	emails := map[int]map[string]bool{}
+	var ids []int
+	for _, r := range rows {
+		if emails[r.InboundId] == nil {
+			emails[r.InboundId] = map[string]bool{}
+			ids = append(ids, r.InboundId)
+		}
+		emails[r.InboundId][r.Email] = true
+	}
+	var inbounds []*model.Inbound
+	if err := database.GetDB().Model(model.Inbound{}).Where("id IN ? and enable = ?", ids, true).Find(&inbounds).Error; err != nil {
+		logger.Warning("Unable to read the inbounds of re-enabled clients:", err)
+		return true
+	}
+	needRestart := false
+	api := newCoreAPI()
+	defer api.Close()
+	for _, in := range inbounds {
+		settings := map[string]any{}
+		if err := json.Unmarshal([]byte(in.Settings), &settings); err != nil {
+			continue
+		}
+		clients, _ := settings["clients"].([]any)
+		for _, client := range clients {
+			c, ok := client.(map[string]any)
+			if !ok {
+				continue
+			}
+			email, _ := c["email"].(string)
+			if !emails[in.Id][email] {
+				continue
+			}
+			if on, ok := c["enable"].(bool); ok && !on {
+				continue
+			}
+			err := api.AddUser(string(in.Protocol), in.Tag, ClientAPIUser(settings, c))
+			if err == nil {
+				logger.Debug("Client enabled due to reset traffic:", email)
+			} else if err != errInboundNotRunning {
+				// AddUser marked the core that failed.
+				logger.Debug("Error in enabling client by api:", err)
+				needRestart = true
+			}
+		}
+	}
+	return needRestart
 }
 
 func (s *InboundService) ResetAllTraffics() error {
@@ -2064,13 +2202,18 @@ func (s *InboundService) ResetInboundTraffic(id int) error {
 	return result.Error
 }
 
-func (s *InboundService) DelDepletedClients(id int) (err error) {
+// DelDepletedClients deletes the depleted clients -- expired or out of
+// traffic, with no auto-renew -- of inbound id, or of every inbound for -1,
+// and the inbounds it leaves with no client. The database changes are one
+// transaction; the cores are changed after it commits. It reports whether a
+// core needs a restart because that failed.
+func (s *InboundService) DelDepletedClients(id int) (needRestart bool, err error) {
+	editMu.RLock()
+	defer editMu.RUnlock()
 	db := database.GetDB()
 	tx := db.Begin()
 	defer func() {
-		if err == nil {
-			tx.Commit()
-		} else {
+		if err != nil {
 			tx.Rollback()
 		}
 	}()
@@ -2085,40 +2228,50 @@ func (s *InboundService) DelDepletedClients(id int) (err error) {
 	// Only consider truly depleted clients: expired OR traffic exhausted
 	now := time.Now().Unix() * 1000
 	depletedClients := []xray.ClientTraffic{}
-	err = db.Model(xray.ClientTraffic{}).
+	err = tx.Model(xray.ClientTraffic{}).
 		Where(whereText+" and ((total > 0 and up + down >= total) or (expiry_time > 0 and expiry_time <= ?))", id, now).
 		Select("inbound_id, GROUP_CONCAT(email) as email").
 		Group("inbound_id").
 		Find(&depletedClients).Error
 	if err != nil {
-		return err
+		return false, err
 	}
 
+	type removal struct{ tag, email string }
+	var removals []removal   // depleted clients a core may still run
+	var deletedTags []string // deleted inbounds a core runs
+	var deletedEmails []string
 	for _, depletedClient := range depletedClients {
 		emails := strings.Split(depletedClient.Email, ",")
-		oldInbound, err := s.GetInbound(depletedClient.InboundId)
-		if err != nil {
-			return err
+		oldInbound := &model.Inbound{}
+		if err = tx.Model(model.Inbound{}).First(oldInbound, depletedClient.InboundId).Error; err != nil {
+			return false, err
 		}
 		var oldSettings map[string]any
 		err = json.Unmarshal([]byte(oldInbound.Settings), &oldSettings)
 		if err != nil {
-			return err
+			return false, err
 		}
 
-		oldClients := oldSettings["clients"].([]any)
+		oldClients, _ := oldSettings["clients"].([]any)
 		var newClients []any
 		for _, client := range oldClients {
 			deplete := false
-			c := client.(map[string]any)
-			for _, email := range emails {
-				if email == c["email"].(string) {
+			c, _ := client.(map[string]any)
+			email, _ := c["email"].(string)
+			for _, e := range emails {
+				if e == email {
 					deplete = true
 					break
 				}
 			}
 			if !deplete {
 				newClients = append(newClients, client)
+				continue
+			}
+			deletedEmails = append(deletedEmails, email)
+			if on, ok := c["enable"].(bool); oldInbound.Enable && (!ok || on) {
+				removals = append(removals, removal{oldInbound.Tag, email})
 			}
 		}
 		if len(newClients) > 0 {
@@ -2126,27 +2279,67 @@ func (s *InboundService) DelDepletedClients(id int) (err error) {
 
 			newSettings, err := json.MarshalIndent(oldSettings, "", "  ")
 			if err != nil {
-				return err
+				return false, err
 			}
 
 			oldInbound.Settings = string(newSettings)
 			err = tx.Save(oldInbound).Error
 			if err != nil {
-				return err
+				return false, err
 			}
 		} else {
-			// Delete inbound if no client remains
-			s.DelInbound(depletedClient.InboundId)
+			// Delete inbound if no client remains, in this transaction: a
+			// delete of its own could not get at the database until this
+			// one ends, and failed after taking it out of the core.
+			if err = tx.Where("inbound_id = ?", oldInbound.Id).Delete(xray.ClientTraffic{}).Error; err != nil {
+				return false, err
+			}
+			if err = tx.Delete(model.Inbound{}, oldInbound.Id).Error; err != nil {
+				return false, err
+			}
+			if oldInbound.Enable {
+				deletedTags = append(deletedTags, oldInbound.Tag)
+			}
 		}
 	}
 
 	// Delete stats only for truly depleted clients
 	err = tx.Where(whereText+" and ((total > 0 and up + down >= total) or (expiry_time > 0 and expiry_time <= ?))", id, now).Delete(xray.ClientTraffic{}).Error
 	if err != nil {
-		return err
+		return false, err
+	}
+	if len(deletedEmails) > 0 {
+		if err = tx.Where("client_email IN ?", deletedEmails).Delete(model.InboundClientIps{}).Error; err != nil {
+			return false, err
+		}
+	}
+	if err = tx.Commit().Error; err != nil {
+		return false, err
 	}
 
-	return nil
+	api := newCoreAPI()
+	defer api.Close()
+	gone := map[string]bool{}
+	for _, tag := range deletedTags {
+		gone[tag] = true
+		if err1 := api.DelInbound(tag); err1 != nil {
+			// The core that failed was marked for a restart.
+			logger.Debug("Unable to delete inbound by api:", err1)
+			needRestart = true
+		}
+	}
+	for _, r := range removals {
+		if gone[r.tag] {
+			continue
+		}
+		err1 := api.RemoveUser(r.tag, r.email)
+		if err1 != nil && err1 != errInboundNotRunning && !strings.Contains(err1.Error(), fmt.Sprintf("User %s not found.", r.email)) {
+			// RemoveUser marked the core that failed.
+			logger.Debug("Error in deleting client by api:", err1)
+			needRestart = true
+		}
+	}
+	return needRestart, nil
 }
 
 func (s *InboundService) GetClientTrafficTgBot(tgId int64) ([]*xray.ClientTraffic, error) {
@@ -2672,6 +2865,7 @@ func (s *InboundService) DelInboundClientByEmail(inboundId int, email string) (b
 				if strings.Contains(err1.Error(), fmt.Sprintf("User %s not found.", email)) {
 					logger.Debug("User is already deleted. Nothing to do more...")
 				} else {
+					// RemoveUser marked the core that failed.
 					logger.Debug("Error in deleting client by api:", err1)
 					needRestart = true
 				}

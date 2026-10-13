@@ -138,9 +138,10 @@ configure() {
         return
     fi
 
-    "$xui_folder/x-ui" setting -username "$XUI_USER" -password "$XUI_PASS" \
-        -port "$XUI_PORT" -webBasePath "$XUI_PATH" >/dev/null \
-        || die "Could not apply the panel settings."
+    local out
+    out=$("$xui_folder/x-ui" setting -username "$XUI_USER" -password "$XUI_PASS" \
+        -port "$XUI_PORT" -webBasePath "$XUI_PATH" 2>&1) \
+        || die "Could not apply the panel settings:\n$out"
 }
 
 start_x_ui() {

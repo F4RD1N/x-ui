@@ -330,7 +330,7 @@ func TestSubInboundChecks(t *testing.T) {
 		uds := vlessInbound(t, "", 0)
 		uds.Listen = filepath.Join(dir, "in.sock")
 		uds = add(uds, base+5)
-		if plan, _ := is.PlanSubInbounds(uds.Id, nil, 1, 0, false); plan == nil || !strings.Contains(plan.Error, "Unix socket") || len(plan.Items) != 0 {
+		if plan, _ := is.PlanSubInbounds(uds.Id, nil, 1, 0, false); plan == nil || !strings.Contains(plan.Error, "unix socket") || len(plan.Items) != 0 {
 			t.Fatalf("plan for a Unix socket: %+v", plan)
 		}
 		if _, _, err := is.SaveSubInbounds(uds.Id, []model.SubInbound{{Port: base + 6, Enable: true}}); err == nil {
@@ -339,7 +339,7 @@ func TestSubInboundChecks(t *testing.T) {
 		// An inbound with sub-inbounds cannot move onto one either.
 		a, _ = is.GetInbound(a.Id)
 		a.Listen = "@abstract"
-		if _, _, err := is.UpdateInbound(a); err == nil || !strings.Contains(err.Error(), "Unix socket") {
+		if _, _, err := is.UpdateInbound(a); err == nil || !strings.Contains(err.Error(), "unix socket") {
 			t.Fatalf("inbound with sub-inbounds moved to a Unix socket: %v", err)
 		}
 	})
