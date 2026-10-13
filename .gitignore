@@ -15,3 +15,7 @@ signing.properties
 *.jks
 *.keystore
 .env
+
+# simulator binary and results
+tests/instances/sim/xsim
+tests/instances/sim/results/
