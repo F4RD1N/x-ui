@@ -19,6 +19,10 @@ type ApplyOptions struct {
 	Auto   bool // respect the disabled flag (installer, update)
 	Boot   bool // sysctls, conntrack and modules only (the unit's ExecStartPre)
 	Quiet  bool
+	// Host also sets up the host services (time sync, irqbalance, swap)
+	// with Auto: the installer passes it on a fresh install, never on an
+	// update. A manual apply always does them.
+	Host bool
 }
 
 // Result summarises an apply or revert.
@@ -116,6 +120,12 @@ func (e *Env) Apply(o ApplyOptions, version string) (*Result, error) {
 			ks = &KeyState{}
 			st.Keys[k.Key] = ks
 		}
+		if k.HandBack {
+			// Another file's value: nothing of x-ui's left for revert.
+			ks.Written, ks.Orig = "", ""
+			r.change("%s: %s -> %s (%s)", k.Key, k.Live, k.Want, k.Note)
+			continue
+		}
 		if ks.Written == "" && ks.Orig == "" {
 			ks.Orig = k.Live
 		}
@@ -123,7 +133,7 @@ func (e *Env) Apply(o ApplyOptions, version string) (*Result, error) {
 		r.change("%s: %s -> %s", k.Key, k.Live, k.Want)
 	}
 
-	// 99-x-ui.conf.
+	// x-ui's sysctl file.
 	for _, k := range p.Keys {
 		ks := st.Keys[k.Key]
 		if k.Persist != "" {
@@ -140,6 +150,7 @@ func (e *Env) Apply(o ApplyOptions, version string) (*Result, error) {
 		}
 	}
 	e.ownFile(SysctlFile, renderSysctl(p.Keys), r)
+	e.ownFile(OldSysctlFile, "", r) // only when it is x-ui's
 	e.ownFile(ModulesLoadFile, p.ModulesLoad, r)
 	e.ownFile(ModprobeFile, p.Modprobe, r)
 
@@ -179,7 +190,11 @@ func (e *Env) Apply(o ApplyOptions, version string) (*Result, error) {
 				r.Restart = true
 			}
 		}
-		e.services(f, st, r)
+		// Host services change the machine beyond x-ui's own needs: an
+		// update (Auto alone) leaves them to the admin.
+		if !o.Auto || o.Host {
+			e.services(f, st, r)
+		}
 	}
 
 	if !had || !bytesEqual(before, stateSnapshot(st)) {
@@ -302,7 +317,7 @@ func (e *Env) Revert(purge, dry bool) (*Result, error) {
 	}
 	f := e.gatherFacts()
 	if dry {
-		for _, p := range []string{SysctlFile, DropInFile, ModulesLoadFile, ModprobeFile, OpenRCConfFile} {
+		for _, p := range ownFiles {
 			if e.isOurs(p) {
 				r.change("would remove %s", p)
 			}
@@ -319,7 +334,7 @@ func (e *Env) Revert(purge, dry bool) (*Result, error) {
 	}
 
 	unitChanged := false
-	for _, p := range []string{SysctlFile, DropInFile, ModulesLoadFile, ModprobeFile, OpenRCConfFile} {
+	for _, p := range ownFiles {
 		if e.ownFile(p, "", r) && p == DropInFile {
 			unitChanged = true
 		}
@@ -388,3 +403,6 @@ func (e *Env) Revert(purge, dry bool) (*Result, error) {
 }
 
 var errNotRoot = errors.New("x-ui tune must run as root")
+
+// ownFiles are the files revert removes when they carry x-ui's header.
+var ownFiles = []string{SysctlFile, OldSysctlFile, DropInFile, ModulesLoadFile, ModprobeFile, OpenRCConfFile}

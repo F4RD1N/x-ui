@@ -175,7 +175,7 @@ run_distro() {
     check "tuning drop-in with header" in_c "head -1 $drop | grep -q '^# Written by x-ui tune'"
     check "GOMEMLIMIT sized for the 1 GiB cgroup (504MiB), no GOGC" in_c "grep -qx 'Environment=GOMEMLIMIT=504MiB' $drop && ! grep -q GOGC $drop"
     check "ExecStartPre re-applies at start" in_c "grep -qx 'ExecStartPre=-/usr/local/x-ui/x-ui tune apply --boot' $drop"
-    check "no sysctl file (all read-only here)" in_c '[[ ! -e /etc/sysctl.d/99-x-ui.conf ]]'
+    check "no sysctl file (all read-only here)" in_c '[[ ! -e /etc/sysctl.d/51-x-ui.conf ]]'
     check "status --json: every key read-only or missing" in_c '
         x-ui tune status --json > /root/st.json && grep -q "\"sysctl\"" /root/st.json &&
         ! grep -o "\"state\": \"[^\"]*\"" /root/st.json | grep -v "\"read-only\"\|\"missing\"\|\"applied\""'
@@ -259,7 +259,7 @@ chmod +x /usr/local/bin/curl'
 
     # ---- uninstall leaves nothing behind ------------------------------------
     check "uninstall" in_c 'echo y | x-ui uninstall >/root/uninstall.log 2>&1; true'
-    check "no tuning files left" in_c '[[ ! -e /etc/sysctl.d/99-x-ui.conf && ! -e /etc/systemd/system/x-ui.service.d && ! -e /var/lib/x-ui && ! -e /etc/modules-load.d/x-ui.conf && ! -e /usr/local/x-ui ]]'
+    check "no tuning files left" in_c '[[ ! -e /etc/sysctl.d/51-x-ui.conf && ! -e /etc/systemd/system/x-ui.service.d && ! -e /var/lib/x-ui && ! -e /etc/modules-load.d/x-ui.conf && ! -e /usr/local/x-ui ]]'
 
     docker rm -f "$C" >/dev/null 2>&1
 }

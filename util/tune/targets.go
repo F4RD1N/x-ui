@@ -31,7 +31,8 @@ type Target struct {
 	// (tcp_mtu_probing: 2 is a stronger setting and is kept).
 	OnlyFromZero bool `json:"-"`
 	// Optional keys may be missing at boot (conntrack); their line in
-	// 99-x-ui.conf gets the "-" prefix so systemd-sysctl does not complain.
+	// x-ui's sysctl file gets the "-" prefix so systemd-sysctl does not
+	// complain.
 	Optional bool   `json:"-"`
 	Why      string `json:"-"`
 }

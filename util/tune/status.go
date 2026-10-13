@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -26,6 +27,7 @@ func (e *Env) drift(p *Plan) []string {
 	}
 	files := map[string]string{
 		SysctlFile:      renderSysctl(p.Keys),
+		OldSysctlFile:   "", // still there when it is x-ui's
 		ModulesLoadFile: p.ModulesLoad,
 		ModprobeFile:    p.Modprobe,
 	}
@@ -36,16 +38,16 @@ func (e *Env) drift(p *Plan) []string {
 	case p.Facts.Init == "openrc":
 		files[OpenRCConfFile] = p.ConfD
 	}
-	for path, want := range files {
-		have, err := e.read(path)
+	for file, want := range files {
+		have, err := e.read(file)
 		if err != nil {
 			have = ""
 		}
-		if want == "" && !e.isOurs(path) {
+		if want == "" && !e.isOurs(file) {
 			continue
 		}
 		if have != want {
-			d = append(d, path)
+			d = append(d, file)
 		}
 	}
 	sort.Strings(d)
@@ -80,14 +82,15 @@ func (e *Env) Status(asJSON bool) ([]string, error) {
 	health := e.health(f)
 	if asJSON {
 		out := map[string]any{
-			"state":    stateWord(st, had),
-			"os":       e.osName(),
-			"plan":     p,
-			"drift":    d,
-			"process":  svc,
-			"health":   health,
-			"timesync": e.timeInfo(f),
-			"swap":     strings.Split(strings.TrimSpace(e.readTrim("/proc/swaps")), "\n")[1:],
+			"state":      stateWord(st, had),
+			"os":         e.osName(),
+			"plan":       p,
+			"drift":      d,
+			"process":    svc,
+			"health":     health,
+			"timesync":   e.timeInfo(f),
+			"irqbalance": e.irqbalanceInfo(f),
+			"swap":       strings.Split(strings.TrimSpace(e.readTrim("/proc/swaps")), "\n")[1:],
 		}
 		if ok, why := e.swapEligible(f, st); !ok && why != "" {
 			out["swapfile"] = why
@@ -104,6 +107,9 @@ func (e *Env) Status(asJSON bool) ([]string, error) {
 	}
 	e.printf("\nHost:\n")
 	e.printf("  time sync: %s\n", e.timeInfo(f))
+	if s := e.irqbalanceInfo(f); s != "" {
+		e.printf("  irqbalance: %s\n", s)
+	}
 	if swaps := strings.Split(strings.TrimSpace(e.readTrim("/proc/swaps")), "\n"); len(swaps) > 1 {
 		e.printf("  swap: %s\n", strings.Join(swaps[1:], "; "))
 	} else if ok, why := e.swapEligible(f, st); !ok && why != "" {
@@ -157,7 +163,7 @@ func (e *Env) printPlan(p *Plan, st *State, dry bool) {
 			state += " -> " + k.Want
 		}
 		if k.Persist != "" {
-			state += " [99-x-ui.conf]"
+			state += " [" + path.Base(SysctlFile) + "]"
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", k.Key, k.Live, k.Target, state)
 	}

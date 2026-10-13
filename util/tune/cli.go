@@ -23,7 +23,11 @@ files, and revert undoes exactly what it did.
   apply [--dry-run]           apply everything (also turns automatic tuning on)
   revert [--purge]            undo it and turn automatic tuning off
 
-Files: /etc/sysctl.d/99-x-ui.conf, /etc/systemd/system/x-ui.service.d/20-x-ui-tuning.conf,
+Time sync, irqbalance and swap are set up by a fresh install and by 'apply',
+never by an update, and never against an admin's choice. Sysctl files whose
+names sort after 51-x-ui.conf win at boot; after changing one, run 'apply'.
+
+Files: /etc/sysctl.d/51-x-ui.conf, /etc/systemd/system/x-ui.service.d/20-x-ui-tuning.conf,
 /etc/modules-load.d/x-ui.conf, /etc/modprobe.d/x-ui.conf, /var/lib/x-ui/tune/state.json
 `
 
@@ -46,6 +50,7 @@ func run(args []string, version string, stdout, stderr io.Writer) int {
 	dry := fs.Bool("dry-run", false, "")
 	auto := fs.Bool("auto", false, "")
 	boot := fs.Bool("boot", false, "")
+	host := fs.Bool("host", false, "") // with --auto: a fresh install's host services
 	quiet := fs.Bool("quiet", false, "")
 	purge := fs.Bool("purge", false, "")
 	if cmd == "help" || cmd == "-h" || cmd == "--help" {
@@ -93,7 +98,7 @@ func run(args []string, version string, stdout, stderr io.Writer) int {
 		return 0
 
 	case "apply":
-		o := ApplyOptions{DryRun: *dry, Auto: *auto, Boot: *boot, Quiet: *quiet || *boot}
+		o := ApplyOptions{DryRun: *dry, Auto: *auto, Boot: *boot, Quiet: *quiet || *boot, Host: *host}
 		if *boot {
 			return bootApply(e, o, version, stdout)
 		}

@@ -393,7 +393,8 @@ func TestSysctlOrderAndMasking(t *testing.T) {
 		"/etc/sysctl.d/10-a.conf":           "net.core.somaxconn = 2000\n", // masks /usr/lib's
 		"/run/sysctl.d/20-b.conf":           "net.core.somaxconn = 3000\n",
 		"/usr/local/lib/sysctl.d/30-c.conf": "vm.swappiness = 30\n",
-		"/etc/sysctl.d/99-x-ui.conf":        "net.core.somaxconn = 99999\n", // ours: ignored
+		"/etc/sysctl.d/51-x-ui.conf":        "net.core.somaxconn = 99999\n",          // ours: ignored
+		"/etc/sysctl.d/99-x-ui.conf":        Header + "net.core.somaxconn = 88888\n", // ours before: ignored
 		"/etc/sysctl.d/99-bbr-x-ui.conf":    "net.ipv4.tcp_congestion_control = bbr\n",
 		"/etc/sysctl.conf":                  "vm.swappiness = 5\n",
 		"/etc/sysctl.d/40-masked.conf":      "vm.max_map_count = 1\n",
@@ -417,6 +418,11 @@ func TestSysctlOrderAndMasking(t *testing.T) {
 	}
 	if !e.adminOwned("/etc/sysctl.d/99-sysctl.conf") || e.adminOwned("/usr/lib/sysctl.d/10-a.conf") {
 		t.Error("owner classifier")
+	}
+	// A 99-x-ui.conf that x-ui did not write is somebody else's file.
+	writeT(t, e.Root, OldSysctlFile, "vm.max_map_count = 77\n")
+	if o := e.othersSettings(); o["vm.max_map_count"].File != OldSysctlFile {
+		t.Errorf("foreign 99-x-ui.conf ignored: %+v", o["vm.max_map_count"])
 	}
 }
 
@@ -449,11 +455,11 @@ func TestApplyFreshSmallVM(t *testing.T) {
 	}
 	for _, line := range []string{"net.core.somaxconn = 8192", "net.ipv4.ip_local_port_range = 10000 65535", "net.ipv4.tcp_fastopen = 3"} {
 		if !strings.Contains(conf, "\n"+line+"\n") {
-			t.Errorf("99-x-ui.conf lacks %q:\n%s", line, conf)
+			t.Errorf("51-x-ui.conf lacks %q:\n%s", line, conf)
 		}
 	}
 	if strings.Contains(conf, "fs.file-max") || strings.Contains(conf, "tcp_rmem") {
-		t.Errorf("99-x-ui.conf persists a key it does not raise:\n%s", conf)
+		t.Errorf("51-x-ui.conf persists a key it does not raise:\n%s", conf)
 	}
 	drop := e.readTrim(DropInFile)
 	if strings.Contains(drop, "LimitNOFILE") || !strings.Contains(drop, "Environment=GOMEMLIMIT=504MiB") ||
@@ -703,7 +709,7 @@ func TestProductionLike(t *testing.T) {
 	conf := e.readTrim(SysctlFile)
 	for _, bad := range []string{"tcp_congestion_control", "default_qdisc", "ip_local_port_range", "nf_conntrack_max", "netdev_max_backlog"} {
 		if strings.Contains(conf, bad) {
-			t.Errorf("99-x-ui.conf sets %s, which an admin's file covers:\n%s", bad, conf)
+			t.Errorf("51-x-ui.conf sets %s, which an admin's file covers:\n%s", bad, conf)
 		}
 	}
 	var buf bytes.Buffer
@@ -816,7 +822,7 @@ func TestErrors(t *testing.T) {
 	e2 := machine{mem: GiB}.build(t)
 	e2.FailWrite[SysctlFile] = syscall.ENOSPC
 	r2 := mustApply(t, e2, ApplyOptions{})
-	if !strings.Contains(strings.Join(r2.Problems, "\n"), "99-x-ui.conf") {
+	if !strings.Contains(strings.Join(r2.Problems, "\n"), "51-x-ui.conf") {
 		t.Fatalf("%v", r2.Problems)
 	}
 }
@@ -894,40 +900,51 @@ func TestBootMode(t *testing.T) {
 	}
 }
 
-// Host services on a tiny KVM VM: timesyncd turned on, a swapfile created;
-// revert undoes both.
-func TestServicesSmallVM(t *testing.T) {
-	e := machine{mem: GiB, cpus: 4, nics: []NIC{{Name: "eth0", Speed: 1000, RxQueues: 4}}}.build(t)
-	os.MkdirAll(e.P("/var/lib"), 0o755)
-	answers := map[string]string{
-		"systemctl list-unit-files --no-legend systemd-timesyncd.service": "systemd-timesyncd.service disabled enabled",
-		"command -v apt-get": "/usr/bin/apt-get",
-	}
+// fakeCommands makes e.Run answer the commands in answers, succeed for
+// those starting with one of ok, and fail for the rest.
+func fakeCommands(e *Env, answers map[string]string, ok ...string) {
 	e.Run = func(_ time.Duration, name string, args ...string) (string, error) {
 		c := strings.TrimSpace(name + " " + strings.Join(args, " "))
 		e.Ran = append(e.Ran, c)
-		if out, ok := answers[c]; ok {
+		if out, found := answers[c]; found {
 			return out, nil
 		}
-		if strings.HasPrefix(c, "timedatectl set-ntp") || strings.HasPrefix(c, "apt-get install") ||
-			strings.HasPrefix(c, "systemctl enable") || c == "systemctl daemon-reload" {
-			return "", nil
+		for _, p := range ok {
+			if strings.HasPrefix(c, p) {
+				return "", nil
+			}
 		}
 		return "", errNotRun
 	}
+}
+
+// hostCommands are what the host services run when they change something.
+var hostCommands = []string{"timedatectl set-ntp", "apt-get install", "systemctl enable --now", "mkswap"}
+
+// Host services on a tiny KVM VM with no time-sync client: chrony and
+// irqbalance installed, a swapfile created; revert undoes them.
+func TestServicesSmallVM(t *testing.T) {
+	e := machine{mem: GiB, cpus: 4, nics: []NIC{{Name: "eth0", Speed: 1000, RxQueues: 4}}}.build(t)
+	os.MkdirAll(e.P("/var/lib"), 0o755)
+	fakeCommands(e, map[string]string{"command -v apt-get": "/usr/bin/apt-get"},
+		"apt-get install", "systemctl enable", "systemctl daemon-reload")
 	mustApply(t, e, ApplyOptions{})
 	ran := strings.Join(e.Ran, "\n")
-	for _, want := range []string{"timedatectl set-ntp true", "apt-get install -y -qq irqbalance", "systemctl enable --now irqbalance",
+	for _, want := range []string{"apt-get install -y -qq chrony", "systemctl enable --now chronyd",
+		"apt-get install -y -qq irqbalance", "systemctl enable --now irqbalance",
 		`systemctl enable --now var-lib-x\x2dui-swapfile.swap`} {
 		if !strings.Contains(ran, want) {
 			t.Errorf("did not run %q:\n%s", want, ran)
 		}
 	}
+	if strings.Contains(ran, "timedatectl set-ntp") {
+		t.Errorf("timedatectl run without timesyncd:\n%s", ran)
+	}
 	if !e.exists(SwapFile) || !e.exists(`/etc/systemd/system/var-lib-x\x2dui-swapfile.swap`) {
 		t.Fatal("no swapfile or unit")
 	}
 	st, _, _ := e.loadState()
-	if !st.NTP || st.Swap == "" || len(st.Enabled) != 1 {
+	if st.NTP || st.Swap == "" || fmt.Sprint(st.Enabled) != "[chronyd irqbalance]" || fmt.Sprint(st.Installed) != "[chrony irqbalance]" {
 		t.Fatalf("state %+v", st)
 	}
 	e.Ran = nil
@@ -935,13 +952,186 @@ func TestServicesSmallVM(t *testing.T) {
 		t.Fatal(err)
 	}
 	ran = strings.Join(e.Ran, "\n")
-	for _, want := range []string{"timedatectl set-ntp false", "systemctl disable --now irqbalance", "swapoff /var/lib/x-ui/swapfile"} {
+	for _, want := range []string{"systemctl disable --now chronyd", "systemctl disable --now irqbalance", "swapoff /var/lib/x-ui/swapfile"} {
 		if !strings.Contains(ran, want) {
 			t.Errorf("revert did not run %q:\n%s", want, ran)
 		}
 	}
 	if e.exists(SwapFile) {
 		t.Fatal("swapfile left")
+	}
+
+	// A state from an x-ui that turned timesyncd on: revert turns it off.
+	e2 := machine{mem: 4 * GiB}.build(t)
+	if err := e2.saveState(&State{Version: 1, Keys: map[string]*KeyState{}, NTP: true}, nil); err != nil {
+		t.Fatal(err)
+	}
+	e2.Ran = nil
+	if _, err := e2.Revert(false, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(e2.Ran, "\n"), "timedatectl set-ntp false") {
+		t.Errorf("revert of an older state: %v", e2.Ran)
+	}
+}
+
+// An update (--auto without --host) never touches the host services; a fresh
+// install (--auto --host) and a manual apply do, and the boot apply never.
+func TestHostServicesOnlyOnFreshInstall(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		o    ApplyOptions
+		args []string
+		host bool
+	}{
+		{"update", ApplyOptions{Auto: true}, []string{"apply", "--auto"}, false},
+		{"fresh install", ApplyOptions{Auto: true, Host: true}, []string{"apply", "--auto", "--host"}, true},
+		{"manual", ApplyOptions{}, []string{"apply"}, true},
+		{"boot", ApplyOptions{Boot: true}, []string{"apply", "--boot"}, false},
+	} {
+		for _, viaCLI := range []bool{false, true} {
+			e := machine{mem: GiB, cpus: 4, nics: []NIC{{Name: "eth0", Speed: 1000, RxQueues: 4}}}.build(t)
+			os.MkdirAll(e.P("/var/lib"), 0o755)
+			if viaCLI {
+				// The CLI builds its own Env: the swapfile shows what ran.
+				t.Setenv("XUI_TUNE_ROOT", e.Root)
+				t.Setenv("XUI_TUNE_FACTS", `{"mem_bytes":1073741824,"cpus":4,"kernel":"6.1.0-25-amd64","init":"systemd","page_size":4096}`)
+				var out bytes.Buffer
+				if code := run(c.args, "t", &out, &out); code != 0 {
+					t.Fatalf("%s: exit %d\n%s", c.name, code, out.String())
+				}
+				if got := e.exists(SwapFile); got != c.host {
+					t.Errorf("%s (CLI): swapfile %v, want %v", c.name, got, c.host)
+				}
+				continue
+			}
+			fakeCommands(e, map[string]string{"command -v apt-get": "/usr/bin/apt-get"},
+				"apt-get install", "systemctl enable", "systemctl daemon-reload")
+			mustApply(t, e, c.o)
+			ran := strings.Join(e.Ran, "\n")
+			did := false
+			for _, h := range hostCommands {
+				if strings.Contains(ran, h) {
+					did = true
+				}
+			}
+			if did != c.host || e.exists(SwapFile) != c.host {
+				t.Errorf("%s: host services run %v (swapfile %v), want %v:\n%s", c.name, did, e.exists(SwapFile), c.host, ran)
+			}
+		}
+	}
+}
+
+// Time sync never overrides an admin: timesyncd turned off stays off, and a
+// client package the admin removed is not replaced by chrony.
+func TestTimeSyncRespectsAdmin(t *testing.T) {
+	e := machine{mem: 4 * GiB}.build(t)
+	fakeCommands(e, map[string]string{
+		"systemctl list-unit-files --no-legend systemd-timesyncd.service": "systemd-timesyncd.service disabled enabled",
+		"timedatectl show -p NTP --value":                                 "no",
+		"command -v apt-get":                                              "/usr/bin/apt-get",
+	}, "apt-get install", "systemctl enable", "systemctl daemon-reload", "timedatectl set-ntp")
+	r := mustApply(t, e, ApplyOptions{})
+	ran := strings.Join(e.Ran, "\n")
+	if strings.Contains(ran, "timedatectl set-ntp") || strings.Contains(ran, "install -y -qq chrony") {
+		t.Fatalf("turned time sync on against the admin:\n%s", ran)
+	}
+	if !strings.Contains(strings.Join(r.Problems, "\n"), "timedatectl set-ntp true") {
+		t.Errorf("not reported: %v", r.Problems)
+	}
+
+	e2 := machine{mem: 4 * GiB}.build(t)
+	fakeCommands(e2, map[string]string{
+		"command -v apt-get":    "/usr/bin/apt-get",
+		"command -v dpkg-query": "/usr/bin/dpkg-query",
+		"dpkg-query -W --showformat=${Package} ${Status}\n chrony systemd-timesyncd ntp ntpsec openntpd": "chrony deinstall ok config-files\n",
+	}, "apt-get install", "systemctl enable", "systemctl daemon-reload")
+	r = mustApply(t, e2, ApplyOptions{})
+	if ran := strings.Join(e2.Ran, "\n"); strings.Contains(ran, "apt-get install -y -qq chrony") {
+		t.Fatalf("chrony installed again after the admin removed it:\n%s", ran)
+	}
+	if !strings.Contains(strings.Join(r.Problems, "\n"), "chrony was removed") {
+		t.Errorf("not reported: %v", r.Problems)
+	}
+}
+
+// irqbalance is not installed when the admin removed it, nor when the NIC's
+// interrupts are already placed; interrupts at the kernel's default (also
+// on a NUMA node, and a virtio NIC's on its PCI parent) still get it.
+func TestIRQBalanceRespectsAdmin(t *testing.T) {
+	type irqs map[string]string // IRQ -> smp_affinity
+	build := func(t *testing.T, virtio bool, node string, aff irqs) *Env {
+		e := machine{mem: 4 * GiB, cpus: 8, nics: []NIC{{Name: "eth0", Speed: 10000, RxQueues: 4}}}.build(t)
+		writeT(t, e.Root, "/proc/irq/default_smp_affinity", "ff\n")
+		writeT(t, e.Root, "/sys/devices/system/cpu/online", "0-7\n")
+		writeT(t, e.Root, "/sys/devices/system/node/node0/cpulist", "0-3\n")
+		writeT(t, e.Root, "/sys/devices/system/node/node1/cpulist", "4-7\n")
+		pci := "/sys/devices/pci0000:00/0000:00:03.0"
+		dev := pci
+		if virtio {
+			dev = pci + "/virtio0"
+		}
+		os.MkdirAll(e.P(dev), 0o755)
+		for irq, m := range aff {
+			writeT(t, e.Root, pci+"/msi_irqs/"+irq, "msix\n")
+			writeT(t, e.Root, "/proc/irq/"+irq+"/smp_affinity", m+"\n")
+		}
+		if node != "" {
+			writeT(t, e.Root, dev+"/numa_node", node+"\n")
+		}
+		link := e.P("/sys/class/net/eth0/device")
+		os.RemoveAll(link)
+		if err := os.Symlink("../../../.."+dev, link); err != nil {
+			t.Fatal(err)
+		}
+		fakeCommands(e, map[string]string{"command -v apt-get": "/usr/bin/apt-get"}, "apt-get install", "systemctl enable", "systemctl daemon-reload")
+		return e
+	}
+	for _, c := range []struct {
+		name    string
+		virtio  bool
+		node    string
+		aff     irqs
+		install bool
+	}{
+		{"default masks", false, "", irqs{"40": "ff", "41": "ff", "42": "ff"}, true},
+		{"one queue pinned", false, "", irqs{"40": "ff", "41": "02", "42": "ff"}, false},
+		{"all moved off the cores", false, "", irqs{"40": "03", "41": "03", "42": "03"}, false},
+		{"NUMA node default", false, "1", irqs{"40": "f0", "41": "f0"}, true},
+		{"NUMA node, spread", false, "1", irqs{"40": "10", "41": "20"}, false},
+		{"virtio, spread by the driver", true, "", irqs{"24": "ff", "25": "01", "26": "02"}, false},
+		{"virtio, default", true, "", irqs{"24": "ff", "25": "ff"}, true},
+	} {
+		e := build(t, c.virtio, c.node, c.aff)
+		r := mustApply(t, e, ApplyOptions{})
+		ran := strings.Join(e.Ran, "\n")
+		if got := strings.Contains(ran, "apt-get install -y -qq irqbalance"); got != c.install {
+			t.Errorf("%s: installed %v, want %v\n%v", c.name, got, c.install, r.Problems)
+		}
+		if !c.install && !strings.Contains(strings.Join(r.Problems, "\n"), "already have CPUs set") {
+			t.Errorf("%s: not reported: %v", c.name, r.Problems)
+		}
+	}
+
+	// Removed by the admin (dpkg remembers it): not installed again.
+	e := build(t, false, "", irqs{"40": "ff"})
+	fakeCommands(e, map[string]string{
+		"command -v apt-get":    "/usr/bin/apt-get",
+		"command -v dpkg-query": "/usr/bin/dpkg-query",
+		"dpkg-query -W --showformat=${Package} ${Status}\n irqbalance": "irqbalance deinstall ok config-files\n",
+	}, "apt-get install", "systemctl enable", "systemctl daemon-reload")
+	r := mustApply(t, e, ApplyOptions{})
+	if strings.Contains(strings.Join(e.Ran, "\n"), "install -y -qq irqbalance") {
+		t.Fatal("irqbalance installed again after the admin removed it")
+	}
+	if !strings.Contains(strings.Join(r.Problems, "\n"), "irqbalance: removed") {
+		t.Errorf("not reported: %v", r.Problems)
+	}
+	var buf bytes.Buffer
+	e.Out = &buf
+	e.Status(false)
+	if !strings.Contains(buf.String(), "irqbalance: removed from this server") {
+		t.Errorf("status:\n%s", buf.String())
 	}
 }
 
@@ -994,6 +1184,14 @@ func TestNeverLower(t *testing.T) {
 		files["/etc/sysctl.d/50-admin.conf"] = mine.String()
 		writeT(t, e.Root, "/etc/sysctl.d/50-admin.conf", mine.String())
 		st := newState()
+		for _, tt := range keys {
+			// Sometimes x-ui wrote what is live now, or persisted it.
+			if live := normValue(e.readTrim(sysctlPath(tt.Key))); rng.Intn(2) == 0 {
+				st.Keys[tt.Key] = &KeyState{Written: live, Orig: "1"}
+			} else if rng.Intn(2) == 0 {
+				st.Keys[tt.Key] = &KeyState{File: live}
+			}
+		}
 		p := e.plan(e.gatherFacts(), st)
 		admin := e.othersSettings()
 		for _, k := range p.Keys {
@@ -1005,6 +1203,9 @@ func TestNeverLower(t *testing.T) {
 				}
 				if k.Persist != "" && inFile && i64(k.Persist) <= i64(o.Value) {
 					t.Fatalf("%s: persists %s over a file's %s", k.Key, k.Persist, o.Value)
+				}
+				if k.HandBack && (!inFile || i64(k.Want) != i64(o.Value)) {
+					t.Fatalf("%s: hands back %s, the file says %s", k.Key, k.Want, o.Value)
 				}
 			case ClassField:
 				if k.Want != "" && i64(strings.Fields(k.Want)[2]) <= i64(strings.Fields(k.Live)[2]) {
@@ -1022,11 +1223,157 @@ func TestNeverLower(t *testing.T) {
 					t.Fatalf("%s: drops bits %s -> %s", k.Key, k.Live, k.Want)
 				}
 			case ClassChoice:
-				if inFile && (k.Want != "" || k.Persist != "") {
-					t.Fatalf("%s: overrides the admin's %s", k.Key, o.Value)
+				if inFile && (k.Persist != "" || (k.Want != "" && k.Want != o.Value)) {
+					t.Fatalf("%s: overrides the admin's %s (write %q)", k.Key, o.Value, k.Want)
+				}
+				if k.HandBack && (!inFile || k.Want != o.Value) {
+					t.Fatalf("%s: hands back %q, the admin's file says %q", k.Key, k.Want, o.Value)
 				}
 			}
 		}
+	}
+}
+
+// sysctlBoot applies every sysctl file, x-ui's included, in systemd-sysctl's
+// order, first resetting the keys in reset (a boot); with nil it keeps the
+// live values (as "sysctl --system" does).
+func sysctlBoot(t *testing.T, e *Env, reset map[string]string) {
+	t.Helper()
+	for k, v := range reset {
+		writeT(t, e.Root, sysctlPath(k), v+"\n")
+	}
+	byName := map[string]string{}
+	for _, d := range sysctlDirs {
+		for _, f := range e.glob(d + "/*.conf") {
+			if _, ok := byName[filepath.Base(f)]; !ok {
+				byName[filepath.Base(f)] = f
+			}
+		}
+	}
+	names := make([]string, 0, len(byName))
+	for n := range byName {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		data, err := e.read(e.resolve(byName[n]))
+		if err != nil {
+			continue
+		}
+		for _, a := range parseSysctl(data) {
+			if e.exists(sysctlPath(a.Key)) {
+				writeT(t, e.Root, sysctlPath(a.Key), a.Value+"\n")
+			}
+		}
+	}
+}
+
+// A value an admin (or Edge Proxy) sets in a file of their own after x-ui
+// applied wins: at boot and on "sysctl --system" for a file named after
+// x-ui's, and from x-ui's next start for one named before it. A choice x-ui
+// had set is handed back to the admin's file and left to it from then on.
+func TestAdminFileAfterApply(t *testing.T) {
+	defaults := map[string]string{"net.ipv4.tcp_congestion_control": "cubic", "net.core.somaxconn": "4096", "net.netfilter.nf_conntrack_max": "65536"}
+	cc, somax, ct := "net.ipv4.tcp_congestion_control", "net.core.somaxconn", "net.netfilter.nf_conntrack_max"
+	for _, file := range []string{"/etc/sysctl.d/60-mine.conf", "/etc/sysctl.d/90-edge-proxy.conf", "/etc/sysctl.conf", "/etc/sysctl.d/30-early.conf"} {
+		e := machine{mem: 4 * GiB, cpus: 4, conntrack: true}.build(t)
+		if file == "/etc/sysctl.conf" {
+			os.MkdirAll(e.P("/etc/sysctl.d"), 0o755)
+			if err := os.Symlink("../sysctl.conf", e.P("/etc/sysctl.d/99-sysctl.conf")); err != nil { // Debian, Ubuntu
+				t.Fatal(err)
+			}
+		}
+		mustApply(t, e, ApplyOptions{Auto: true})
+		conf := e.readTrim(SysctlFile)
+		if live(t, e, cc) != "bbr" || !strings.Contains(conf, "net.core.somaxconn = 32768") || !strings.Contains(conf, "nf_conntrack_max = 262144") {
+			t.Fatalf("setup: cc %s\n%s", live(t, e, cc), conf)
+		}
+		// The admin now chooses cubic and raises two limits above x-ui's.
+		writeT(t, e.Root, file, "net.ipv4.tcp_congestion_control = cubic\nnet.core.somaxconn = 65535\nnet.netfilter.nf_conntrack_max = 8388608\n")
+		early := file == "/etc/sysctl.d/30-early.conf"
+
+		// "sysctl --system" right away, then a reboot: x-ui has not run.
+		for i, reset := range []map[string]string{nil, defaults} {
+			sysctlBoot(t, e, reset)
+			got := fmt.Sprint(live(t, e, cc), " ", live(t, e, somax), " ", live(t, e, ct))
+			if want := "cubic 65535 8388608"; !early && got != want {
+				t.Errorf("%s, %s before x-ui ran: %s, want %s", file, []string{"sysctl --system", "boot"}[i], got, want)
+			}
+		}
+		// x-ui starts: the boot apply gives everything to the admin's file.
+		r := mustApply(t, e, ApplyOptions{Boot: true})
+		if got := fmt.Sprint(live(t, e, cc), " ", live(t, e, somax), " ", live(t, e, ct)); got != "cubic 65535 8388608" {
+			t.Errorf("%s, after x-ui's boot apply: %s (%v)", file, got, r.Changed)
+		}
+		conf = e.readTrim(SysctlFile)
+		for _, k := range []string{cc, somax, ct} {
+			if strings.Contains(conf, k+" =") {
+				t.Errorf("%s: x-ui's file still sets %s:\n%s", file, k, conf)
+			}
+		}
+		st, _, _ := e.loadState()
+		for _, k := range []string{cc, somax, ct} {
+			if ks := st.Keys[k]; ks != nil && ks.Written == live(t, e, k) {
+				t.Errorf("%s: x-ui still owns %s: %+v", file, k, ks)
+			}
+		}
+		if e.exists(ModulesLoadFile) {
+			t.Errorf("%s: BBR modules file kept for the admin's cubic", file)
+		}
+		// Every boot from now on, and later applies, keep the admin's values.
+		sysctlBoot(t, e, defaults)
+		mustApply(t, e, ApplyOptions{Boot: true})
+		if r := mustApply(t, e, ApplyOptions{}); live(t, e, cc) != "cubic" || live(t, e, somax) != "65535" || len(r.Changed) != 0 {
+			t.Errorf("%s, next boot: cc %s somaxconn %s, changed %v", file, live(t, e, cc), live(t, e, somax), r.Changed)
+		}
+		// Revert leaves the admin's choice alone.
+		if _, err := e.Revert(false, false); err != nil {
+			t.Fatal(err)
+		}
+		if live(t, e, cc) != "cubic" || live(t, e, somax) != "65535" {
+			t.Errorf("%s, revert: cc %s somaxconn %s", file, live(t, e, cc), live(t, e, somax))
+		}
+	}
+
+	// A value the admin set by hand (not x-ui's) is not "handed back".
+	e := machine{mem: 4 * GiB, files: map[string]string{"/etc/sysctl.d/60-mine.conf": "net.ipv4.tcp_congestion_control = cubic\n"},
+		sysctl: map[string]string{"net.ipv4.tcp_congestion_control": "reno"}}.build(t)
+	mustApply(t, e, ApplyOptions{})
+	if live(t, e, cc) != "reno" {
+		t.Errorf("a hand-set value replaced: %s", live(t, e, cc))
+	}
+}
+
+// x-ui's file used to be 99-x-ui.conf: an apply (also the boot one) removes
+// it, revert removes it too, and one x-ui did not write is left alone.
+func TestOldSysctlFileReplaced(t *testing.T) {
+	old := Header + "\n# Listen queue\nnet.core.somaxconn = 8192\n"
+	e := machine{mem: GiB, files: map[string]string{OldSysctlFile: old}}.build(t)
+	var buf bytes.Buffer
+	e.Out = &buf
+	if d, _ := e.Status(false); !strings.Contains(strings.Join(d, " "), OldSysctlFile) {
+		t.Errorf("old file not in the drift: %v", d)
+	}
+	r := mustApply(t, e, ApplyOptions{Boot: true})
+	if e.exists(OldSysctlFile) || !strings.Contains(e.readTrim(SysctlFile), "net.core.somaxconn = 8192") {
+		t.Fatalf("old file kept or new one missing: %v", r.Changed)
+	}
+	if !strings.Contains(strings.Join(r.Changed, "\n"), "removed "+OldSysctlFile) {
+		t.Errorf("not reported: %v", r.Changed)
+	}
+	writeT(t, e.Root, OldSysctlFile, old)
+	if _, err := e.Revert(false, false); err != nil {
+		t.Fatal(err)
+	}
+	if e.exists(OldSysctlFile) || e.exists(SysctlFile) {
+		t.Fatal("revert left x-ui's sysctl files")
+	}
+
+	mine := "net.core.somaxconn = 50000\n"
+	e = machine{mem: GiB, files: map[string]string{OldSysctlFile: mine}}.build(t)
+	mustApply(t, e, ApplyOptions{})
+	if e.readTrim(OldSysctlFile) != strings.TrimSpace(mine) || strings.Contains(e.readTrim(SysctlFile), "net.core.somaxconn =") {
+		t.Fatalf("someone else's 99-x-ui.conf touched or overridden:\n%s", e.readTrim(SysctlFile))
 	}
 }
 

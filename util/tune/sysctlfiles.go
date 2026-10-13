@@ -9,9 +9,17 @@ import (
 	"time"
 )
 
-// The sysctl files x-ui writes, and the one an older x-ui.sh wrote.
+// The sysctl files x-ui writes, and the ones older versions wrote.
+//
+// SysctlFile sorts after the distribution defaults (50-*.conf) and before
+// the files admins and other tools usually write (60-*, 90-*, 99-*,
+// /etc/sysctl.conf): a value one of those sets, even after x-ui last wrote
+// its file, wins at boot and on "sysctl --system". x-ui raises what is still
+// below its target when it starts. OldSysctlFile is where it used to be,
+// sorting after nearly everything; it is removed on the next apply.
 const (
-	SysctlFile       = "/etc/sysctl.d/99-x-ui.conf"
+	SysctlFile       = "/etc/sysctl.d/51-x-ui.conf"
+	OldSysctlFile    = "/etc/sysctl.d/99-x-ui.conf"
 	LegacyBBRFile    = "/etc/sysctl.d/99-bbr-x-ui.conf"
 	ModulesLoadFile  = "/etc/modules-load.d/x-ui.conf"
 	ModprobeFile     = "/etc/modprobe.d/x-ui.conf"
@@ -31,6 +39,11 @@ const Header = `# Written by x-ui tune (github.com/F4RD1N/x-ui). Do not edit; re
 # 'x-ui tune apply' and on every x-ui start, removed by 'x-ui tune revert'.
 # x-ui only raises values and never lowers one set in another file: put your
 # own values in a file of your own (or /etc/sysctl.conf); x-ui keeps them.
+`
+
+// sysctlNote follows the header in SysctlFile.
+const sysctlNote = `# A file whose name sorts after this one's wins at boot. After changing a
+# sysctl file, run 'x-ui tune apply' (or restart x-ui) so this one follows it.
 `
 
 var sysctlDirs = []string{"/etc/sysctl.d", "/run/sysctl.d", "/usr/local/lib/sysctl.d", "/usr/lib/sysctl.d", "/lib/sysctl.d"}
@@ -102,7 +115,7 @@ func (e *Env) sysctlFiles() []string {
 	var out []string
 	for _, n := range names {
 		f := byName[n]
-		if f == SysctlFile || f == LegacyBBRFile {
+		if f == SysctlFile || f == LegacyBBRFile || (f == OldSysctlFile && e.isOurs(f)) {
 			continue
 		}
 		if e.resolve(f) == "/dev/null" {

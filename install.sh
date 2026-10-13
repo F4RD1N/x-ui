@@ -15,7 +15,8 @@
 # the dialect fork, and cannot switch or update it.
 #
 # The server is tuned for x-ui on every install and update ("x-ui tune": open
-# file limits, kernel network limits, BBR, time sync, swap on tiny VMs). It
+# file limits, kernel network limits, BBR). A fresh install also sets up time
+# sync, irqbalance and swap on tiny VMs; an update leaves those alone. It
 # only raises limits, never lowers one set elsewhere, and "x-ui tune revert"
 # undoes it and keeps it off for later updates.
 
@@ -262,7 +263,11 @@ tune_server() {
     else
         : > "$stage/dropin.none"
     fi
-    if "$xui_folder/x-ui" tune apply --auto 2>&1 | sed 's/^/  /'; then
+    # Host services (time sync, irqbalance, swap) only on a fresh install: an
+    # update leaves the machine's services as its admin set them up.
+    local args=(apply --auto)
+    [[ "$XUI_MODE" == "install" ]] && args+=(--host)
+    if "$xui_folder/x-ui" tune "${args[@]}" 2>&1 | sed 's/^/  /'; then
         if grep -q '"disabled": true' /var/lib/x-ui/tune/state.json 2>/dev/null; then
             TUNE_RESULT="off (turned off by 'x-ui tune revert'; 'x-ui tune apply' turns it on)"
         else

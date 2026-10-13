@@ -19,9 +19,13 @@ type KeyPlan struct {
 	Others     string `json:"others,omitempty"`
 	OthersFile string `json:"others_file,omitempty"`
 	Want       string `json:"write,omitempty"`   // new live value; "" leaves it
-	Persist    string `json:"persist,omitempty"` // value for 99-x-ui.conf; "" none
+	Persist    string `json:"persist,omitempty"` // value for x-ui's sysctl file; "" none
 	State      string `json:"state"`             // ok, change, kept, read-only, missing, failed
 	Note       string `json:"note,omitempty"`
+	// HandBack: Want is the value another file sets (an admin's choice, or
+	// a limit set higher than x-ui's), not x-ui's own; once it is written,
+	// x-ui no longer owns the key and revert leaves it.
+	HandBack bool `json:"hand_back,omitempty"`
 }
 
 // Plan is the whole of what an apply would do.
@@ -152,7 +156,7 @@ func (e *Env) plan(f *Facts, st *State) *Plan {
 	// Modules for BBR and fq, when x-ui sets BBR and they are modules.
 	if !f.Container() {
 		for _, k := range p.Keys {
-			if k.Key != "net.ipv4.tcp_congestion_control" || k.State == "kept" || k.State == "read-only" || k.State == "missing" {
+			if k.Key != "net.ipv4.tcp_congestion_control" || k.HandBack || k.State == "kept" || k.State == "read-only" || k.State == "missing" {
 				continue
 			}
 			var mods []string
@@ -250,6 +254,9 @@ func (e *Env) planKey(t Target, f *Facts, st *State, others map[string]Setting) 
 		switch {
 		case k.Want != "":
 			k.State, k.Note = "change", "raise from "+k.Live
+			if want == ov && ov > t.Num && k.OthersFile != "" {
+				k.HandBack, k.Note = true, k.Note+" to the value in "+k.OthersFile
+			}
 		case ov > t.Num && k.OthersFile != "":
 			k.State, k.Note = "kept", "set higher by "+k.OthersFile
 		case lv > t.Num:
@@ -280,6 +287,9 @@ func (e *Env) planKey(t Target, f *Facts, st *State, others map[string]Setting) 
 		switch {
 		case k.Want != "":
 			k.State, k.Note = "change", "raise max from "+lf[2]
+			if k.Want == k.Others && ov > t.Num && k.OthersFile != "" {
+				k.HandBack, k.Note = true, k.Note+" to the value in "+k.OthersFile
+			}
 		case ov > t.Num && k.OthersFile != "":
 			k.State, k.Note = "kept", "set higher by "+k.OthersFile
 		case lv > t.Num:
@@ -326,6 +336,14 @@ func (e *Env) planKey(t Target, f *Facts, st *State, others map[string]Setting) 
 		if k.OthersFile != "" && e.adminOwned(k.OthersFile) {
 			k.State, k.Note = "kept", "admin choice in "+k.OthersFile
 			if k.Live != k.Others {
+				if ks != nil && k.Live != "" && (ks.Written == k.Live || ks.File == k.Live) {
+					// What is live is x-ui's own value: the admin's file
+					// came after x-ui's, or sorts before it and lost at
+					// boot. Give the key back to the admin's choice.
+					k.Want, k.HandBack = k.Others, true
+					k.State, k.Note = "change", "back to the admin's choice in "+k.OthersFile
+					return k
+				}
 				k.Note += " (" + k.Others + ")"
 			}
 			return k
@@ -358,7 +376,7 @@ func (e *Env) planKey(t Target, f *Facts, st *State, others map[string]Setting) 
 	return k
 }
 
-// renderSysctl writes 99-x-ui.conf from the plan; "" means no file.
+// renderSysctl writes x-ui's sysctl file from the plan; "" means no file.
 func renderSysctl(keys []*KeyPlan) string {
 	var b strings.Builder
 	n := 0
@@ -368,6 +386,7 @@ func renderSysctl(keys []*KeyPlan) string {
 		}
 		if n == 0 {
 			b.WriteString(Header)
+			b.WriteString(sysctlNote)
 		}
 		n++
 		dash := ""

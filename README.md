@@ -76,16 +76,21 @@ Every install and update also tunes the server for x-ui (`x-ui tune`):
 - kernel limits are raised: local port range 10000-65535, accept and SYN
   queues, TIME_WAIT and orphan limits, socket buffers, conntrack (when it is
   loaded), BBR with fq;
-- a time-sync client is turned on if none runs (VMess and Shadowsocks 2022
-  reject clients whose clock is off), irqbalance on multi-queue NICs, and a
-  1 GiB swapfile on VMs with less than 1.75 GiB of RAM.
+- on a fresh install (and with `x-ui tune apply`), but never on an update:
+  chrony when no time-sync client is installed (VMess and Shadowsocks 2022
+  reject clients whose clock is off), irqbalance on multi-queue NICs whose
+  interrupts nobody has placed, and a 1 GiB swapfile on VMs with less than
+  1.75 GiB of RAM. A time-sync client that is turned off stays off, and a
+  package you removed is not installed again.
 
 It only ever raises a limit: a value set higher elsewhere (another
 `/etc/sysctl.d` file, `/etc/sysctl.conf`, a drop-in of your own) is kept, and
 so is a choice like `tcp_congestion_control` made in a file of your own. It
-writes only its own files (`/etc/sysctl.d/99-x-ui.conf`,
+writes only its own files (`/etc/sysctl.d/51-x-ui.conf`,
 `/etc/systemd/system/x-ui.service.d/20-x-ui-tuning.conf`, and a few more listed
 by `x-ui tune -h`) and re-applies the kernel settings each time x-ui starts.
+Sysctl files whose names sort after `51-x-ui.conf` win at boot; after changing
+any sysctl file, run `x-ui tune apply` so x-ui's file follows it.
 
 ```bash
 x-ui tune status    # what is set, what is kept, and health counters

@@ -83,7 +83,7 @@ export XUI_TUNE_ONLY=net
 "$BIN" tune apply --boot > "$W/apply2.txt"
 [[ -s "$W/apply2.txt" ]] && fail "second apply changed something: $(cat "$W/apply2.txt")"
 "$BIN" tune status --check >/dev/null || fail "status --check reports drift after apply"
-[[ -f /etc/sysctl.d/99-x-ui.conf ]] || fail "no 99-x-ui.conf in the namespace"
+[[ -f /etc/sysctl.d/51-x-ui.conf ]] || fail "no 51-x-ui.conf in the namespace"
 "$BIN" tune revert > "$W/revert.txt" || fail "revert"
 "$BIN" tune status --json > "$W/reverted.json" || fail "status reverted"
 
