@@ -74,7 +74,8 @@ func (e *Env) Status(asJSON bool) ([]string, error) {
 	}
 	f := e.gatherFacts()
 	p := e.plan(f, st)
-	d := e.drift(p)
+	np := e.planNICs(f, st, nicOpts{})
+	d := append(e.drift(p), e.nicDrift(np, f)...)
 	if st.Disabled {
 		d = nil
 	}
@@ -82,15 +83,15 @@ func (e *Env) Status(asJSON bool) ([]string, error) {
 	health := e.health(f)
 	if asJSON {
 		out := map[string]any{
-			"state":      stateWord(st, had),
-			"os":         e.osName(),
-			"plan":       p,
-			"drift":      d,
-			"process":    svc,
-			"health":     health,
-			"timesync":   e.timeInfo(f),
-			"irqbalance": e.irqbalanceInfo(f),
-			"swap":       strings.Split(strings.TrimSpace(e.readTrim("/proc/swaps")), "\n")[1:],
+			"state":    stateWord(st, had),
+			"os":       e.osName(),
+			"plan":     p,
+			"drift":    d,
+			"process":  svc,
+			"health":   health,
+			"timesync": e.timeInfo(f),
+			"nics":     np,
+			"swap":     strings.Split(strings.TrimSpace(e.readTrim("/proc/swaps")), "\n")[1:],
 		}
 		if ok, why := e.swapEligible(f, st); !ok && why != "" {
 			out["swapfile"] = why
@@ -101,15 +102,13 @@ func (e *Env) Status(asJSON bool) ([]string, error) {
 	}
 	e.printf("x-ui tune: %s\n", stateWord(st, had))
 	e.printPlan(p, st, false)
+	e.printNICs(np, st, false)
 	e.printf("\nService:\n")
 	for _, l := range svc {
 		e.printf("  %s\n", l)
 	}
 	e.printf("\nHost:\n")
 	e.printf("  time sync: %s\n", e.timeInfo(f))
-	if s := e.irqbalanceInfo(f); s != "" {
-		e.printf("  irqbalance: %s\n", s)
-	}
 	if swaps := strings.Split(strings.TrimSpace(e.readTrim("/proc/swaps")), "\n"); len(swaps) > 1 {
 		e.printf("  swap: %s\n", strings.Join(swaps[1:], "; "))
 	} else if ok, why := e.swapEligible(f, st); !ok && why != "" {
@@ -149,9 +148,6 @@ func (e *Env) printPlan(p *Plan, st *State, dry bool) {
 	}
 	e.printf("Machine: %s, kernel %s, %s, %s, %s RAM (sized as %g GiB), %d CPUs\n",
 		e.osName(), f.Kernel, init, virt, gib(f.MemBytes), f.G, f.CPUs)
-	for _, n := range f.NICs {
-		e.printf("  NIC %s: %s, %d Mb/s, %d rx queues\n", n.Name, n.Driver, n.Speed, n.RxQueues)
-	}
 	tw := tabwriter.NewWriter(e.Out, 2, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "\nKEY\tLIVE\tTARGET\tSTATE")
 	for _, k := range p.Keys {
@@ -187,9 +183,6 @@ func (e *Env) printPlan(p *Plan, st *State, dry bool) {
 		for _, o := range p.Unit.overrides() {
 			e.printf("  overridden by: %s\n", o)
 		}
-	}
-	if dry {
-		e.printf("\nDry run: nothing was changed.\n")
 	}
 }
 

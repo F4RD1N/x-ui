@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mhsanaei/3x-ui/v2/util/hw"
 )
 
 const (
@@ -56,6 +58,9 @@ type Facts struct {
 	NrOpenRW   bool   `json:"-"`
 	Fast       bool   `json:"-"` // C >= 8 or a NIC of 10G or more
 	SwapActive bool   `json:"swap_active"`
+	// RPSUplink: an uplink NIC has a single receive queue and there are
+	// CPUs to spread its packets over (RPS and RFS).
+	RPSUplink bool `json:"rps_uplink,omitempty"`
 }
 
 // Container reports whether the machine is a container (any kind).
@@ -159,7 +164,34 @@ func (e *Env) gatherFacts() *Facts {
 	f.BBR, f.BBRModule = e.moduleState("tcp_bbr", "bbr")
 	_, f.FQModule = e.moduleState("sch_fq", "")
 	f.SwapActive = swapActive(e.readTrim("/proc/swaps"))
+	f.RPSUplink = e.rpsUplink(f)
 	return f
+}
+
+// rpsUplink says whether an uplink has one receive queue and at least two
+// CPUs could share its packets. Containers leave this to the host.
+func (e *Env) rpsUplink(f *Facts) bool {
+	if f.Container() {
+		return false
+	}
+	names := e.ForceNIC
+	if len(names) == 0 {
+		ups, _ := hw.Uplinks(e.hw())
+		for _, u := range ups {
+			names = append(names, u.Name)
+		}
+	}
+	single := false
+	for _, n := range names {
+		if len(e.glob("/sys/class/net/"+n+"/queues/rx-*")) == 1 {
+			single = true
+		}
+	}
+	if !single {
+		return false
+	}
+	t, err := hw.ReadTopology(e.hw())
+	return err == nil && len(e.eligibleCPUs(t, nil)) >= 2
 }
 
 func meminfo(s, key string) int64 {

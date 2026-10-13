@@ -69,5 +69,5 @@ func (e *Env) summary() []string {
 		}
 		out = append(out, line)
 	}
-	return out
+	return append(out, e.planNICs(f, st, nicOpts{}).summary()...)
 }

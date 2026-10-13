@@ -13,8 +13,15 @@
 //	XUI_TUNE_ROOT=<dir>   every path is taken below <dir>, and no external
 //	                      command runs (each is recorded instead). A path that
 //	                      would resolve outside <dir> panics.
-//	XUI_TUNE_ONLY=net     only /proc/sys/net/* is written live, and no external
-//	                      command runs; used for the network-namespace test.
+//	XUI_TUNE_ONLY=net     only /proc/sys/net/* (and the queue files of the
+//	                      XUI_TUNE_NIC devices) is written live, no
+//	                      interrupt is moved, irqbalance is left alone, and no
+//	                      external command runs; used for the network-namespace
+//	                      test.
+//	XUI_TUNE_NIC=<dev>[,<dev>]
+//	                      these devices are the uplinks (with XUI_TUNE_ONLY=net
+//	                      or XUI_TUNE_ROOT only); ethtool changes are allowed on
+//	                      them alone.
 //	XUI_TUNE_FACTS=<json> overrides detected facts (mem_bytes, cpus, kernel,
 //	                      virt, init, page_size).
 //	XUI_TUNE_BIN=<path>   the x-ui binary named in the unit's ExecStartPre.
@@ -33,6 +40,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mhsanaei/3x-ui/v2/util/hw"
 	"golang.org/x/sys/unix"
 )
 
@@ -70,7 +78,18 @@ type Env struct {
 	// Deadline, when set, stops external commands from starting after it.
 	Deadline time.Time
 
-	owned map[string]bool // package ownership, asked once per file
+	// Eth reaches the NICs' driver settings. Under a fake root it is
+	// hw.NoEthtool unless a test sets one.
+	Eth hw.Ethtool
+	// ForceNIC names the uplink devices instead of the default routes
+	// (XUI_TUNE_NIC; tests only).
+	ForceNIC []string
+	// Clock and Probe drive the queue watchdog (tests replace them).
+	Clock Clock
+	Probe Prober
+
+	owned   map[string]bool // package ownership, asked once per file
+	stopped bool            // SIGTERM during a queue change: stop after it
 }
 
 // NewEnv builds the environment from the process environment.
@@ -102,8 +121,70 @@ func NewEnv() (*Env, error) {
 			}
 		}
 	}
+	if n := os.Getenv("XUI_TUNE_NIC"); n != "" && (e.Root != "" || e.OnlyNet) {
+		for _, d := range strings.Split(n, ",") {
+			if d = strings.TrimSpace(d); d != "" && !strings.ContainsAny(d, "/ ") {
+				e.ForceNIC = append(e.ForceNIC, d)
+			}
+		}
+	}
+	e.Eth = hw.NoEthtool{}
+	if e.Root == "" {
+		e.Eth = hw.SystemEthtool()
+		if e.OnlyNet {
+			e.Eth = onlyDevs{e.Eth, e.ForceNIC}
+		}
+	}
 	e.Run = e.realRun
 	return e, nil
+}
+
+// onlyDevs refuses ethtool changes to any device but the named ones
+// (XUI_TUNE_ONLY=net).
+type onlyDevs struct {
+	hw.Ethtool
+	devs []string
+}
+
+func (o onlyDevs) allowed(dev string) error {
+	for _, d := range o.devs {
+		if d == dev {
+			return nil
+		}
+	}
+	return fmt.Errorf("ethtool %s: %w (XUI_TUNE_ONLY=net)", dev, syscall.EROFS)
+}
+
+func (o onlyDevs) SetChannels(dev string, c hw.Channels) error {
+	if err := o.allowed(dev); err != nil {
+		return err
+	}
+	return o.Ethtool.SetChannels(dev, c)
+}
+
+func (o onlyDevs) SetIndir(dev string, t []uint32) error {
+	if err := o.allowed(dev); err != nil {
+		return err
+	}
+	return o.Ethtool.SetIndir(dev, t)
+}
+
+func (o onlyDevs) SetFlowHash(dev string, f hw.Flow, bits uint64) error {
+	if err := o.allowed(dev); err != nil {
+		return err
+	}
+	return o.Ethtool.SetFlowHash(dev, f, bits)
+}
+
+// hw is the tree the hardware readers read.
+func (e *Env) hw() hw.FS { return hw.FS{Root: e.Root} }
+
+// eth is Eth, or no ethtool at all.
+func (e *Env) eth() hw.Ethtool {
+	if e.Eth == nil {
+		return hw.NoEthtool{}
+	}
+	return e.Eth
 }
 
 // fake reports whether external commands are recorded instead of run.
@@ -229,7 +310,7 @@ func (e *Env) writable(abs string) error {
 	if err, ok := e.FailWrite[abs]; ok && (errors.Is(err, syscall.EROFS) || errors.Is(err, syscall.EACCES) || errors.Is(err, os.ErrNotExist)) {
 		return err // EPERM and EINVAL only show when writing
 	}
-	if e.OnlyNet && !strings.HasPrefix(abs, "/proc/sys/net/") {
+	if e.OnlyNet && !e.netOnlyAllows(abs) {
 		return syscall.EROFS
 	}
 	if e.Root != "" {
@@ -241,12 +322,27 @@ func (e *Env) writable(abs string) error {
 	return unix.Access(abs, unix.W_OK)
 }
 
+// netOnlyAllows says which kernel files XUI_TUNE_ONLY=net may write: the
+// network namespace's own sysctls and the test devices' queue files. Never
+// an interrupt's affinity.
+func (e *Env) netOnlyAllows(abs string) bool {
+	if strings.HasPrefix(abs, "/proc/sys/net/") {
+		return true
+	}
+	for _, n := range e.ForceNIC {
+		if strings.HasPrefix(abs, "/sys/class/net/"+n+"/queues/") {
+			return true
+		}
+	}
+	return false
+}
+
 // writeKernel writes a value to a kernel file.
 func (e *Env) writeKernel(abs, val string) error {
 	if err, ok := e.FailWrite[abs]; ok {
 		return err
 	}
-	if e.OnlyNet && !strings.HasPrefix(abs, "/proc/sys/net/") {
+	if e.OnlyNet && !e.netOnlyAllows(abs) {
 		return syscall.EROFS
 	}
 	flags := os.O_WRONLY

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/mhsanaei/3x-ui/v2/util/hw"
 	"golang.org/x/sys/unix"
 )
 
@@ -42,6 +43,47 @@ type State struct {
 	NTP       bool     `json:"ntp_via_timedatectl,omitempty"`
 	Swap      string   `json:"swap,omitempty"` // "unit:<name>" or "fstab" when x-ui created the swapfile
 	SwapGone  bool     `json:"swap_removed_by_admin,omitempty"`
+	// NICs are the uplink NICs an apply found, by PCI address (name when
+	// not PCI): what x-ui did to each.
+	NICs map[string]*NICState `json:"nics,omitempty"`
+	// IRQBalancePolicy: x-ui gave irqbalance its policy script.
+	IRQBalancePolicy bool `json:"irqbalance_policy,omitempty"`
+}
+
+// NICState is what x-ui did to one NIC.
+type NICState struct {
+	Name     string               `json:"name"`
+	Driver   string               `json:"driver"` // a different driver at the same address is a new NIC
+	Channels *ChanState           `json:"channels,omitempty"`
+	Hash     map[string]*KeyState `json:"hash,omitempty"` // "udp4", "udp6": letters ("sd")
+	IRQ      map[string]*IRQState `json:"irq,omitempty"`  // "q3" (txrx), "q3rx", "q3tx": CPU lists
+	XPS      map[string]*KeyState `json:"xps,omitempty"`  // "tx-3": CPU lists
+	RPS      map[string]*KeyState `json:"rps,omitempty"`  // "rx-0/rps_cpus" (CPU list), "rx-0/rps_flow_cnt"
+	Managed  bool                 `json:"kernel_managed_irqs,omitempty"`
+	TakeIRQs bool                 `json:"take_irqs,omitempty"`
+}
+
+// ChanState is x-ui's raise of a NIC's queue count.
+type ChanState struct {
+	Orig    *hw.Channels `json:"orig,omitempty"`    // the counts before x-ui first raised them
+	Want    uint32       `json:"want,omitempty"`    // the count x-ui raises to at boot
+	RSSCap  int          `json:"rss_cap,omitempty"` // queues RSS can use, learned from a raise
+	Failed  string       `json:"failed,omitempty"`  // why a raise failed: not retried automatically
+	Attempt *ChanAttempt `json:"attempt,omitempty"` // a raise in progress (fsynced before it starts)
+}
+
+// ChanAttempt is a queue change under way.
+type ChanAttempt struct {
+	At   string `json:"at"`
+	From uint32 `json:"from"`
+	To   uint32 `json:"to"`
+}
+
+// IRQState is what x-ui did to one queue interrupt's CPUs.
+type IRQState struct {
+	IRQ     int    `json:"irq"`
+	Orig    string `json:"orig,omitempty"`
+	Written string `json:"written,omitempty"`
 }
 
 func newState() *State { return &State{Version: 1, Keys: map[string]*KeyState{}} }

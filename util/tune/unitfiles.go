@@ -47,10 +47,14 @@ type unitView struct {
 	Legacy []string   // drop-ins an older x-ui tune.sh wrote
 }
 
-func (e *Env) readUnit() *unitView {
+func (e *Env) readUnit() *unitView { return e.readUnitNamed("x-ui.service", DropInFile) }
+
+// readUnitNamed reads a unit and its drop-ins, split around x-ui's own
+// drop-in ours (which is left out).
+func (e *Env) readUnitNamed(name, ours string) *unitView {
 	v := &unitView{}
 	for _, d := range unitDirs {
-		if f := d + "/x-ui.service"; e.exists(f) {
+		if f := d + "/" + name; e.exists(f) {
 			v.Unit = f
 			break
 		}
@@ -61,7 +65,7 @@ func (e *Env) readUnit() *unitView {
 	}
 	byName := map[string]string{}
 	for _, d := range unitDirs {
-		for _, f := range e.glob(d + "/x-ui.service.d/*.conf") {
+		for _, f := range e.glob(d + "/" + name + ".d/*.conf") {
 			if _, ok := byName[path.Base(f)]; !ok {
 				byName[path.Base(f)] = f
 			}
@@ -72,19 +76,19 @@ func (e *Env) readUnit() *unitView {
 		names = append(names, n)
 	}
 	sort.Strings(names)
-	ours := path.Base(DropInFile)
+	ourName := path.Base(ours)
 	for _, n := range names {
 		f := byName[n]
-		if f == DropInFile {
+		if f == ours {
 			continue
 		}
 		data, _ := e.read(e.resolve(f))
-		if strings.HasPrefix(data, legacyDropInMark) {
+		if name == "x-ui.service" && strings.HasPrefix(data, legacyDropInMark) {
 			v.Legacy = append(v.Legacy, f)
 			continue
 		}
 		lines := parseUnit(data, f)
-		if n < ours {
+		if n < ourName {
 			v.Before = append(v.Before, lines...)
 		} else {
 			v.After = append(v.After, lines...)
@@ -92,6 +96,18 @@ func (e *Env) readUnit() *unitView {
 		}
 	}
 	return v
+}
+
+// execStart is the unit's command line as its files leave it: the last
+// ExecStart= after the last empty one (which clears the list).
+func (v *unitView) execStart() string {
+	cmd := ""
+	for _, l := range append(append([]unitLine{}, v.Before...), v.After...) {
+		if l.Key == "ExecStart" {
+			cmd = l.Value
+		}
+	}
+	return cmd
 }
 
 // parseNoFile reads "N", "soft:hard" or "infinity" and returns the hard limit.
