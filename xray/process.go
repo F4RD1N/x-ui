@@ -438,6 +438,7 @@ func (p *process) Start() (err error) {
 			close(p.done)
 			return
 		}
+		resetOOMScore(cmd.Process.Pid)
 		started <- nil
 		err := cmd.Wait()
 		// Everything about the exit is recorded before done is closed:

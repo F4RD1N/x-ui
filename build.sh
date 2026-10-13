@@ -15,14 +15,24 @@ GEO_SRC="${GEO_SRC:-}"
 rm -rf "$OUT" && mkdir -p "$OUT"
 
 geo_files() {
-    local dest="$1"
+    local dest="$1" f
     if [[ -n "$GEO_SRC" && -d "$GEO_SRC" ]]; then
         echo "  geo: copying from $GEO_SRC"
-        cp -f "$GEO_SRC"/geoip.dat "$GEO_SRC"/geosite.dat "$dest"/ 2>/dev/null || true
-        for extra in geoip_IR geosite_IR geoip_RU geosite_RU; do
-            [[ -f "$GEO_SRC/$extra.dat" ]] && cp -f "$GEO_SRC/$extra.dat" "$dest"/
+        # The default Xray config routes with geoip:private, so a release
+        # without these two cannot start a core.
+        for f in geoip geosite; do
+            if [[ ! -f "$GEO_SRC/$f.dat" ]]; then
+                echo "  !! $GEO_SRC/$f.dat is missing" >&2
+                return 1
+            fi
+            cp -f "$GEO_SRC/$f.dat" "$dest"/
         done
-        return
+        for f in geoip_IR geosite_IR geoip_RU geosite_RU; do
+            if [[ -f "$GEO_SRC/$f.dat" ]]; then
+                cp -f "$GEO_SRC/$f.dat" "$dest"/
+            fi
+        done
+        return 0
     fi
     echo "  geo: downloading"
     curl -4fsSL -o "$dest/geoip.dat"       https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat

@@ -5,14 +5,21 @@ command_background=true
 pidfile="/run/x-ui.pid"
 description="x-ui Service"
 procname="x-ui"
+rc_ulimit="-n 1048576"
 depend() {
     need net
 }
-start_pre(){
-    cd /usr/local/x-ui
+start_pre() {
+    cd /usr/local/x-ui || return 1
+    # Server tuning: re-apply the kernel settings, then take the service
+    # limits "x-ui tune" computed for this machine (open files, GOMEMLIMIT).
+    /usr/local/x-ui/x-ui tune apply --boot >/dev/null 2>&1 || true
+    [ -r /etc/conf.d/x-ui-tune ] && . /etc/conf.d/x-ui-tune
+    # Protect the panel from the OOM killer; it resets each core to 0.
+    echo -500 > /proc/self/oom_score_adj 2>/dev/null || true
 }
 reload() {
-  ebegin "Reloading ${RC_SVCNAME}"
-  kill -USR1  $pidfile
-  eend $?
+    ebegin "Reloading ${RC_SVCNAME}"
+    kill -USR1 "$(cat "$pidfile")"
+    eend $?
 }
