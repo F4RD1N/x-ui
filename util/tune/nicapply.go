@@ -158,7 +158,8 @@ func (e *Env) writeHash(f *Facts, it *nicItem, ns *NICState, r *Result) {
 		ip.Live, ip.Want, ip.Note = ip.Want, "", "was "+hashWords(ks.Orig)
 	}
 	if len(done) > 0 {
-		r.change("%s: UDP hashing (%s): %s -> %s", it.NIC.Name, strings.Join(done, ", "), from, to)
+		r.change("%s: UDP hashing (%s): %s -> %s (the driver logs \"fragmented packets may arrive out of order\": harmless for QUIC and WireGuard)",
+			it.NIC.Name, strings.Join(done, ", "), from, to)
 	}
 }
 

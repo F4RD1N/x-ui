@@ -249,26 +249,36 @@ func (e *Env) applyIRQBalance(np *nicPlan, st *State, r *Result) bool {
 	return true
 }
 
-// irqbalanceText is irqbalance's line in the status.
+// text is irqbalance's line in the status.
 func (ib *irqbalance) text() string {
 	if ib == nil {
 		return ""
 	}
+	if ib.Unit == "" && !ib.Running {
+		return "not installed"
+	}
+	names := strings.Join(ib.nics, ", ")
+	current := ib.DropIn != "" && slices.Equal(ib.Banned, scriptPCIs(ib.Script))
 	var s string
 	switch {
-	case ib.Unit == "" && !ib.Running:
-		return "not installed"
 	case ib.Running && ib.Ours:
 		s = "running with x-ui's policy"
+		if len(ib.Banned) > 0 {
+			s += fmt.Sprintf(" (%s banned)", strings.Join(ib.Banned, ", "))
+		}
+	case ib.Running && current:
+		s = "running without x-ui's policy: 'systemctl restart irqbalance' applies it"
 	case ib.Running:
 		s = "running"
 	default:
 		s = "installed, not running"
 	}
-	if len(ib.Banned) > 0 && ib.DropIn != "" {
-		s += fmt.Sprintf("; %s banned for it (%s)", strings.Join(ib.nics, ", "), path.Base(IRQBalanceDropIn))
-	} else if ib.DropIn != "" {
-		s += "; 'x-ui tune apply' bans " + strings.Join(ib.nics, ", ") + " for it"
+	switch {
+	case ib.Ours:
+	case current && !ib.Running:
+		s += fmt.Sprintf("; %s banned for it (%s)", names, path.Base(IRQBalanceDropIn))
+	case ib.DropIn != "" && !current:
+		s += "; 'x-ui tune apply' bans " + names + " for it"
 	}
 	if ib.Note != "" {
 		s += "; " + ib.Note

@@ -793,8 +793,9 @@ func TestIRQBalanceCases(t *testing.T) {
 	}
 }
 
-// irqbalance is never installed, whatever the NIC.
-func TestIRQBalanceNeverInstalled(t *testing.T) {
+// irqbalance is never installed, whatever the NIC, and never stopped or
+// disabled; status reports it.
+func TestIRQBalanceRespectsAdmin(t *testing.T) {
 	e, _ := onHW(t, hwtest.Desktop())
 	fakeCommands(e, map[string]string{"command -v apt-get": "/usr/bin/apt-get"}, "apt-get install", "systemctl enable", "systemctl daemon-reload")
 	mustApply(t, e, ApplyOptions{})
@@ -807,6 +808,23 @@ func TestIRQBalanceNeverInstalled(t *testing.T) {
 	}
 	if got := statusText(t, e); strings.Contains(got, "irqbalance") {
 		t.Errorf("status mentions irqbalance:\n%s", got)
+	}
+	// Running (the admin's choice): it keeps running, through apply and
+	// revert; status says how it runs.
+	m := hwtest.Production()
+	m.IRQBalance = "running"
+	e, _ = onHW(t, m)
+	fakeCommands(e, nil, "systemctl daemon-reload", "systemctl try-restart")
+	mustApply(t, e, ApplyOptions{})
+	e.Revert(false, false)
+	for _, c := range e.Ran {
+		if strings.Contains(c, "irqbalance") && !strings.HasPrefix(c, "systemctl try-restart irqbalance") {
+			t.Errorf("ran %q", c)
+		}
+	}
+	mustApply(t, e, ApplyOptions{})
+	if got := statusText(t, e); !strings.Contains(got, "irqbalance  running without x-ui's policy: 'systemctl restart irqbalance' applies it") {
+		t.Errorf("status:\n%s", got)
 	}
 }
 
@@ -1346,5 +1364,72 @@ func TestNICCLI(t *testing.T) {
 		if code := run(c.args, "t", &out, &out); code != c.code || !strings.Contains(out.String(), c.has) {
 			t.Errorf("%v: exit %d\n%s", c.args, code, out.String())
 		}
+	}
+}
+
+// Every preset: an apply places interrupts only on CPUs the panel may use,
+// a second apply changes nothing, status shows no drift, and revert puts
+// every interrupt and queue file back byte for byte (and the UDP hashing).
+func TestNICAllPresets(t *testing.T) {
+	presets := map[string]hwtest.Machine{
+		"Production": hwtest.Production(), "EPYC1": hwtest.EPYC(1), "EPYC4": hwtest.EPYC(4), "Desktop": hwtest.Desktop(),
+		"VPS1": hwtest.VPS(1), "VPS2": hwtest.VPS(2), "Restricted": hwtest.Restricted(), "CPULessNode": hwtest.CPULessNode(),
+		"Bond": hwtest.Bond(), "ProxmoxBridge": hwtest.ProxmoxBridge(), "VLAN": hwtest.VLAN(), "ManagedIRQs": hwtest.ManagedIRQs(),
+		"Container": hwtest.Container(), "Tunnel": hwtest.Tunnel(),
+	}
+	for name, m := range presets {
+		t.Run(name, func(t *testing.T) {
+			e, b := onHW(t, m)
+			instances(t, b, b.Allowed.List())
+			fakeCommands(e, nil, "systemctl daemon-reload", "systemctl try-restart", "systemctl enable", "systemctl disable")
+			b.Settle()
+			before := irqSnapshot(t, b)
+			hashes := map[string]map[string]uint64{}
+			for dev, d := range b.Eth.Devs {
+				hashes[dev] = map[string]uint64{}
+				for k, v := range d.Hash {
+					hashes[dev][k] = v
+				}
+			}
+			mustApply(t, e, ApplyOptions{})
+			b.Settle()
+			np := nicPlanOf(t, e)
+			for _, it := range np.NICs {
+				n := hw.ReadNIC(e.hw(), e.eth(), it.NIC.Name)
+				for _, q := range n.IRQs {
+					if it.keep == "" && (len(q.Affinity) != 1 || !b.Allowed.Has(q.Affinity[0])) {
+						t.Errorf("%s IRQ %d on %v (allowed %s)", it.NIC.Name, q.IRQ, q.Affinity, b.Allowed.List())
+					}
+				}
+				for q, x := range n.XPS {
+					if len(x.Minus(np.topo.Online)) > 0 {
+						t.Errorf("%s tx-%d XPS %v outside the online CPUs", it.NIC.Name, q, x)
+					}
+				}
+			}
+			if r := mustApply(t, e, ApplyOptions{}); len(r.Changed) != 0 {
+				t.Errorf("second apply: %v", r.Changed)
+			}
+			if d, err := e.Status(false); err != nil || len(d) != 0 {
+				t.Errorf("drift %v %v", d, err)
+			}
+			if _, err := e.Revert(false, false); err != nil {
+				t.Fatal(err)
+			}
+			b.Settle()
+			if d := diffMaps(before, irqSnapshot(t, b)); len(d) > 0 {
+				t.Errorf("revert left %d differences: %v", len(d), d[:min(3, len(d))])
+			}
+			for dev, d := range b.Eth.Devs {
+				for k, v := range hashes[dev] {
+					if d.Hash[k] != v {
+						t.Errorf("%s %s hashing %s after revert", dev, k, hw.HashLetters(d.Hash[k]))
+					}
+				}
+			}
+			if len(calls(b, "SetChannels")) != 0 || len(calls(b, "SetIndir")) != 0 {
+				t.Errorf("queue or table changes by an apply: %v", b.Eth.Calls)
+			}
+		})
 	}
 }
