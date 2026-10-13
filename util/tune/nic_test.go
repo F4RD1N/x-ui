@@ -1202,8 +1202,8 @@ func TestNICRunGating(t *testing.T) {
 	e, b := onHW(t, hwtest.Production())
 	instances(t, b, "0-55", prodFixed...)
 	before := irqSnapshot(t, b)
-	if r, err := e.RunNIC(NICOptions{}); err != nil || len(r.Changed)+len(r.Problems) != 0 || len(b.Eth.Calls) != 0 || e.exists(StateFile) {
-		t.Errorf("no state: %+v %v", r, b.Eth.Calls)
+	if r, err := e.RunNIC(NICOptions{}); err != nil || len(r.Changed)+len(r.Problems) != 0 || len(b.Eth.Calls) != 0 || e.exists(StateDir) {
+		t.Errorf("no state: %+v %v (state dir made: %v)", r, b.Eth.Calls, e.exists(StateDir))
 	}
 	mustApply(t, e, ApplyOptions{Auto: true})
 	if _, err := e.Revert(false, false); err != nil {

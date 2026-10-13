@@ -23,11 +23,18 @@ type NICOptions struct {
 // or the root file system is on the network.
 func (e *Env) RunNIC(o NICOptions) (*Result, error) {
 	r := &Result{}
-	wait := 3 * time.Second
+	if !e.exists(StateFile) {
+		return r, nil // never applied: not even a lock file
+	}
 	var deadline time.Time
+	wait := 3 * time.Second
 	if o.Boot {
 		wait = 30 * time.Second
 		deadline = e.clock().Now().Add(540 * time.Second) // the unit allows 600
+	}
+	f := e.gatherFacts()
+	if f.Container() {
+		return r, nil
 	}
 	unlock, err := e.lock(wait)
 	if err != nil {
@@ -35,10 +42,6 @@ func (e *Env) RunNIC(o NICOptions) (*Result, error) {
 		return r, nil
 	}
 	defer unlock()
-	f := e.gatherFacts()
-	if f.Container() {
-		return r, nil
-	}
 	st, had, err := e.loadState()
 	if err != nil || !had || st.Disabled || len(st.NICs) == 0 {
 		return r, nil
