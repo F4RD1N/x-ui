@@ -282,6 +282,7 @@
 "subInboundsSaved" = "Sub-inbounds saved"
 "subInboundBadPort" = "Every sub-inbound needs a port between 1 and 65535"
 "subInboundsInForm" = "edit them with Multi Instance"
+"subInboundsFree" = "free"
 "xrayCoresUnit" = "cores"
 "multiInstance" = "Multi Instance"
 "multiInstanceIntro" = "Sub-inbounds are this inbound on other ports, each in its own xray instance. They share every setting and every client with it; each has only its own port, instance, CPU cores and on/off."

@@ -1,17 +1,34 @@
 {{define "modals/multiInstanceModal"}}
-<a-modal id="multi-instance-modal" v-model="miModal.visible" :title="miModal.title" :closable="true"
-    :mask-closable="false" :class="themeSwitcher.currentTheme" :width="680">
-    <div v-if="miModal.inbound" class="mi-body">
-        <div class="mi-intro">{{ i18n "pages.inbounds.multiInstanceIntro" }}</div>
-
-        <div class="mi-head">
-            <span class="mi-title">{{ i18n "pages.inbounds.subInbounds" }}</span>
-            <span class="mi-muted">[[ miModal.rows.length ]]</span>
+<a-modal id="multi-instance-modal" v-model="miModal.visible" :closable="true" :mask-closable="false"
+    :class="themeSwitcher.currentTheme" :width="560" :body-style="{ padding: '16px 20px' }">
+    <template slot="title">
+        <div class="mi-titlebar">
+            <span>{{ i18n "pages.inbounds.multiInstance" }}</span>
+            <span v-if="miModal.inbound" class="mi-sub">[[ miModal.inbound.remark || ('#' + miModal.inbound.id) ]] &middot; [[ miModal.inbound.port ]]</span>
         </div>
-        <div v-if="miModal.rows.length === 0" class="mi-empty mi-muted">{{ i18n "pages.inbounds.subInboundsNone" }}</div>
-        <div v-else class="mi-table">
-            <div class="mi-row mi-row-head mi-muted">
-                <span class="mi-c-on">{{ i18n "pages.inbounds.subInboundEnabled" }}</span>
+    </template>
+    <div v-if="miModal.inbound" class="mi-body">
+        <!-- add bar -->
+        <div class="mi-addbar">
+            <a-input-number class="mi-count" v-model.number="miModal.addCount" :min="1" :precision="0" size="small" :disabled="miModal.addMax"></a-input-number>
+            <span class="mi-word">&times;</span>
+            <a-select class="mi-add-cores" v-model="miModal.addCores" size="small" :dropdown-class-name="themeSwitcher.currentTheme">
+                <a-select-option v-for="o in miModal.coreOptions()" :key="o.value" :value="o.value">[[ o.label ]]</a-select-option>
+            </a-select>
+            <span class="mi-max-line">
+                <a-tooltip :overlay-class-name="themeSwitcher.currentTheme">
+                    <template slot="title">{{ i18n "pages.inbounds.multiInstanceMaxHint" }}</template>
+                    <a-checkbox v-model="miModal.addMax" class="mi-max">{{ i18n "pages.inbounds.multiInstanceMax" }}<template v-if="miModal.plan"> ([[ miModal.plan.max ]])</template></a-checkbox>
+                </a-tooltip>
+            </span>
+            <a-button type="primary" size="small" icon="plus" class="mi-add-btn" :loading="miModal.adding" @click="miModal.add()">{{ i18n "pages.inbounds.subInboundsAddButton" }}</a-button>
+        </div>
+
+        <!-- list -->
+        <div v-if="miModal.rows.length === 0" class="mi-empty">{{ i18n "pages.inbounds.subInboundsNone" }}</div>
+        <div v-else class="mi-list">
+            <div class="mi-row mi-row-head">
+                <span class="mi-c-on"></span>
                 <span class="mi-c-port">{{ i18n "pages.inbounds.port" }}</span>
                 <span class="mi-c-inst">{{ i18n "pages.inbounds.xrayInstance" }}</span>
                 <span class="mi-c-cores">{{ i18n "pages.inbounds.xrayCores" }}</span>
@@ -22,91 +39,83 @@
                 <span class="mi-c-port"><a-input-number class="mi-port" v-model.number="r.port" :min="1" :max="65535" :precision="0" size="small"></a-input-number></span>
                 <span class="mi-c-inst"><a-input class="mi-inst" v-model="r.instance" size="small" placeholder="xray-N"></a-input></span>
                 <span class="mi-c-cores">
-                    <a-radio-group v-model="r.mode" button-style="solid" size="small">
-                        <a-radio-button value="auto">{{ i18n "pages.inbounds.xrayCoresAuto" }}</a-radio-button>
-                        <a-radio-button value="fixed">{{ i18n "pages.inbounds.xrayCoresFixed" }}</a-radio-button>
-                    </a-radio-group>
-                    <a-input-number v-if="r.mode === 'fixed'" class="mi-cores" v-model.number="r.cores" :min="1" :precision="0" size="small"></a-input-number>
+                    <a-select class="mi-cores" v-model="r.cores" size="small" :dropdown-class-name="themeSwitcher.currentTheme">
+                        <a-select-option v-for="o in miModal.coreOptions()" :key="o.value" :value="o.value">[[ o.label ]]</a-select-option>
+                    </a-select>
                 </span>
-                <span class="mi-c-del"><a-button size="small" icon="delete" class="mi-remove" @click="miModal.rows.splice(i, 1)"></a-button></span>
-            </div>
-        </div>
-
-        <div class="mi-add">
-            <div class="mi-head"><span class="mi-title">{{ i18n "pages.inbounds.subInboundsAdd" }}</span></div>
-            <div class="mi-row-add">
-                <span class="mi-muted">{{ i18n "pages.inbounds.multiInstanceCores" }}</span>
-                <a-radio-group v-model="miModal.addMode" button-style="solid" size="small">
-                    <a-radio-button value="auto">{{ i18n "pages.inbounds.xrayCoresAuto" }}</a-radio-button>
-                    <a-radio-button value="fixed">{{ i18n "pages.inbounds.xrayCoresFixed" }}</a-radio-button>
-                </a-radio-group>
-                <a-input-number v-if="miModal.addMode === 'fixed'" class="mi-add-cores" v-model.number="miModal.addCores" :min="1" :precision="0" size="small"></a-input-number>
-            </div>
-            <div class="mi-row-add">
-                <span class="mi-muted">{{ i18n "pages.inbounds.multiInstanceCount" }}</span>
-                <a-input-number class="mi-count" v-model.number="miModal.addCount" :min="1" :precision="0" size="small" :disabled="miModal.addMax"></a-input-number>
-                <a-checkbox v-model="miModal.addMax" class="mi-max">{{ i18n "pages.inbounds.multiInstanceMax" }}
-                    <template v-if="miModal.plan">([[ miModal.plan.max ]])</template></a-checkbox>
-                <a-button type="primary" ghost size="small" icon="plus" class="mi-add-btn" :loading="miModal.adding" @click="miModal.add()">{{ i18n "pages.inbounds.subInboundsAddButton" }}</a-button>
-            </div>
-            <div class="mi-hint" v-if="miModal.plan">
-                {{ i18n "pages.inbounds.xrayCoresTotal" }}: <b>[[ miModal.plan.totalCores ]]</b>
-                &middot; {{ i18n "pages.inbounds.xrayCoresAvailable" }}: <b>[[ miModal.plan.available ]]</b>
-                &middot; {{ i18n "pages.inbounds.multiInstanceMaxHint" }}
+                <span class="mi-c-del"><a-icon type="close" class="mi-remove" @click="miModal.rows.splice(i, 1)"></a-icon></span>
             </div>
         </div>
         <div v-if="miModal.error" class="mi-error">[[ miModal.error ]]</div>
-        <div class="mi-note">{{ i18n "pages.inbounds.multiInstanceNote" }}</div>
     </div>
     <template slot="footer">
-        <a-button @click="miModal.close()">{{ i18n "cancel" }}</a-button>
-        <a-button type="primary" :loading="miModal.saving" class="mi-save" @click="miModal.save()">{{ i18n "save" }}</a-button>
+        <div class="mi-footer">
+            <span class="mi-cpu" v-if="miModal.plan">
+                [[ miModal.plan.totalCores ]] {{ i18n "pages.index.xrayInstanceCore" }} &middot; [[ miModal.plan.available ]] {{ i18n "pages.inbounds.subInboundsFree" }}
+            </span>
+            <span class="mi-actions">
+                <a-button @click="miModal.close()">{{ i18n "cancel" }}</a-button>
+                <a-button type="primary" :loading="miModal.saving" class="mi-save" @click="miModal.save()">{{ i18n "save" }}</a-button>
+            </span>
+        </div>
     </template>
 </a-modal>
 <style>
-    #multi-instance-modal .mi-intro { margin-bottom: 14px; }
-    .mi-head { display: flex; align-items: baseline; gap: 8px; margin: 6px 0 8px; }
-    .mi-title { font-weight: 600; }
-    .mi-muted, .mi-hint, .mi-note { color: #8c8c8c; font-size: 12px; }
-    .dark .mi-muted, .dark .mi-hint, .dark .mi-note { color: #8d97ab; }
-    .mi-hint, .mi-note { line-height: 1.6; margin-top: 6px; }
-    .mi-empty { padding: 6px 0 10px; }
-    .mi-table { border: 1px solid #f0f0f0; border-radius: 8px; overflow: hidden; }
-    .dark .mi-table { border-color: var(--dark-color-stroke, #2c3950); }
-    .mi-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; padding: 6px 10px; border-top: 1px solid #f0f0f0; }
-    .dark .mi-row { border-top-color: var(--dark-color-stroke, #2c3950); }
-    .mi-row:first-child { border-top: 0; }
-    .mi-row-head { padding-top: 6px; padding-bottom: 4px; }
-    .mi-new { background: rgba(0, 135, 113, 0.07); }
-    .mi-c-on { width: 40px; }
-    .mi-c-port { width: 92px; }
-    .mi-c-port .ant-input-number { width: 92px; }
-    .mi-c-inst { width: 120px; }
-    .mi-c-cores { flex: 1 1 170px; display: inline-flex; align-items: center; gap: 6px; }
-    .mi-c-cores .ant-input-number { width: 64px; }
-    .mi-c-del { width: 28px; text-align: right; }
-    .mi-add { margin-top: 14px; }
-    .mi-row-add { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
-    .mi-row-add > .mi-muted { min-width: 130px; }
-    .mi-row-add .ant-input-number { width: 80px; }
-    .mi-error { color: #e04141; font-size: 13px; margin-top: 8px; }
+    .mi-titlebar { display: flex; flex-direction: column; gap: 2px; }
+    .mi-sub { font-size: 12px; font-weight: 400; color: #8c8c8c; }
+    .dark .mi-sub { color: #8d97ab; }
+    .mi-addbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px 12px; border-radius: 10px; background: #f6f8fa; margin-bottom: 14px; }
+    .dark .mi-addbar { background: var(--dark-color-surface-200, #222d42); }
+    .mi-addbar .mi-count { width: 64px; }
+    .mi-addbar .mi-add-cores { width: 100px; }
+    .mi-word { color: #8c8c8c; }
+    .dark .mi-word { color: #8d97ab; }
+    .mi-addbar .mi-add-btn { margin-left: auto; }
+    .mi-empty { text-align: center; color: #8c8c8c; padding: 18px 0 10px; }
+    .dark .mi-empty { color: #8d97ab; }
+    .mi-list { display: flex; flex-direction: column; }
+    .mi-row { display: flex; align-items: center; gap: 10px; padding: 6px 2px; border-bottom: 1px solid #f0f0f0; }
+    .dark .mi-row { border-bottom-color: var(--dark-color-stroke, #2c3950); }
+    .mi-row:last-child { border-bottom: 0; }
+    .mi-row-head { font-size: 12px; color: #8c8c8c; padding-top: 0; }
+    .dark .mi-row-head { color: #8d97ab; }
+    .mi-new { background: rgba(0, 135, 113, 0.06); border-radius: 6px; }
+    .mi-c-on { flex: 0 0 34px; }
+    .mi-c-port { flex: 0 0 88px; }
+    .mi-c-port .ant-input-number { width: 88px; }
+    .mi-c-inst { flex: 1 1 100px; min-width: 0; }
+    .mi-c-cores { flex: 0 0 92px; }
+    .mi-c-cores .ant-select { width: 92px; }
+    .mi-c-del { flex: 0 0 18px; text-align: right; }
+    .mi-remove { color: #8c8c8c; cursor: pointer; }
+    .mi-remove:hover { color: #e04141; }
+    .mi-off .mi-port input, .mi-off .mi-inst { color: #a0a6b1; }
+    .mi-error { color: #e04141; font-size: 13px; margin-top: 10px; }
+    .mi-footer { display: flex; align-items: center; gap: 8px; }
+    .mi-cpu { flex: 1; text-align: left; font-size: 12px; color: #8c8c8c; }
+    .dark .mi-cpu { color: #8d97ab; }
+    .mi-actions { display: inline-flex; gap: 8px; }
     @media (max-width: 576px) {
-        .mi-row-head { display: none; }
-        .mi-c-on { order: 1; }
-        .mi-c-port { order: 2; }
-        .mi-c-inst { order: 3; flex: 1 1 0; width: auto; min-width: 80px; }
-        .mi-c-del { order: 4; width: auto; }
-        .mi-c-cores { order: 5; flex-basis: 100%; }
+        /* count × cores and Add on one line, Max under them */
+        .mi-addbar { gap: 6px 8px; padding: 8px 10px; }
+        .mi-addbar .mi-count { width: 52px; }
+        .mi-addbar .mi-add-cores { width: 88px; }
+        .mi-max-line { order: 5; flex-basis: 100%; }
+        .mi-row { gap: 6px; }
+        .mi-c-on { flex-basis: 28px; }
+        .mi-c-port { flex-basis: 72px; }
+        .mi-c-port .ant-input-number { width: 72px; }
+        .mi-c-cores { flex-basis: 88px; }
+        .mi-c-cores .ant-select { width: 88px; }
+        .mi-c-del { flex-basis: 14px; }
     }
 </style>
 <script>
     const miModal = (window.miModal = {
         visible: false,
-        title: "",
         inbound: null,
         rows: [],
-        addMode: "auto",
-        addCores: 1,
+        addCores: 0,
         addCount: 1,
         addMax: false,
         plan: null,
@@ -119,10 +128,8 @@
         keys: 0,
         show(dbInbound, onDone) {
             this.inbound = dbInbound;
-            this.title = '{{ i18n "pages.inbounds.multiInstance" }}: ' + (dbInbound.remark || "#" + dbInbound.id) + " (" + dbInbound.port + ")";
             this.rows = (dbInbound.subs || []).map((s) => this.row(s, false));
-            this.addMode = "auto";
-            this.addCores = 1;
+            this.addCores = 0;
             this.addCount = 1;
             this.addMax = false;
             this.plan = null;
@@ -133,24 +140,27 @@
             this.visible = true;
             this.refresh(true);
         },
+        // Auto, then every core count up to the server's cores.
+        coreOptions() {
+            const total = (this.plan && this.plan.totalCores) || 0;
+            let top = Math.max(total, 1);
+            for (const r of this.rows) top = Math.max(top, r.cores || 0);
+            const out = [{ value: 0, label: '{{ i18n "pages.inbounds.xrayCoresAuto" }}' }];
+            for (let n = 1; n <= top; n++) out.push({ value: n, label: n + ' {{ i18n "pages.index.xrayInstanceCore" }}' });
+            return out;
+        },
         row(s, isNew) {
-            return {
-                key: ++this.keys, port: s.port, instance: s.instance || "", cores: s.cores > 0 ? s.cores : 1,
-                mode: s.cores > 0 ? "fixed" : "auto", enable: s.enable !== false, isNew,
-            };
+            return { key: ++this.keys, port: s.port, instance: s.instance || "", cores: s.cores > 0 ? s.cores : 0, enable: s.enable !== false, isNew };
         },
         current() {
-            return this.rows.map((r) => ({
-                port: r.port, instance: (r.instance || "").trim(),
-                cores: r.mode === "fixed" ? (r.cores || 0) : 0, enable: !!r.enable,
-            }));
+            return this.rows.map((r) => ({ port: r.port, instance: (r.instance || "").trim(), cores: r.cores || 0, enable: !!r.enable }));
         },
         close() {
             this.visible = false;
         },
         async ask(count) {
             return HttpUtil.post(`/panel/api/inbounds/${this.inbound.id}/multiInstance`, {
-                count: count, cores: this.addMode === "fixed" ? (this.addCores || 0) : 0,
+                count: count, cores: this.addCores || 0,
                 max: this.addMax ? "true" : "false", subs: JSON.stringify(this.current()),
             });
         },
@@ -167,10 +177,6 @@
         },
         async add() {
             if (this.adding) return;
-            if (this.addMode === "fixed" && !(this.addCores >= 1)) {
-                this.error = '{{ i18n "pages.inbounds.xrayCoresEmpty" }}';
-                return;
-            }
             this.adding = true;
             this.error = "";
             try {
@@ -182,9 +188,8 @@
                     this.error = plan.error + (bad.length ? " — " + bad.slice(0, 5).join(", ") : "");
                     return;
                 }
-                const cores = plan.cores;
                 for (const it of plan.items) {
-                    this.rows.push(this.row({ port: it.port, instance: it.instance, cores, enable: true }, true));
+                    this.rows.push(this.row({ port: it.port, instance: it.instance, cores: plan.cores, enable: true }, true));
                 }
                 this.addMax = false;
                 this.refresh(true);
@@ -197,10 +202,6 @@
             for (const r of this.rows) {
                 if (!(r.port >= 1 && r.port <= 65535)) {
                     this.error = '{{ i18n "pages.inbounds.subInboundBadPort" }}';
-                    return;
-                }
-                if (r.mode === "fixed" && !(r.cores >= 1)) {
-                    this.error = '{{ i18n "pages.inbounds.xrayCoresEmpty" }}' + " (" + r.port + ")";
                     return;
                 }
             }
@@ -226,7 +227,6 @@
         data: { miModal },
         watch: {
             "miModal.rows": { handler() { miModal.refresh(); }, deep: true },
-            "miModal.addMode"() { miModal.refresh(); },
             "miModal.addCores"() { miModal.refresh(); },
             "miModal.addMax"() { miModal.refresh(); },
         },

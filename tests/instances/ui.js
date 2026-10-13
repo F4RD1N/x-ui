@@ -156,7 +156,11 @@ const check = (name, ok, detail) => {
     await page.waitForTimeout(700);
     if (label === 'desktop') {
       check('desktop: no sub-inbounds yet', !!(await page.$('#multi-instance-modal .mi-empty')));
-      await page.click('#multi-instance-modal .mi-row-add .ant-radio-button-wrapper:has-text("Fixed")');
+      const bodyText = await page.textContent('#multi-instance-modal .ant-modal-body');
+      check('desktop: no long description in the dialog', !/each in its own xray instance/.test(bodyText) && bodyText.length < 200, bodyText.length + ' chars');
+      // 1 core per instance, from the cores dropdown
+      await page.click('#multi-instance-modal .mi-add-cores');
+      await page.click('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-dropdown-menu-item:text-is("1 Core")');
       await page.fill('#multi-instance-modal .mi-count input', '2');
       await page.click('#multi-instance-modal .mi-add-btn');
       await page.waitForSelector('#multi-instance-modal .mi-row.mi-new', { timeout: 10000 });
@@ -179,6 +183,14 @@ const check = (name, ok, detail) => {
       const rows = await page.$$eval('#multi-instance-modal .mi-row:not(.mi-row-head)', (els) => els.length);
       check(label + ': the dialog lists the saved sub-inbounds', rows === 2, rows);
       const insts = await page.$$eval('#multi-instance-modal .mi-c-inst input', (els) => els.map((e) => e.value));
+      const fit = await page.evaluate(() => {
+        const q = (sel) => document.querySelector('#multi-instance-modal ' + sel).getBoundingClientRect();
+        const cut = [...document.querySelectorAll('#multi-instance-modal .ant-select-selection-selected-value, #multi-instance-modal .mi-inst')]
+          .filter((e) => e.scrollWidth > e.clientWidth + 1).map((e) => e.textContent || e.value);
+        return { cut, sameLine: Math.abs(q('.mi-add-btn').top - q('.mi-count').top) < 4 };
+      });
+      check(label + ': no cut-off text in the rows', fit.cut.length === 0, JSON.stringify(fit.cut));
+      check(label + ': Add sits beside the count', fit.sameLine);
       check(label + ': each has its own instance', insts.length === 2 && insts[0] !== insts[1] && insts.every((n) => /^xray-\d+$/.test(n)), insts.join(','));
       const dialogOverflow = await page.evaluate(() => {
         const b = document.querySelector('#multi-instance-modal .ant-modal-body');
