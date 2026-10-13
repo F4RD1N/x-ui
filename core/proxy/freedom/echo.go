@@ -318,7 +318,8 @@ func (f *echoFlow) conn(ipv6 bool) *echoConn {
 		return c
 	}
 	var bind net.IP
-	if f.gateway != nil && f.gateway.Family().IsIP() {
+	// A wildcard sendThrough is no source, as it is for TCP and UDP.
+	if f.gateway != nil && f.gateway.Family().IsIP() && !f.gateway.IP().IsUnspecified() {
 		if f.gateway.Family().IsIPv6() != ipv6 {
 			// sendThrough is of the other family: nothing to send from.
 			f.failed[i] = true

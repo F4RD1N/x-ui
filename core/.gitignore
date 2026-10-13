@@ -36,12 +36,14 @@ vprotogen
 errorgen
 !common/errors/errorgen/
 *.dat
+!common/buf/data/test_MultiBufferReadAllToByte.dat
 
 # Build assets
 /build_assets/
 
 # Output from dlv test
 **/debug.*
+!main/distro/debug/debug.go
 
 # Certificates and keys
 *.crt
