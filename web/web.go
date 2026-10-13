@@ -4,8 +4,10 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"embed"
+	"encoding/hex"
 	"html/template"
 	"io"
 	"io/fs"
@@ -21,6 +23,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/logger"
 	"github.com/mhsanaei/3x-ui/v2/util/common"
 	"github.com/mhsanaei/3x-ui/v2/web/controller"
+	"github.com/mhsanaei/3x-ui/v2/web/global"
 	"github.com/mhsanaei/3x-ui/v2/web/job"
 	"github.com/mhsanaei/3x-ui/v2/web/locale"
 	"github.com/mhsanaei/3x-ui/v2/web/middleware"
@@ -40,6 +43,30 @@ var assetsFS embed.FS
 
 //go:embed html/*
 var htmlFS embed.FS
+
+func init() {
+	global.SetAssetsFingerprint(fingerprintFS(assetsFS))
+}
+
+// fingerprintFS hashes every file of fsys, names and contents, into a short
+// hex string.
+func fingerprintFS(fsys fs.FS) string {
+	h := sha256.New()
+	fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		b, err := fs.ReadFile(fsys, path)
+		if err != nil {
+			return nil
+		}
+		h.Write([]byte(path))
+		h.Write([]byte{0})
+		h.Write(b)
+		return nil
+	})
+	return hex.EncodeToString(h.Sum(nil))[:10]
+}
 
 //go:embed translation/*
 var i18nFS embed.FS

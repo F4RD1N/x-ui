@@ -20,6 +20,13 @@ const check = (name, ok, detail) => {
 
     const login = await page.request.post(PANEL + '/login', { form: { username: USER, password: PASS } });
     check(label + ': login', login.ok());
+    if (label === 'desktop') {
+      // Asset URLs carry a fingerprint of the assets, so a browser does not
+      // keep last build's scripts (they are cached for a year).
+      await page.goto(PANEL + '/panel/inbounds');
+      const src = await page.$eval('script[src*="dbinbound.js"]', (e) => e.getAttribute('src'));
+      check('desktop: asset URLs carry the assets fingerprint', /\?[^&]+-[0-9a-f]{10}$/.test(src), src);
+    }
 
     // Overview: one card per instance, filled from the status feed.
     await page.goto(PANEL + '/panel/');

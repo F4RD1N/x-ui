@@ -3,6 +3,7 @@ package global
 
 import (
 	"context"
+	"github.com/mhsanaei/3x-ui/v2/config"
 	_ "unsafe"
 
 	"github.com/robfig/cron/v3"
@@ -43,4 +44,25 @@ func SetSubServer(s SubServer) {
 // GetSubServer returns the global subscription server instance.
 func GetSubServer() SubServer {
 	return subServer
+}
+
+// assetsFingerprint identifies the panel's embedded assets (see
+// SetAssetsFingerprint).
+var assetsFingerprint string
+
+// SetAssetsFingerprint records a fingerprint of the embedded assets.
+func SetAssetsFingerprint(fp string) {
+	assetsFingerprint = fp
+}
+
+// AssetVersion is what asset URLs carry (?<AssetVersion>) so browsers fetch
+// them again after an update. The assets are cached for a year, and the
+// version number alone does not change between builds of a branch, so a
+// browser kept old scripts next to new pages; the fingerprint changes
+// whenever any asset does.
+func AssetVersion() string {
+	if assetsFingerprint == "" {
+		return config.GetVersion()
+	}
+	return config.GetVersion() + "-" + assetsFingerprint
 }

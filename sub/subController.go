@@ -3,10 +3,9 @@ package sub
 import (
 	"encoding/base64"
 	"fmt"
+	"github.com/mhsanaei/3x-ui/v2/web/global"
 	"strconv"
 	"strings"
-
-	"github.com/mhsanaei/3x-ui/v2/config"
 
 	"github.com/gin-gonic/gin"
 )
@@ -134,7 +133,7 @@ func (a *SUBController) subs(c *gin.Context) {
 			page := a.subService.BuildPageData(subId, hostHeader, traffic, lastOnline, subs, subURL, subJsonURL, subClashURL, basePathStr)
 			c.HTML(200, "subpage.html", gin.H{
 				"title":        "subscription.title",
-				"cur_ver":      config.GetVersion(),
+				"cur_ver":      global.AssetVersion(),
 				"host":         page.Host,
 				"base_path":    page.BasePath,
 				"sId":          page.SId,
