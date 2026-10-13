@@ -10,8 +10,19 @@ Type=simple
 WorkingDirectory=/usr/lib/x-ui/
 ExecStart=/usr/lib/x-ui/x-ui
 ExecReload=kill -USR1 $MAINPID
-Restart=on-failure
+Restart=always
 RestartSec=5s
+# Machine-dependent values (a higher LimitNOFILE, GOMEMLIMIT, GOGC) come from
+# the drop-in 'x-ui tune' writes: x-ui.service.d/20-x-ui-tuning.conf.
+LimitNOFILE=1048576
+LimitNPROC=infinity
+TasksMax=infinity
+# The panel stops its cores itself, in parallel; whatever is left when it
+# exits is killed at once.
+KillMode=mixed
+TimeoutStopSec=30s
+# Protect the panel (its cores die with it); it resets each core to 0.
+OOMScoreAdjust=-500
 
 [Install]
 WantedBy=multi-user.target

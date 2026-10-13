@@ -19,6 +19,10 @@ function LOGI() {
     echo -e "${green}[INF] $* ${plain}"
 }
 
+function LOGW() {
+    echo -e "${yellow}[WRN] $* ${plain}"
+}
+
 # Port helpers: detect listener and owning process (best effort)
 is_port_in_use() {
     local port="$1"
@@ -64,7 +68,8 @@ else
     echo "Failed to check the system OS, please contact the author!" >&2
     exit 1
 fi
-echo "The OS release is: $release"
+# Only the menu says it: subcommands print just their own output.
+[[ $# -eq 0 ]] && echo "The OS release is: $release"
 
 os_version=""
 os_version=$(grep "^VERSION_ID" /etc/os-release | cut -d '=' -f2 | tr -d '"' | tr -d '.')
@@ -78,7 +83,7 @@ iplimit_log_path="${log_folder}/3xipl.log"
 iplimit_banned_log_path="${log_folder}/3xipl-banned.log"
 
 confirm() {
-    if [[ $# > 1 ]]; then
+    if [[ $# -gt 1 ]]; then
         echo && read -rp "$1 [Default $2]: " temp
         if [[ "${temp}" == "" ]]; then
             temp=$2
@@ -107,9 +112,25 @@ before_show_menu() {
     show_menu
 }
 
+# run_installer downloads the fork's install.sh and runs it with the given
+# arguments. The script is saved first: piping a failed download into bash
+# would run an error page, or nothing at all and report success.
+run_installer() {
+    local script rc
+    script=$(mktemp) || return 1
+    if ! curl -4fsSL -o "$script" https://raw.githubusercontent.com/F4RD1N/x-ui/main/install.sh; then
+        rm -f "$script"
+        LOGE "Could not download install.sh from GitHub."
+        return 1
+    fi
+    bash "$script" "$@"
+    rc=$?
+    rm -f "$script"
+    return $rc
+}
+
 install() {
-    bash <(curl -Ls https://raw.githubusercontent.com/F4RD1N/x-ui/main/install.sh)
-    if [[ $? == 0 ]]; then
+    if run_installer; then
         if [[ $# == 0 ]]; then
             start
         else
@@ -119,7 +140,19 @@ install() {
 }
 
 update() {
-    confirm "This function will update all x-ui components to the latest version, and the data will not be lost. Do you want to continue?" "y"
+    local current latest
+    current=$(${xui_folder}/x-ui -v 2>/dev/null)
+    latest=$(curl -4fsSL --max-time 10 https://api.github.com/repos/F4RD1N/x-ui/releases/latest 2>/dev/null \
+        | grep -m1 '"tag_name"' | cut -d '"' -f 4)
+    echo -e "Installed: ${green}${current:-unknown}${plain}   latest release: ${green}${latest:-unknown}${plain}"
+    if [[ -n "$latest" && "${latest#v}" == "${current#v}" ]]; then
+        # The same version string can still be a different build (a branch
+        # build installed by hand): reinstalling would replace it.
+        LOGI "This is already the latest release."
+        confirm "Reinstall the release build anyway? The login, port, path and data are kept." "n"
+    else
+        confirm "Update x-ui to the latest release? The login, port, path and data are kept." "y"
+    fi
     if [[ $? != 0 ]]; then
         LOGE "Cancelled"
         if [[ $# == 0 ]]; then
@@ -127,11 +160,29 @@ update() {
         fi
         return 0
     fi
-    bash <(curl -Ls https://raw.githubusercontent.com/F4RD1N/x-ui/main/install.sh)
-    if [[ $? == 0 ]]; then
+    # Update mode keeps the username, password, port and path; the install
+    # mode would reset them to the defaults.
+    if XUI_MODE=update run_installer update; then
         LOGI "Update is complete, Panel has automatically restarted "
+    else
+        LOGE "The update failed; see the messages above."
+    fi
+    if [[ $# == 0 ]]; then
         before_show_menu
     fi
+}
+
+# fetch_menu_script replaces /usr/bin/x-ui with the latest x-ui.sh. It is
+# downloaded beside it, checked, and moved over it: writing into the file
+# bash is running from would corrupt this very run, and a dropped download
+# would leave a broken menu.
+fetch_menu_script() {
+    local tmp=/usr/bin/x-ui.new
+    if ! curl -4fsSL -o "$tmp" https://raw.githubusercontent.com/F4RD1N/x-ui/main/x-ui.sh || ! bash -n "$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        return 1
+    fi
+    chmod +x "$tmp" && mv -f "$tmp" /usr/bin/x-ui
 }
 
 update_menu() {
@@ -145,12 +196,8 @@ update_menu() {
         return 0
     fi
 
-    curl -fLRo /usr/bin/x-ui https://raw.githubusercontent.com/F4RD1N/x-ui/main/x-ui.sh
-    chmod +x ${xui_folder}/x-ui.sh
-    chmod +x /usr/bin/x-ui
-
-    if [[ $? == 0 ]]; then
-        echo -e "${green}Update successful. The panel has automatically restarted.${plain}"
+    if fetch_menu_script; then
+        echo -e "${green}The menu is updated. Run x-ui again to use it.${plain}"
         exit 0
     else
         echo -e "${red}Failed to update the menu.${plain}"
@@ -180,6 +227,11 @@ uninstall() {
         return 0
     fi
 
+    # Undo the server tuning (sysctl file, service drop-in, swapfile...).
+    if [[ -x ${xui_folder}/x-ui ]]; then
+        ${xui_folder}/x-ui tune revert --purge
+    fi
+
     if [[ $release == "alpine" ]]; then
         rc-service x-ui stop
         rc-update del x-ui
@@ -188,6 +240,7 @@ uninstall() {
         systemctl stop x-ui
         systemctl disable x-ui
         rm ${xui_service}/x-ui.service -f
+        rmdir ${xui_service}/x-ui.service.d 2>/dev/null
         systemctl daemon-reload
         systemctl reset-failed
     fi
@@ -298,25 +351,7 @@ check_config() {
             echo -e "${green}Access URL: https://${server_ip}:${existing_port}${existing_webBasePath}${plain}"
         fi
     else
-        echo -e "${red}⚠ WARNING: No SSL certificate configured!${plain}"
-        echo -e "${yellow}You can get a Let's Encrypt certificate for your IP address (valid ~6 days, auto-renews).${plain}"
-        read -rp "Generate SSL certificate for IP now? [y/N]: " gen_ssl
-        if [[ "$gen_ssl" == "y" || "$gen_ssl" == "Y" ]]; then
-            stop >/dev/null 2>&1
-            ssl_cert_issue_for_ip
-            if [[ $? -eq 0 ]]; then
-                echo -e "${green}Access URL: https://${server_ip}:${existing_port}${existing_webBasePath}${plain}"
-                # ssl_cert_issue_for_ip already restarts the panel, but ensure it's running
-                start >/dev/null 2>&1
-            else
-                LOGE "IP certificate setup failed."
-                echo -e "${yellow}You can try again via option 19 (SSL Certificate Management).${plain}"
-                start >/dev/null 2>&1
-            fi
-        else
-            echo -e "${yellow}Access URL: http://${server_ip}:${existing_port}${existing_webBasePath}${plain}"
-            echo -e "${yellow}For security, please configure SSL certificate using option 19 (SSL Certificate Management)${plain}"
-        fi
+        echo -e "${green}Access URL: http://${server_ip}:${existing_port}${existing_webBasePath}${plain}"
     fi
 }
 
@@ -507,9 +542,13 @@ show_log() {
     fi
 }
 
-bbr_menu() {
-    echo -e "${green}\t1.${plain} Enable BBR"
-    echo -e "${green}\t2.${plain} Disable BBR"
+# Server tuning is done by the panel binary ("x-ui tune"), the same code the
+# installer and the service's start run. It only raises limits and can be
+# undone exactly.
+tune_menu() {
+    echo -e "${green}\t1.${plain} Show tuning status"
+    echo -e "${green}\t2.${plain} Apply tuning"
+    echo -e "${green}\t3.${plain} Revert tuning (and keep it off)"
     echo -e "${green}\t0.${plain} Back to Main Menu"
     read -rp "Choose an option: " choice
     case "$choice" in
@@ -517,92 +556,30 @@ bbr_menu() {
         show_menu
         ;;
     1)
-        enable_bbr
-        bbr_menu
+        ${xui_folder}/x-ui tune status
+        before_show_menu
         ;;
     2)
-        disable_bbr
-        bbr_menu
+        ${xui_folder}/x-ui tune apply && confirm_restart
+        before_show_menu
+        ;;
+    3)
+        ${xui_folder}/x-ui tune revert
+        before_show_menu
         ;;
     *)
         echo -e "${red}Invalid option. Please select a valid number.${plain}\n"
-        bbr_menu
+        tune_menu
         ;;
     esac
 }
 
-disable_bbr() {
-
-    if [[ $(sysctl -n net.ipv4.tcp_congestion_control) != "bbr" ]] || [[ ! $(sysctl -n net.core.default_qdisc) =~ ^(fq|cake)$ ]]; then
-        echo -e "${yellow}BBR is not currently enabled.${plain}"
-        before_show_menu
-    fi
-
-    if [ -f "/etc/sysctl.d/99-bbr-x-ui.conf" ]; then
-        old_settings=$(head -1 /etc/sysctl.d/99-bbr-x-ui.conf | tr -d '#')
-        sysctl -w net.core.default_qdisc="${old_settings%:*}"
-        sysctl -w net.ipv4.tcp_congestion_control="${old_settings#*:}"
-        rm /etc/sysctl.d/99-bbr-x-ui.conf
-        sysctl --system
-    else
-        # Replace BBR with CUBIC configurations
-        if [ -f "/etc/sysctl.conf" ]; then
-            sed -i 's/net.core.default_qdisc=fq/net.core.default_qdisc=pfifo_fast/' /etc/sysctl.conf
-            sed -i 's/net.ipv4.tcp_congestion_control=bbr/net.ipv4.tcp_congestion_control=cubic/' /etc/sysctl.conf
-            sysctl -p
-        fi
-    fi
-
-    if [[ $(sysctl -n net.ipv4.tcp_congestion_control) != "bbr" ]]; then
-        echo -e "${green}BBR has been replaced with CUBIC successfully.${plain}"
-    else
-        echo -e "${red}Failed to replace BBR with CUBIC. Please check your system configuration.${plain}"
-    fi
-}
-
-enable_bbr() {
-    if [[ $(sysctl -n net.ipv4.tcp_congestion_control) == "bbr" ]] && [[ $(sysctl -n net.core.default_qdisc) =~ ^(fq|cake)$ ]]; then
-        echo -e "${green}BBR is already enabled!${plain}"
-        before_show_menu
-    fi
-
-    # Enable BBR
-    if [ -d "/etc/sysctl.d/" ]; then
-        {
-            echo "#$(sysctl -n net.core.default_qdisc):$(sysctl -n net.ipv4.tcp_congestion_control)"
-            echo "net.core.default_qdisc = fq"
-            echo "net.ipv4.tcp_congestion_control = bbr"
-        } > "/etc/sysctl.d/99-bbr-x-ui.conf"
-        if [ -f "/etc/sysctl.conf" ]; then
-            # Backup old settings from sysctl.conf, if any
-            sed -i 's/^net.core.default_qdisc/# &/'          /etc/sysctl.conf
-            sed -i 's/^net.ipv4.tcp_congestion_control/# &/' /etc/sysctl.conf
-        fi
-        sysctl --system
-    else
-        sed -i '/net.core.default_qdisc/d' /etc/sysctl.conf
-        sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf
-        echo "net.core.default_qdisc=fq" | tee -a /etc/sysctl.conf
-        echo "net.ipv4.tcp_congestion_control=bbr" | tee -a /etc/sysctl.conf
-        sysctl -p
-    fi
-
-    # Verify that BBR is enabled
-    if [[ $(sysctl -n net.ipv4.tcp_congestion_control) == "bbr" ]]; then
-        echo -e "${green}BBR has been enabled successfully.${plain}"
-    else
-        echo -e "${red}Failed to enable BBR. Please check your system configuration.${plain}"
-    fi
-}
-
 update_shell() {
-    curl -fLRo /usr/bin/x-ui -z /usr/bin/x-ui https://github.com/F4RD1N/x-ui/raw/main/x-ui.sh
-    if [[ $? != 0 ]]; then
+    if ! fetch_menu_script; then
         echo ""
         LOGE "Failed to download script, Please check whether the machine can connect Github"
         before_show_menu
     else
-        chmod +x /usr/bin/x-ui
         LOGI "Upgrade script succeeded, Please rerun the script"
         before_show_menu
     fi
@@ -771,6 +748,22 @@ firewall_menu() {
     esac
 }
 
+# panel_ports lists the TCP ports the panel and its cores listen on (the web
+# and subscription ports, every inbound and sub-inbound), plus sshd's; ports
+# bound to loopback only (the cores' API) need no rule.
+panel_ports() {
+    local ports=() p
+    if command -v ss >/dev/null 2>&1; then
+        while read -r p; do
+            [[ -n "$p" ]] && ports+=("$p")
+        done < <(ss -Hltnp 2>/dev/null | grep -E '"(x-ui|xray-linux-[a-z0-9]+|sshd)"' \
+            | awk '$4 !~ /^(127\.|\[::1\]:)/ {print $4}' | sed -E 's/.*:([0-9]+)$/\1/' | sort -un)
+    fi
+    p=$(${xui_folder}/x-ui setting -show true 2>/dev/null | grep -Eo 'port: [0-9]+' | awk '{print $2}' | head -1)
+    [[ -n "$p" ]] && ports+=("$p")
+    printf '%s\n' "${ports[@]}" | sort -un
+}
+
 install_firewall() {
     if ! command -v ufw &>/dev/null; then
         echo "ufw firewall is not installed. Installing now..."
@@ -784,13 +777,17 @@ install_firewall() {
     if ufw status | grep -q "Status: active"; then
         echo "Firewall is already active"
     else
-        echo "Activating firewall..."
-        # Open the necessary ports
+        # Everything this server listens on for the panel, its inbounds
+        # and SSH stays reachable; enabling ufw blocks all other ports.
+        local ports p
+        ports=$(panel_ports)
+        echo "These TCP ports stay open (panel, inbounds, SSH): $(echo $ports | tr ' ' ',')"
+        echo "UDP inbounds and ports of other programs must be opened with option 3."
+        confirm "Enable the firewall now?" "n" || return 0
         ufw allow ssh
-        ufw allow http
-        ufw allow https
-        ufw allow 2053/tcp #webPort
-        ufw allow 2096/tcp #subport
+        for p in $ports; do
+            ufw allow "$p"
+        done
 
         # Enable the firewall
         ufw --force enable
@@ -913,13 +910,13 @@ delete_ports() {
     fi
 }
 
-update_all_geofiles() {
-    update_geofiles "main"
-    update_geofiles "IR"
-    update_geofiles "RU"
-}
-
+# update_geofiles downloads one set of geo files. Each file is fetched next
+# to the live one and only moved over it when the download completed, so a
+# dropped connection cannot leave a truncated file for the cores to load.
+# It sets geo_changed when a file was replaced, and returns 1 if any failed.
+geo_changed=0
 update_geofiles() {
+    local dat_files dat_source dat remote_file live tmp failed=0
     case "${1}" in
       "main") dat_files=(geoip geosite); dat_source="Loyalsoldier/v2ray-rules-dat";;
         "IR") dat_files=(geoip_IR geosite_IR); dat_source="chocolate4u/Iran-v2ray-rules" ;;
@@ -928,9 +925,49 @@ update_geofiles() {
     for dat in "${dat_files[@]}"; do
         # Remove suffix for remote filename (e.g., geoip_IR -> geoip)
         remote_file="${dat%%_*}"
-        curl -fLRo ${xui_folder}/bin/${dat}.dat -z ${xui_folder}/bin/${dat}.dat \
-            https://github.com/${dat_source}/releases/latest/download/${remote_file}.dat
+        live="${xui_folder}/bin/${dat}.dat"
+        tmp="${live}.download"
+        rm -f "$tmp"
+        if [[ -f "$live" ]]; then
+            curl -fsSLR -o "$tmp" -z "$live" "https://github.com/${dat_source}/releases/latest/download/${remote_file}.dat"
+        else
+            curl -fsSLR -o "$tmp" "https://github.com/${dat_source}/releases/latest/download/${remote_file}.dat"
+        fi
+        if [[ $? -ne 0 ]]; then
+            rm -f "$tmp"
+            LOGE "Download of ${dat}.dat failed; the current file is kept."
+            failed=1
+        elif [[ -s "$tmp" ]]; then
+            mv -f "$tmp" "$live" && geo_changed=1 && echo "Updated ${dat}.dat"
+        else
+            rm -f "$tmp" # not modified since the last download
+            echo "${dat}.dat is up to date"
+        fi
     done
+    return $failed
+}
+
+update_all_geofiles() {
+    local failed=0
+    update_geofiles "main" || failed=1
+    update_geofiles "IR" || failed=1
+    update_geofiles "RU" || failed=1
+    return $failed
+}
+
+# geo_done reports the outcome and restarts the panel only when a file was
+# actually replaced.
+geo_done() {
+    local failed=$1
+    if [[ $failed -ne 0 ]]; then
+        LOGE "Some geo files could not be updated."
+    fi
+    if [[ $geo_changed -eq 1 ]]; then
+        LOGI "Geo files updated; restarting the panel."
+        restart 0
+    elif [[ $failed -eq 0 ]]; then
+        LOGI "Geo files are already up to date."
+    fi
 }
 
 update_geo() {
@@ -941,29 +978,26 @@ update_geo() {
     echo -e "${green}\t0.${plain} Back to Main Menu"
     read -rp "Choose an option: " choice
 
+    geo_changed=0
     case "$choice" in
     0)
         show_menu
         ;;
     1)
         update_geofiles "main"
-        echo -e "${green}Loyalsoldier datasets have been updated successfully!${plain}"
-        restart
+        geo_done $?
         ;;
     2)
         update_geofiles "IR"
-        echo -e "${green}chocolate4u datasets have been updated successfully!${plain}"
-        restart
+        geo_done $?
         ;;
     3)
         update_geofiles "RU"
-        echo -e "${green}runetfreedom datasets have been updated successfully!${plain}"
-        restart
+        geo_done $?
         ;;
     4)
         update_all_geofiles
-        echo -e "${green}All geo files have been updated successfully!${plain}"
-        restart
+        geo_done $?
         ;;
     *)
         echo -e "${red}Invalid option. Please select a valid number.${plain}\n"
@@ -2214,16 +2248,18 @@ show_usage() {
 │  ${blue}x-ui start${plain}                 - Start                            │
 │  ${blue}x-ui stop${plain}                  - Stop                             │
 │  ${blue}x-ui restart${plain}               - Restart                          │
-|  ${blue}x-ui restart-xray${plain}          - Restart Xray                     │
+│  ${blue}x-ui restart-xray${plain}          - Restart Xray                     │
 │  ${blue}x-ui status${plain}                - Current Status                   │
 │  ${blue}x-ui settings${plain}              - Current Settings                 │
+│  ${blue}x-ui setting -h${plain}            - Change settings (the binary)     │
 │  ${blue}x-ui enable${plain}                - Enable Autostart on OS Startup   │
 │  ${blue}x-ui disable${plain}               - Disable Autostart on OS Startup  │
 │  ${blue}x-ui log${plain}                   - Check logs                       │
 │  ${blue}x-ui banlog${plain}                - Check Fail2ban ban logs          │
 │  ${blue}x-ui update${plain}                - Update                           │
 │  ${blue}x-ui update-all-geofiles${plain}   - Update all geo files             │
-│  ${blue}x-ui db="<url>"${plain}            - Replace database from a URL      │
+│  ${blue}x-ui tune${plain}                  - Server tuning (x-ui tune -h)       │
+│  ${blue}x-ui db=\"<url>\"${plain}            - Replace database from a URL      │
 │  ${blue}x-ui install${plain}               - Install                          │
 │  ${blue}x-ui uninstall${plain}             - Uninstall                        │
 └────────────────────────────────────────────────────────────────┘"
@@ -2263,7 +2299,7 @@ show_menu() {
 │  ${green}22.${plain} Firewall Management                       │
 │  ${green}23.${plain} SSH Port Forwarding Management            │
 │────────────────────────────────────────────────│
-│  ${green}24.${plain} Enable BBR                                │
+│  ${green}24.${plain} Server Tuning                             │
 │  ${green}25.${plain} Update Geo Files                          │
 │  ${green}26.${plain} Speedtest by Ookla                        │
 ╚────────────────────────────────────────────────╝
@@ -2345,7 +2381,7 @@ show_menu() {
         SSH_port_forwarding
         ;;
     24)
-        bbr_menu
+        check_install && tune_menu
         ;;
     25)
         update_geo
@@ -2359,7 +2395,7 @@ show_menu() {
     esac
 }
 
-if [[ $# > 0 ]]; then
+if [[ $# -gt 0 ]]; then
     case $1 in
     "start")
         check_install 0 && start 0
@@ -2404,7 +2440,20 @@ if [[ $# > 0 ]]; then
         check_install 0 && uninstall 0
         ;;
     "update-all-geofiles")
-        check_install 0 && update_all_geofiles 0 && restart 0
+        if check_install 0; then
+            geo_changed=0
+            update_all_geofiles
+            rc=$?
+            geo_done $rc
+            exit $rc
+        fi
+        ;;
+    "tune")
+        check_install 0 && { shift; ${xui_folder}/x-ui tune "$@"; exit $?; }
+        ;;
+    "setting" | "migrate" | "cert")
+        # Passed straight to the panel binary (x-ui setting -xrayEgress ...).
+        check_install 0 && { ${xui_folder}/x-ui "$@"; exit $?; }
         ;;
     "db="*)
         check_install 0 && import_db "${1#db=}"

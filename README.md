@@ -48,7 +48,7 @@ dialect change and nothing else.
 Nothing is interactive.
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/F4RD1N/x-ui/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/F4RD1N/x-ui/main/install.sh)
 ```
 
 Defaults: username `fardin`, password `fardin`, port `60000`, path `hetzner`,
@@ -57,11 +57,43 @@ SQLite, no SSL.
 Seed the database from a URL at install time:
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/F4RD1N/x-ui/main/install.sh) db=https://host/x-ui.db
+bash <(curl -fsSL https://raw.githubusercontent.com/F4RD1N/x-ui/main/install.sh) db=https://host/x-ui.db
 ```
 
 Any default can be overridden the same way (`port=`, `user=`, `pass=`, `path=`)
 or through the matching `XUI_*` environment variables.
+
+The installer needs systemd (Debian, Ubuntu, RHEL-family, Arch). It unpacks and
+checks the new release before it stops anything, and puts the previous panel
+back if the new one does not start.
+
+## Server tuning
+
+Every install and update also tunes the server for x-ui (`x-ui tune`):
+
+- the service gets `LimitNOFILE=1048576` (more on large machines),
+  `TasksMax=infinity`, and a `GOMEMLIMIT` sized from the RAM;
+- kernel limits are raised: local port range 10000-65535, accept and SYN
+  queues, TIME_WAIT and orphan limits, socket buffers, conntrack (when it is
+  loaded), BBR with fq;
+- a time-sync client is turned on if none runs (VMess and Shadowsocks 2022
+  reject clients whose clock is off), irqbalance on multi-queue NICs, and a
+  1 GiB swapfile on VMs with less than 1.75 GiB of RAM.
+
+It only ever raises a limit: a value set higher elsewhere (another
+`/etc/sysctl.d` file, `/etc/sysctl.conf`, a drop-in of your own) is kept, and
+so is a choice like `tcp_congestion_control` made in a file of your own. It
+writes only its own files (`/etc/sysctl.d/99-x-ui.conf`,
+`/etc/systemd/system/x-ui.service.d/20-x-ui-tuning.conf`, and a few more listed
+by `x-ui tune -h`) and re-applies the kernel settings each time x-ui starts.
+
+```bash
+x-ui tune status    # what is set, what is kept, and health counters
+x-ui tune apply     # apply now
+x-ui tune revert    # undo exactly, and keep it off for later updates
+```
+
+`bash install.sh tune=off` skips it for one install.
 
 ## Updating
 
@@ -74,7 +106,7 @@ The panel and its core are always replaced together, because a release carries
 the two built against each other. There is still no way to update the core on
 its own.
 
-From the shell it is the same thing:
+From the shell it is the same thing (it also keeps the login):
 
 ```bash
 x-ui update

@@ -25,6 +25,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/sub"
 	"github.com/mhsanaei/3x-ui/v2/util/crypto"
 	"github.com/mhsanaei/3x-ui/v2/util/sys"
+	"github.com/mhsanaei/3x-ui/v2/util/tune"
 	"github.com/mhsanaei/3x-ui/v2/web"
 	"github.com/mhsanaei/3x-ui/v2/web/global"
 	"github.com/mhsanaei/3x-ui/v2/web/service"
@@ -637,6 +638,11 @@ func main() {
 		runWebServer()
 		return
 	}
+	// Server tuning runs before anything opens the database: the unit runs
+	// it as ExecStartPre, and the installer before the panel is configured.
+	if os.Args[1] == "tune" {
+		os.Exit(tune.Main(os.Args[2:], config.GetVersion()))
+	}
 
 	var showVersion bool
 	flag.BoolVar(&showVersion, "v", false, "show version")
@@ -688,6 +694,7 @@ func main() {
 		fmt.Println("    migrate        migrate form other/old x-ui")
 		fmt.Println("    setting        set settings")
 		fmt.Println(`    db="<url>"     replace the database with one downloaded from <url>`)
+		fmt.Println("    tune           server tuning: x-ui tune [status|apply|revert]")
 	}
 
 	flag.Parse()

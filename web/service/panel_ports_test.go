@@ -71,3 +71,30 @@ func TestPanelPortsAreKeptApart(t *testing.T) {
 		t.Errorf("disabled sub server: %v", err)
 	}
 }
+
+// The panel's web port, and the subscription port while that server is on,
+// are reserved along with the inbound ports.
+func TestAddPanelPorts(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XUI_DB_FOLDER", dir)
+	if err := database.InitDB(filepath.Join(dir, "x-ui.db")); err != nil {
+		t.Fatal(err)
+	}
+	defer database.CloseDB()
+	s := &XrayService{}
+	if err := s.settingService.SetPort(60000); err != nil {
+		t.Fatal(err)
+	}
+	s.settingService.saveSetting("subPort", "2096")
+	s.settingService.saveSetting("subEnable", "false")
+	got := map[int]bool{443: true}
+	s.addPanelPorts(got)
+	if !got[443] || !got[60000] || got[2096] {
+		t.Fatalf("sub off: %v", got)
+	}
+	s.settingService.saveSetting("subEnable", "true")
+	s.addPanelPorts(got)
+	if !got[2096] {
+		t.Fatalf("sub on: %v", got)
+	}
+}

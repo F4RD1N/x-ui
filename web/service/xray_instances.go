@@ -891,6 +891,7 @@ func (s *XrayService) applyInstances(force bool) error {
 			reserve[m] = true
 		}
 	}
+	s.addPanelPorts(reserve)
 	syncReservedPorts(reserve)
 	instMu.Lock()
 	templateHost = plan.templateHost

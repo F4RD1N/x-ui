@@ -1,27 +1,34 @@
 # ========================================================
 # Stage: Builder
 # ========================================================
-FROM golang:1.26-alpine AS builder
+# The Go version matches go.mod. The Xray core is built from ./core, the
+# dialect fork in this repository: a stock core would silently drop dialects
+# and the fork's other features.
+FROM golang:1.27.1-alpine AS builder
 WORKDIR /app
-ARG TARGETARCH
+# The image pins GOTOOLCHAIN=local; auto lets the "toolchain go1.27.2" lines
+# of go.mod and core/go.mod fetch the patched Go the release builds use.
+ENV GOTOOLCHAIN=auto
 
 RUN apk --no-cache --update add \
   build-base \
   gcc \
-  curl \
-  unzip
+  curl
 
 COPY . .
 
 ENV CGO_ENABLED=1
 ENV CGO_CFLAGS="-D_LARGEFILE64_SOURCE"
-RUN go build -ldflags "-w -s" -o build/x-ui main.go
-RUN ./DockerInit.sh "$TARGETARCH"
+RUN go build -trimpath -ldflags "-w -s" -o build/x-ui main.go
+RUN mkdir -p build/bin \
+  && cd core \
+  && CGO_ENABLED=0 go build -trimpath -ldflags "-w -s" -o "../build/bin/xray-linux-$(go env GOARCH)" ./main
+RUN ./DockerInit.sh
 
 # ========================================================
-# Stage: Final Image of 3x-ui
+# Stage: Final Image of x-ui
 # ========================================================
-FROM alpine
+FROM alpine:3.22
 ENV TZ=Asia/Tehran
 WORKDIR /app
 
@@ -51,7 +58,7 @@ RUN chmod +x \
   /usr/bin/x-ui
 
 ENV XUI_ENABLE_FAIL2BAN="true"
-EXPOSE 2053
+EXPOSE 60000
 VOLUME [ "/etc/x-ui" ]
 CMD [ "./x-ui" ]
 ENTRYPOINT [ "/app/DockerEntrypoint.sh" ]
