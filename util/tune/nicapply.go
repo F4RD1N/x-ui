@@ -113,7 +113,13 @@ func (e *Env) endAttempts(st *State, r *Result) {
 // RPS. A NIC whose interrupts turn out to be kernel-managed is planned again
 // with them kept.
 func (e *Env) applyNICKernel(f *Facts, st *State, np *nicPlan, no nicOpts, r *Result) *nicPlan {
-	defer dropPending(st)
+	saved := false
+	defer func() {
+		dropPending(st)
+		if saved {
+			_ = e.saveState(st, nil) // without the marks (the caller saves the rest)
+		}
+	}()
 	for round := 0; round < 3; round++ {
 		// Write ahead: a run killed between the writes and the state's
 		// save leaves the values it was writing known as x-ui's.
@@ -122,6 +128,7 @@ func (e *Env) applyNICKernel(f *Facts, st *State, np *nicPlan, no nicOpts, r *Re
 				r.problem("NIC: not changed: saving the state: %v", err)
 				return np
 			}
+			saved = true
 		}
 		managed := false
 		for _, it := range np.NICs {

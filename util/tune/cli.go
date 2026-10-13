@@ -35,7 +35,8 @@ files, and revert undoes exactly what it did.
                               xray instances' CPUs (--boot: raise the queues first)
 
 Time sync, irqbalance's policy and swap are set up by a fresh install and by
-'apply', never by an update, and never against an admin's choice. A NIC's
+'apply', never by an update, and never against an admin's choice (any apply
+removes the policy where it would hide an admin's IRQBALANCE_ARGS). A NIC's
 queue count is only raised, at boot (x-ui-nic.service) or by 'queues --now';
 revert leaves it until the next reboot. Sysctl files whose names sort after
 51-x-ui.conf win at boot; after changing one, run 'apply'.
