@@ -1,0 +1,99 @@
+x-ui diag 2.9.0-test, 2026-10-13 12:00:00 UTC, kernel 7.0.0-x-ui
+
+Hardware
+  CPUs        2 sockets, 28 cores, 56 CPUs (2 threads per core): Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz
+  NUMA        node 0: CPUs 0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,40,42,44,46,48,50,52,54, 60.5 GiB
+              node 1: CPUs 1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43,45,47,49,51,53,55, 60.5 GiB
+              automatic NUMA balancing on
+  memory      121 GiB
+  machine     bare metal
+
+NIC eno1 (default route v4+v6)
+  device      Intel 82599ES 10-Gigabit SFI/SFP+ [8086:10fb], ixgbe, PCI 0000:82:00.0, NUMA node 1
+  link        up, 10 Gb/s
+  queues      56 of 56 (RSS uses 16)
+  RSS table   128 entries, even over queues 0-15
+  hashing     tcp4 IPs and ports, udp4 IPs only, tcp6 IPs and ports, udp6 IPs only
+  offloads    on: gro gso rx rxhash rxvlan sg tso tx txvlan; off: lro ntuple
+  RSS IRQs    q0 11 xray-3    q1 13 xray-3    q2 15 xray-4    q3 17 xray-4
+              q4 19 xray-4    q5 21 xray-5    q6 23 xray-5    q7 25 xray-6
+              q8 27 xray-6    q9 29 xray-6    q10 31 xray-7   q11 33 xray-7
+              q12 35 xray-8   q13 37 xray-8   q14 39 xray-8   q15 41 xray-9
+  other IRQs  q16 1 xray-1     q17 3 xray-1     q18 5 xray-2
+              q19 7 xray-2     q20 9 xray-2     q21 43 xray-9
+              q22 45 xray-10   q23 47 xray-10   q24 49 xray-10
+              q25 51 free      q26 53 free      q27 55 free
+              q28 1 xray-1     q29 3 xray-1     q30 5 xray-2
+              q31 7 xray-2     q32 9 xray-2     q33 43 xray-9
+              q34 45 xray-10   q35 47 xray-10   q36 49 xray-10
+              q37 51 free      q38 53 free      q39 55 free
+              q40 1 xray-1     q41 3 xray-1     q42 5 xray-2
+              q43 7 xray-2     q44 9 xray-2     q45 43 xray-9
+              q46 45 xray-10   q47 47 xray-10   q48 49 xray-10
+              q49 51 free      q50 53 free      q51 55 free
+              q52 1 xray-1     q53 3 xray-1     q54 5 xray-2
+              q55 7 xray-2
+  siblings    RSS interrupts on both threads of 11/39, 13/41
+  irqbalance  installed, not running
+  XPS         56 of 56 queues set; CPUs by where their queue's interrupt runs: itself 7, its node 21, another node 28
+  RPS/RFS     off (multi-queue)
+
+Sample (3 s)
+  CPU         22.9% busy on average, 2.9% softirq, 0% steal
+  hottest     CPU 11: 27% busy, 7% softirq (xray-3; eno1 q0)
+              CPU 13: 27% busy, 7% softirq (xray-3; eno1 q1)
+              CPU 15: 27% busy, 7% softirq (xray-4; eno1 q2)
+              CPU 17: 27% busy, 7% softirq (xray-4; eno1 q3)
+              CPU 19: 27% busy, 7% softirq (xray-4; eno1 q4)
+  eno1        rx 10.00 Gb/s 1.00M pkt/s, tx 8.80 Gb/s 900.0k pkt/s; dropped 0, errors 0
+              RSS queues 0-15 got 80% of the received packets
+              counters fdir_overflow +3 (60811), rx_missed_errors +0 (175000)
+  softnet     dropped +0 (0 since boot), time_squeeze 0/s (0 since boot)
+  TCP listen  overflows +0, drops +0
+
+Xray instances (10 running)
+  xray-1      pid 2001, CPUs 0-4 (nodes 0 and 1), 30% busy, 40 threads, 512 MiB
+              open files 20 of 2097152, TCP 3700, UDP ports 50 of 55536 (76.164.201.35)
+              NIC interrupts on its CPUs: RSS 0 (share 1.6), other 8; softirq 1.3%
+  xray-2      pid 2002, CPUs 5-9 (nodes 0 and 1), 30% busy, 40 threads, 512 MiB
+              open files 20 of 2097152, TCP 3710, UDP ports 50 of 55536 (76.164.201.36)
+              NIC interrupts on its CPUs: RSS 0 (share 1.6), other 11; softirq 1.3%
+  xray-3      pid 2003, CPUs 10-14 (nodes 0 and 1), 30% busy, 40 threads, 512 MiB
+              open files 20 of 2097152, TCP 3720, UDP ports 50 of 55536 (76.164.201.37)
+              NIC interrupts on its CPUs: RSS 2 (share 1.6), other 0; softirq 3.6%
+  xray-4      pid 2004, CPUs 15-19 (nodes 0 and 1), 30% busy, 40 threads, 512 MiB
+              open files 20 of 2097152, TCP 3730, UDP ports 50 of 55536 (76.164.201.38)
+              NIC interrupts on its CPUs: RSS 3 (share 1.6), other 0; softirq 4.7%
+  xray-5      pid 2005, CPUs 20-24 (nodes 0 and 1), 30% busy, 40 threads, 512 MiB
+              open files 20 of 2097152, TCP 3740, UDP ports 50 of 55536 (76.164.201.39)
+              NIC interrupts on its CPUs: RSS 2 (share 1.6), other 0; softirq 3.6%
+  xray-6      pid 2006, CPUs 25-29 (nodes 0 and 1), 30% busy, 40 threads, 512 MiB
+              open files 20 of 2097152, TCP 3750, UDP ports 50 of 55536 (76.164.201.40)
+              NIC interrupts on its CPUs: RSS 3 (share 1.6), other 0; softirq 4.7%
+  xray-7      pid 2007, CPUs 30-34 (nodes 0 and 1), 30% busy, 40 threads, 512 MiB
+              open files 20 of 2097152, TCP 3760, UDP ports 50 of 55536 (76.164.201.41)
+              NIC interrupts on its CPUs: RSS 2 (share 1.6), other 0; softirq 3.6%
+  xray-8      pid 2008, CPUs 35-39 (nodes 0 and 1), 30% busy, 40 threads, 512 MiB
+              open files 20 of 2097152, TCP 3770, UDP ports 50 of 55536 (76.164.201.42)
+              NIC interrupts on its CPUs: RSS 3 (share 1.6), other 0; softirq 4.7%
+  xray-9      pid 2009, CPUs 40-44 (nodes 0 and 1), 30% busy, 40 threads, 512 MiB
+              open files 20 of 2097152, TCP 3780, UDP ports 50 of 55536 (76.164.201.43)
+              NIC interrupts on its CPUs: RSS 1 (share 1.6), other 3; softirq 2.4%
+  xray-10     pid 2010, CPUs 45-49 (nodes 0 and 1), 30% busy, 40 threads, 512 MiB
+              open files 20 of 2097152, TCP 3790, UDP ports 50 of 55536 (76.164.201.44)
+              NIC interrupts on its CPUs: RSS 0 (share 1.6), other 9; softirq 1.3%
+
+TCP
+  sockets     37000 in use (+1200 IPv6), orphans 12 of 262144, TIME_WAIT 4100 of 2000000
+  memory      12000 pages; pressure at 1983242, limit 2974860 (tcp_mem)
+  listen      overflows 0, drops 0 since boot; aborts for lack of memory 0
+  conntrack   74000 of 8388608 entries
+  open files  41000 of 9223372036854775807 on the system
+
+Warnings
+  - eno1 flow director overflowed (+3): TCP flows fall back to the RSS queues
+  - eno1 hashes UDP on IP addresses only: x-ui tune apply
+  - eno1: RSS interrupts on both threads of 2 cores (11/39, 13/41) while 14 cores have no queue interrupt: x-ui tune apply
+  - RSS interrupts uneven: xray-4, xray-6, xray-8 hold 3; xray-1, xray-2, xray-10 none (share 1.6): x-ui tune apply
+  - eno1: 28 CPUs send on queues whose interrupt is on another NUMA node (XPS): x-ui tune apply
+  - every xray instance spans NUMA nodes 0 and 1 and shares cores with another instance

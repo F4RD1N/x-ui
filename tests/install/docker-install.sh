@@ -21,6 +21,9 @@
 #     update, "x-ui tune apply" brings it back;
 #   - a broken tarball in update mode leaves the running panel untouched;
 #     bad arguments and an unsupported CPU are refused before anything changes;
+#   - the install ends with the "Detected:/Configured:" summary, which says
+#     the container's NIC is left to the host; "x-ui diag" and its --json run
+#     (the JSON parses), and no NIC unit or irqbalance drop-in is written;
 #   - a restart takes well under TimeoutStopSec and logs no core crash;
 #   - uninstall leaves no tuning files behind.
 #
@@ -102,6 +105,12 @@ exit 1
 SH
 }
 
+# diag_json: "x-ui diag --json" parses (with the host's python3; the test
+# images have none).
+diag_json() {
+    in_c 'x-ui diag --json --seconds 1' | python3 -m json.tool >/dev/null
+}
+
 wait_panel() { # port path
     local i
     for i in $(seq 1 20); do
@@ -147,8 +156,13 @@ run_distro() {
     check "login fardin/fardin" login 60000 hetzner fardin fardin
     check "wrong password refused" not login 60000 hetzner fardin nope
     check "inbound added, its core listens on 8443" add_inbound
+    check "x-ui diag runs and finds the core" in_c 'x-ui diag --seconds 1 >/root/diag.txt 2>&1 && grep -q "^Hardware" /root/diag.txt && grep -q "^  xray-1 " /root/diag.txt'
+    check "x-ui diag --json parses" diag_json
     check "read-only sysctls reported, not fatal" in_c 'grep -q "kernel settings are read-only" /root/install1.log'
     check "summary has a tuning line" in_c 'grep -q "Tuning:   applied" /root/install1.log'
+    check "install prints Detected: and Configured:" in_c 'grep -q "^  Detected:" /root/install1.log && grep -q "^  Configured:" /root/install1.log'
+    check "summary leaves the NIC to the host" in_c 'grep -q "NIC: left to the host (container)" /root/install1.log'
+    check "no NIC unit, no irqbalance drop-in" in_c '[[ ! -e /etc/systemd/system/x-ui-nic.service && ! -e /etc/systemd/system/irqbalance.service.d/90-x-ui.conf ]]'
     check "deps installed by install.sh" in_c 'command -v curl >/dev/null && [[ -e /usr/share/zoneinfo/UTC ]]'
 
     local props
@@ -255,7 +269,7 @@ chmod +x /usr/local/bin/curl'
     check "x-ui setting passes through to the binary" in_c 'x-ui setting -show true | grep -q "port: 61000"'
     check "firewall keeps the panel and inbound ports" in_c 'xui_folder=/usr/local/x-ui; source <(sed -n "/^panel_ports() {/,/^}/p" /usr/bin/x-ui);
         p=$(panel_ports | tr "\n" " "); echo "    ports: $p"; [[ " $p " == *" 61000 "* && " $p " == *" 8443 "* ]]'
-    check "x-ui help prints the usage" in_c 'x-ui help | grep -q "x-ui tune"'
+    check "x-ui help prints the usage" in_c 'x-ui help | grep -q "x-ui tune" && x-ui help | grep -q "x-ui diag"'
 
     # ---- uninstall leaves nothing behind ------------------------------------
     check "uninstall" in_c 'echo y | x-ui uninstall >/root/uninstall.log 2>&1; true'

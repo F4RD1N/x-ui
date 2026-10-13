@@ -1,0 +1,13 @@
+Detected:
+  2 sockets, 28 cores, 56 CPUs (2 threads per core), 2 NUMA nodes, 121 GiB RAM
+  eno1: Intel 82599ES 10-Gigabit SFI/SFP+ (ixgbe), 10 Gb/s, NUMA node 1, 56 queues (RSS uses 16)
+  Xray: 10 instances running
+Configured:
+  Xray CPUs: whole cores but one shared with a neighbour, one NUMA node each (node 1: xray-1..5; node 0: xray-6..10); 6 CPUs free
+  NIC eno1: 56 queues, kept (RSS uses 16)
+  UDP hashing eno1: IPs and ports (was IPs only)
+  Interrupts eno1: one queue per CPU; RSS 1 per instance, 6 on free CPUs
+  XPS eno1: each CPU sends on its own queue
+  Open files: 2097152 per process (x-ui and its cores)
+  Conntrack: max 8388608 (kept: /etc/sysctl.d/90-edge-proxy.conf)
+  Backlog: somaxconn 65535, netdev_max_backlog 16384, tcp_max_syn_backlog 65536

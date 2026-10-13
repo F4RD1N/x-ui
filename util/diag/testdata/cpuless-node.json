@@ -1,0 +1,993 @@
+{
+  "time": "2026-10-13T12:00:00Z",
+  "version": "2.9.0-test",
+  "kernel": "6.8.0-1-amd64",
+  "seconds": 3,
+  "root": true,
+  "hardware": {
+    "sockets": 2,
+    "cores": 16,
+    "cpus": 32,
+    "threads_per_core": 2,
+    "mem_bytes": 137438953472,
+    "model": "Fake CPU",
+    "virt": "",
+    "container": false,
+    "numa_balancing": "on",
+    "nodes": [
+      {
+        "id": 0,
+        "cpus": "0-7,16-23",
+        "mem_bytes": 34359738368
+      },
+      {
+        "id": 1,
+        "cpus": "8-15,24-31",
+        "mem_bytes": 34359738368
+      },
+      {
+        "id": 2,
+        "cpus": "",
+        "mem_bytes": 68719476736,
+        "memory_only": true
+      }
+    ]
+  },
+  "nics": [
+    {
+      "name": "eno1",
+      "via": [],
+      "routes": "v4",
+      "driver": "ixgbe",
+      "pci": "0000:01:00.0",
+      "vendor": "8086",
+      "device": "10fb",
+      "model": "Intel 82599ES 10-Gigabit SFI/SFP+",
+      "node": 0,
+      "speed_mbps": 10000,
+      "up": true,
+      "carrier": true,
+      "channels": {
+        "max_rx": 0,
+        "max_tx": 0,
+        "max_other": 1,
+        "max_combined": 32,
+        "rx": 0,
+        "tx": 0,
+        "other": 1,
+        "combined": 32
+      },
+      "queues": 32,
+      "rss": {
+        "size": 128,
+        "queues": 16,
+        "used": "0-15",
+        "even": true
+      },
+      "hash": {
+        "tcp4": "sdfn",
+        "tcp6": "sdfn",
+        "udp4": "sd",
+        "udp6": "sd"
+      },
+      "offloads": {
+        "gro": true,
+        "gso": true,
+        "lro": false,
+        "ntuple": false,
+        "rx": true,
+        "rxhash": true,
+        "rxvlan": true,
+        "sg": true,
+        "tso": true,
+        "tx": true,
+        "txvlan": true
+      },
+      "irqs": [
+        {
+          "irq": 100,
+          "name": "eno1-TxRx-0",
+          "queue": 0,
+          "kind": "txrx",
+          "rss": true,
+          "cpus": "0-7,16-23",
+          "effective": "0",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 101,
+          "name": "eno1-TxRx-1",
+          "queue": 1,
+          "kind": "txrx",
+          "rss": true,
+          "cpus": "0-7,16-23",
+          "effective": "1",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 102,
+          "name": "eno1-TxRx-2",
+          "queue": 2,
+          "kind": "txrx",
+          "rss": true,
+          "cpus": "0-7,16-23",
+          "effective": "2",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 103,
+          "name": "eno1-TxRx-3",
+          "queue": 3,
+          "kind": "txrx",
+          "rss": true,
+          "cpus": "0-7,16-23",
+          "effective": "3",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 104,
+          "name": "eno1-TxRx-4",
+          "queue": 4,
+          "kind": "txrx",
+          "rss": true,
+          "cpus": "0-7,16-23",
+          "effective": "4",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 105,
+          "name": "eno1-TxRx-5",
+          "queue": 5,
+          "kind": "txrx",
+          "rss": true,
+          "cpus": "0-7,16-23",
+          "effective": "5",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 106,
+          "name": "eno1-TxRx-6",
+          "queue": 6,
+          "kind": "txrx",
+          "rss": true,
+          "cpus": "0-7,16-23",
+          "effective": "6",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 107,
+          "name": "eno1-TxRx-7",
+          "queue": 7,
+          "kind": "txrx",
+          "rss": true,
+          "cpus": "0-7,16-23",
+          "effective": "7",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 108,
+          "name": "eno1-TxRx-8",
+          "queue": 8,
+          "kind": "txrx",
+          "rss": true,
+          "cpus": "0-7,16-23",
+          "effective": "16",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 109,
+          "name": "eno1-TxRx-9",
+          "queue": 9,
+          "kind": "txrx",
+          "rss": true,
+          "cpus": "0-7,16-23",
+          "effective": "17",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 110,
+          "name": "eno1-TxRx-10",
+          "queue": 10,
+          "kind": "txrx",
+          "rss": true,
+          "cpus": "0-7,16-23",
+          "effective": "18",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 111,
+          "name": "eno1-TxRx-11",
+          "queue": 11,
+          "kind": "txrx",
+          "rss": true,
+          "cpus": "0-7,16-23",
+          "effective": "19",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 112,
+          "name": "eno1-TxRx-12",
+          "queue": 12,
+          "kind": "txrx",
+          "rss": true,
+          "cpus": "0-7,16-23",
+          "effective": "20",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 113,
+          "name": "eno1-TxRx-13",
+          "queue": 13,
+          "kind": "txrx",
+          "rss": true,
+          "cpus": "0-7,16-23",
+          "effective": "21",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 114,
+          "name": "eno1-TxRx-14",
+          "queue": 14,
+          "kind": "txrx",
+          "rss": true,
+          "cpus": "0-7,16-23",
+          "effective": "22",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 115,
+          "name": "eno1-TxRx-15",
+          "queue": 15,
+          "kind": "txrx",
+          "rss": true,
+          "cpus": "0-7,16-23",
+          "effective": "23",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 116,
+          "name": "eno1-TxRx-16",
+          "queue": 16,
+          "kind": "txrx",
+          "rss": false,
+          "cpus": "0-7,16-23",
+          "effective": "0",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 117,
+          "name": "eno1-TxRx-17",
+          "queue": 17,
+          "kind": "txrx",
+          "rss": false,
+          "cpus": "0-7,16-23",
+          "effective": "1",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 118,
+          "name": "eno1-TxRx-18",
+          "queue": 18,
+          "kind": "txrx",
+          "rss": false,
+          "cpus": "0-7,16-23",
+          "effective": "2",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 119,
+          "name": "eno1-TxRx-19",
+          "queue": 19,
+          "kind": "txrx",
+          "rss": false,
+          "cpus": "0-7,16-23",
+          "effective": "3",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 120,
+          "name": "eno1-TxRx-20",
+          "queue": 20,
+          "kind": "txrx",
+          "rss": false,
+          "cpus": "0-7,16-23",
+          "effective": "4",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 121,
+          "name": "eno1-TxRx-21",
+          "queue": 21,
+          "kind": "txrx",
+          "rss": false,
+          "cpus": "0-7,16-23",
+          "effective": "5",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 122,
+          "name": "eno1-TxRx-22",
+          "queue": 22,
+          "kind": "txrx",
+          "rss": false,
+          "cpus": "0-7,16-23",
+          "effective": "6",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 123,
+          "name": "eno1-TxRx-23",
+          "queue": 23,
+          "kind": "txrx",
+          "rss": false,
+          "cpus": "0-7,16-23",
+          "effective": "7",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 124,
+          "name": "eno1-TxRx-24",
+          "queue": 24,
+          "kind": "txrx",
+          "rss": false,
+          "cpus": "0-7,16-23",
+          "effective": "16",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 125,
+          "name": "eno1-TxRx-25",
+          "queue": 25,
+          "kind": "txrx",
+          "rss": false,
+          "cpus": "0-7,16-23",
+          "effective": "17",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 126,
+          "name": "eno1-TxRx-26",
+          "queue": 26,
+          "kind": "txrx",
+          "rss": false,
+          "cpus": "0-7,16-23",
+          "effective": "18",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 127,
+          "name": "eno1-TxRx-27",
+          "queue": 27,
+          "kind": "txrx",
+          "rss": false,
+          "cpus": "0-7,16-23",
+          "effective": "19",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 128,
+          "name": "eno1-TxRx-28",
+          "queue": 28,
+          "kind": "txrx",
+          "rss": false,
+          "cpus": "0-7,16-23",
+          "effective": "20",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 129,
+          "name": "eno1-TxRx-29",
+          "queue": 29,
+          "kind": "txrx",
+          "rss": false,
+          "cpus": "0-7,16-23",
+          "effective": "21",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 130,
+          "name": "eno1-TxRx-30",
+          "queue": 30,
+          "kind": "txrx",
+          "rss": false,
+          "cpus": "0-7,16-23",
+          "effective": "22",
+          "owner": "xray-1"
+        },
+        {
+          "irq": 131,
+          "name": "eno1-TxRx-31",
+          "queue": 31,
+          "kind": "txrx",
+          "rss": false,
+          "cpus": "0-7,16-23",
+          "effective": "23",
+          "owner": "xray-1"
+        }
+      ],
+      "other_irqs": [
+        132
+      ],
+      "rss_siblings": [
+        "0/16",
+        "1/17",
+        "2/18",
+        "3/19",
+        "4/20",
+        "5/21",
+        "6/22",
+        "7/23"
+      ],
+      "irqbalance": {
+        "installed": false,
+        "running": false,
+        "x_ui_policy": false,
+        "drop_in": false,
+        "banned": false
+      },
+      "xps": {
+        "available": true,
+        "queues": 32,
+        "set": 32,
+        "own": 16,
+        "core": 0,
+        "node": 0,
+        "remote": 16,
+        "none": 0,
+        "map": {
+          "tx-0": "0",
+          "tx-1": "1",
+          "tx-10": "18",
+          "tx-11": "19",
+          "tx-12": "20",
+          "tx-13": "21",
+          "tx-14": "22",
+          "tx-15": "23",
+          "tx-16": "8",
+          "tx-17": "9",
+          "tx-18": "10",
+          "tx-19": "11",
+          "tx-2": "2",
+          "tx-20": "12",
+          "tx-21": "13",
+          "tx-22": "14",
+          "tx-23": "15",
+          "tx-24": "24",
+          "tx-25": "25",
+          "tx-26": "26",
+          "tx-27": "27",
+          "tx-28": "28",
+          "tx-29": "29",
+          "tx-3": "3",
+          "tx-30": "30",
+          "tx-31": "31",
+          "tx-4": "4",
+          "tx-5": "5",
+          "tx-6": "6",
+          "tx-7": "7",
+          "tx-8": "16",
+          "tx-9": "17"
+        }
+      },
+      "rps": {
+        "on": false
+      },
+      "managed_by_x_ui": false
+    }
+  ],
+  "sample": {
+    "seconds": 3,
+    "cpus": [
+      {
+        "cpu": 0,
+        "busy": 16.3,
+        "softirq": 3,
+        "steal": 0
+      },
+      {
+        "cpu": 1,
+        "busy": 16.3,
+        "softirq": 3,
+        "steal": 0
+      },
+      {
+        "cpu": 2,
+        "busy": 16.3,
+        "softirq": 3,
+        "steal": 0
+      },
+      {
+        "cpu": 3,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 4,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 5,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 6,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 7,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 8,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 9,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 10,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 11,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 12,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 13,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 14,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 15,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 16,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 17,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 18,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 19,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 20,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 21,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 22,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 23,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 24,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 25,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 26,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 27,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 28,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 29,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 30,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      },
+      {
+        "cpu": 31,
+        "busy": 14,
+        "softirq": 0.7,
+        "steal": 0
+      }
+    ],
+    "busy": 14.2,
+    "softirq": 0.9,
+    "steal": 0,
+    "nics": [
+      {
+        "name": "eno1",
+        "rx_bps": 213333333.3,
+        "tx_bps": 187733333.3,
+        "rx_pps": 21333.3,
+        "tx_pps": 19200,
+        "dropped": 0,
+        "errors": 0,
+        "counters": {
+          "fdir_overflow": {
+            "delta": 0,
+            "total": 0
+          },
+          "rx_missed_errors": {
+            "delta": 0,
+            "total": 0
+          },
+          "rx_no_buffer_count": {
+            "delta": 0,
+            "total": 0
+          }
+        },
+        "queues": [
+          {
+            "q": 0,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": true
+          },
+          {
+            "q": 1,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": true
+          },
+          {
+            "q": 2,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": true
+          },
+          {
+            "q": 3,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": true
+          },
+          {
+            "q": 4,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": true
+          },
+          {
+            "q": 5,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": true
+          },
+          {
+            "q": 6,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": true
+          },
+          {
+            "q": 7,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": true
+          },
+          {
+            "q": 8,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": true
+          },
+          {
+            "q": 9,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": true
+          },
+          {
+            "q": 10,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": true
+          },
+          {
+            "q": 11,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": true
+          },
+          {
+            "q": 12,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": true
+          },
+          {
+            "q": 13,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": true
+          },
+          {
+            "q": 14,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": true
+          },
+          {
+            "q": 15,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": true
+          },
+          {
+            "q": 16,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": false
+          },
+          {
+            "q": 17,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": false
+          },
+          {
+            "q": 18,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": false
+          },
+          {
+            "q": 19,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": false
+          },
+          {
+            "q": 20,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": false
+          },
+          {
+            "q": 21,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": false
+          },
+          {
+            "q": 22,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": false
+          },
+          {
+            "q": 23,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": false
+          },
+          {
+            "q": 24,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": false
+          },
+          {
+            "q": 25,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": false
+          },
+          {
+            "q": 26,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": false
+          },
+          {
+            "q": 27,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": false
+          },
+          {
+            "q": 28,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": false
+          },
+          {
+            "q": 29,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": false
+          },
+          {
+            "q": 30,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": false
+          },
+          {
+            "q": 31,
+            "rx_pps": 666.7,
+            "irq_rate": 0,
+            "rss": false
+          }
+        ],
+        "rss_share": 50
+      }
+    ],
+    "softnet": {
+      "drops": 0,
+      "squeeze": 0,
+      "squeeze_per_second": 0,
+      "drops_total": 0,
+      "squeeze_total": 0
+    },
+    "listen": {
+      "overflows": 0,
+      "drops": 0
+    },
+    "abort_on_memory": 0
+  },
+  "instances": [
+    {
+      "name": "xray-1",
+      "pid": 2001,
+      "cpu_pct": 18.8,
+      "cpus": "0-7,16-23",
+      "nodes": [
+        0
+      ],
+      "threads": 40,
+      "fds": 20,
+      "fd_limit": 2097152,
+      "rss_bytes": 536870912,
+      "tcp": 0,
+      "udp": {
+        "ip": "",
+        "used": 0,
+        "pool": 55536
+      },
+      "nic_irqs": {
+        "rss": 16,
+        "other": 16,
+        "share": 8
+      },
+      "softirq_pct": 1.1,
+      "config": "/usr/local/x-ui/bin/config-xray-1.json"
+    },
+    {
+      "name": "xray-2",
+      "pid": 2002,
+      "cpu_pct": 12.5,
+      "cpus": "8-15,24-31",
+      "nodes": [
+        1
+      ],
+      "threads": 40,
+      "fds": 20,
+      "fd_limit": 2097152,
+      "rss_bytes": 536870912,
+      "tcp": 0,
+      "udp": {
+        "ip": "",
+        "used": 0,
+        "pool": 55536
+      },
+      "nic_irqs": {
+        "rss": 0,
+        "other": 0,
+        "share": 8
+      },
+      "softirq_pct": 0.7,
+      "config": "/usr/local/x-ui/bin/config-xray-2.json"
+    }
+  ],
+  "tcp": {
+    "inuse": 37000,
+    "inuse6": 1200,
+    "orphans": 12,
+    "max_orphans": 262144,
+    "time_wait": 4100,
+    "max_time_wait": 2000000,
+    "mem_pages": 12000,
+    "tcp_mem": [
+      1487430,
+      1983242,
+      2974860
+    ],
+    "listen_overflows": 0,
+    "listen_drops": 0,
+    "abort_on_memory": 0,
+    "conntrack": null,
+    "files": {
+      "count": 41000,
+      "max": 9223372036854775807
+    },
+    "udp_pool": 55536
+  },
+  "warnings": [
+    "eno1 hashes UDP on IP addresses only: x-ui tune apply",
+    "eno1: RSS interrupts on both threads of 8 cores (0/16, 1/17, 2/18, 3/19 and 4 more) while 8 cores have no queue interrupt: x-ui tune apply",
+    "RSS interrupts uneven: xray-1 holds 16; xray-2 none (share 8): x-ui tune apply",
+    "eno1: 16 CPUs send on queues whose interrupt is on another NUMA node (XPS): x-ui tune apply"
+  ]
+}

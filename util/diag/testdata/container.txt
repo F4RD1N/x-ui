@@ -1,0 +1,31 @@
+x-ui diag 2.9.0-test, 2026-10-13 12:00:00 UTC, kernel 6.8.0-1-amd64
+
+Hardware
+  CPUs        1 socket, 8 cores, 16 CPUs (2 threads per core): Intel(R) Core(TM) i7-10700 CPU @ 2.90GHz
+  memory      32 GiB
+  machine     a container (docker): the host owns the NICs
+
+Network
+  uplink      the default route leaves through eth0 (a container's veth link): no NIC under it
+
+Sample (3 s)
+  CPU         7% busy on average, 0.3% softirq, 0% steal
+  hottest     CPU 0: 7% busy, 0.3% softirq
+              CPU 1: 7% busy, 0.3% softirq
+              CPU 2: 7% busy, 0.3% softirq
+              CPU 3: 7% busy, 0.3% softirq
+              CPU 4: 7% busy, 0.3% softirq
+  softnet     dropped +0 (0 since boot), time_squeeze 0/s (0 since boot)
+  TCP listen  overflows +0, drops +0
+
+Xray instances (1 running)
+  xray-1      pid 2001, all CPUs, 1.9% busy, 40 threads, 512 MiB
+              open files 20 of 2097152, TCP 0, UDP ports 0 of 55536 (the default address)
+
+TCP
+  sockets     37000 in use (+1200 IPv6), orphans 12 of 262144, TIME_WAIT 4100 of 2000000
+  memory      12000 pages; pressure at 1983242, limit 2974860 (tcp_mem)
+  listen      overflows 0, drops 0 since boot; aborts for lack of memory 0
+  open files  41000 of 9223372036854775807 on the system
+
+Warnings: none

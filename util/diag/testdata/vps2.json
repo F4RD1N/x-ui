@@ -1,0 +1,221 @@
+{
+  "time": "2026-10-13T12:00:00Z",
+  "version": "2.9.0-test",
+  "kernel": "6.8.0-1-amd64",
+  "seconds": 3,
+  "root": true,
+  "hardware": {
+    "sockets": 1,
+    "cores": 2,
+    "cpus": 2,
+    "threads_per_core": 1,
+    "mem_bytes": 2147483648,
+    "model": "Intel Xeon Processor (Skylake, IBRS)",
+    "virt": "kvm",
+    "container": false,
+    "numa_balancing": "off",
+    "nodes": [
+      {
+        "id": 0,
+        "cpus": "0-1",
+        "mem_bytes": 2147483648
+      }
+    ]
+  },
+  "nics": [
+    {
+      "name": "eth0",
+      "via": [],
+      "routes": "v4+v6",
+      "driver": "virtio_net",
+      "pci": "0000:00:03.0",
+      "vendor": "1af4",
+      "device": "1000",
+      "model": "Red Hat Virtio network device",
+      "node": -1,
+      "speed_mbps": 0,
+      "up": true,
+      "carrier": true,
+      "channels": {
+        "max_rx": 0,
+        "max_tx": 0,
+        "max_other": 0,
+        "max_combined": 1,
+        "rx": 0,
+        "tx": 0,
+        "other": 0,
+        "combined": 1
+      },
+      "queues": 1,
+      "rss": null,
+      "hash": {},
+      "offloads": {
+        "gro": true,
+        "gso": true,
+        "lro": false,
+        "ntuple": false,
+        "rx": true,
+        "rxhash": true,
+        "rxvlan": true,
+        "sg": true,
+        "tso": true,
+        "tx": true,
+        "txvlan": true
+      },
+      "irqs": [
+        {
+          "irq": 101,
+          "name": "virtio1-input.0",
+          "queue": 0,
+          "kind": "rx",
+          "rss": true,
+          "cpus": "0-1",
+          "effective": "0"
+        },
+        {
+          "irq": 102,
+          "name": "virtio1-output.0",
+          "queue": 0,
+          "kind": "tx",
+          "rss": false,
+          "cpus": "0-1",
+          "effective": "0"
+        }
+      ],
+      "other_irqs": [
+        100
+      ],
+      "irqbalance": {
+        "installed": false,
+        "running": false,
+        "x_ui_policy": false,
+        "drop_in": false,
+        "banned": false
+      },
+      "xps": {
+        "available": false,
+        "note": "one transmit queue",
+        "queues": 0,
+        "set": 0,
+        "own": 0,
+        "core": 0,
+        "node": 0,
+        "remote": 0,
+        "none": 0
+      },
+      "rps": {
+        "on": false
+      },
+      "managed_by_x_ui": false,
+      "notes": [
+        "RSS table: not supported"
+      ]
+    }
+  ],
+  "sample": {
+    "seconds": 3,
+    "cpus": [
+      {
+        "cpu": 0,
+        "busy": 30,
+        "softirq": 10,
+        "steal": 1
+      },
+      {
+        "cpu": 1,
+        "busy": 21,
+        "softirq": 1,
+        "steal": 1
+      }
+    ],
+    "busy": 25.5,
+    "softirq": 5.5,
+    "steal": 1,
+    "nics": [
+      {
+        "name": "eth0",
+        "rx_bps": 144000000,
+        "tx_bps": 133333333.3,
+        "rx_pps": 20000,
+        "tx_pps": 16666.7,
+        "dropped": 0,
+        "errors": 0,
+        "counters": {},
+        "queues": [
+          {
+            "q": 0,
+            "rx_pps": 0,
+            "irq_rate": 0,
+            "rss": true
+          }
+        ]
+      }
+    ],
+    "softnet": {
+      "drops": 0,
+      "squeeze": 0,
+      "squeeze_per_second": 0,
+      "drops_total": 0,
+      "squeeze_total": 0
+    },
+    "listen": {
+      "overflows": 0,
+      "drops": 0
+    },
+    "abort_on_memory": 0
+  },
+  "instances": [
+    {
+      "name": "xray-1",
+      "pid": 2001,
+      "cpu_pct": 20,
+      "cpus": "0-1",
+      "nodes": [
+        0
+      ],
+      "threads": 40,
+      "fds": 300,
+      "fd_limit": 1048576,
+      "rss_bytes": 536870912,
+      "tcp": 812,
+      "udp": {
+        "ip": "",
+        "used": 30,
+        "pool": 55536
+      },
+      "nic_irqs": {
+        "rss": 0,
+        "other": 0,
+        "share": 0
+      },
+      "softirq_pct": 5.5,
+      "config": "/usr/local/x-ui/bin/config-xray-1.json"
+    }
+  ],
+  "tcp": {
+    "inuse": 900,
+    "inuse6": 1200,
+    "orphans": 12,
+    "max_orphans": 2048,
+    "time_wait": 210,
+    "max_time_wait": 8192,
+    "mem_pages": 300,
+    "tcp_mem": [
+      18000,
+      24000,
+      36000
+    ],
+    "listen_overflows": 0,
+    "listen_drops": 0,
+    "abort_on_memory": 0,
+    "conntrack": null,
+    "files": {
+      "count": 2600,
+      "max": 202000
+    },
+    "udp_pool": 55536
+  },
+  "warnings": [
+    "eth0 has one queue and RPS is off: one CPU takes all its packets; x-ui tune apply"
+  ]
+}

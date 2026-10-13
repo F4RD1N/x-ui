@@ -16,9 +16,10 @@
 #
 # The server is tuned for x-ui on every install and update ("x-ui tune": open
 # file limits, kernel network limits, BBR). A fresh install also sets up time
-# sync, irqbalance and swap on tiny VMs; an update leaves those alone. It
-# only raises limits, never lowers one set elsewhere, and "x-ui tune revert"
-# undoes it and keeps it off for later updates.
+# sync and swap on tiny VMs; an update leaves those alone. It only raises
+# limits, never lowers one set elsewhere, and "x-ui tune revert" undoes it and
+# keeps it off for later updates. The install ends with a short summary of the
+# server and of what was set up ("x-ui diag --summary", read-only).
 
 set -uo pipefail
 
@@ -263,8 +264,8 @@ tune_server() {
     else
         : > "$stage/dropin.none"
     fi
-    # Host services (time sync, irqbalance, swap) only on a fresh install: an
-    # update leaves the machine's services as its admin set them up.
+    # Host services (time sync, swap) only on a fresh install: an update
+    # leaves the machine's services as its admin set them up.
     local args=(apply --auto)
     [[ "$XUI_MODE" == "install" ]] && args+=(--host)
     if "$xui_folder/x-ui" tune "${args[@]}" 2>&1 | sed 's/^/  /'; then
@@ -307,6 +308,11 @@ install_x_ui
 configure
 tune_server
 start_x_ui
+
+# What the server is and what x-ui set up on it. It only reads, and it is
+# never a reason for the install to fail.
+echo
+timeout 20 "$xui_folder/x-ui" diag --summary 2>/dev/null | sed 's/^/  /' || true
 
 IP=$(server_ip)
 echo
