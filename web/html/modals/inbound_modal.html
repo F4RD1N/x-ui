@@ -34,25 +34,33 @@
                 inModal.dbInbound.xrayInstance = msg.obj.nextName;
             }
         },
-        // cores the other instances have, leaving out this inbound
+        // cores the other instances have, leaving out this inbound's own
+        // instance. One that only this inbound itself is on goes away when
+        // it moves; one its sub-inbounds are on stays.
         xrayOtherCores() {
             const id = inModal.dbInbound.id;
             const name = (inModal.dbInbound.xrayInstance || "").trim();
             const out = {};
             for (const it of inModal.xrayInfo.instances || []) {
                 if (it.name === name) continue;
-                if (!it.inbounds.some((i) => i.id !== id)) continue;
+                if (!it.inbounds.some((i) => i.id !== id || i.sub)) continue;
                 out[it.name] = it.cores;
             }
             return out;
         },
-        xrayCoresAvailable() {
+        // the most cores this inbound's instance can have
+        xrayCoresMax() {
             const others = inModal.xrayOtherCores();
             let reserved = 0, autos = 0;
             for (const n of Object.values(others)) {
                 if (n > 0) reserved += n; else autos++;
             }
             return inModal.xrayInfo.totalCores - reserved - (autos > 0 ? 1 : 0);
+        },
+        // the cores left free with what the form has now
+        xrayCoresFree() {
+            const own = inModal.coresMode === "fixed" && inModal.dbInbound.xrayCores > 0 ? inModal.dbInbound.xrayCores : 0;
+            return Math.max(0, inModal.xrayCoresMax() - own);
         },
         ok() {
             if (inModal.coresMode === "auto") {
@@ -63,7 +71,7 @@
                     Vue.prototype.$message.error('{{ i18n "pages.inbounds.xrayCoresEmpty" }}');
                     return;
                 }
-                if (inModal.xrayInfo.totalCores > 0 && cores > inModal.xrayCoresAvailable()) {
+                if (inModal.xrayInfo.totalCores > 0 && cores > inModal.xrayCoresMax()) {
                     Vue.prototype.$message.error('{{ i18n "pages.inbounds.xrayCoresTooMany" }}');
                     return;
                 }
@@ -198,8 +206,11 @@
             get xrayTotalCores() {
                 return inModal.xrayInfo.totalCores;
             },
-            get xrayCoresAvailable() {
-                return inModal.xrayCoresAvailable();
+            get xrayCoresMax() {
+                return inModal.xrayCoresMax();
+            },
+            get xrayCoresFree() {
+                return inModal.xrayCoresFree();
             },
             // what this instance gets while on auto, roughly: the cores left
             // after fixed instances, split between the auto instances
@@ -228,7 +239,7 @@
                 if (mode === "auto") {
                     inModal.dbInbound.xrayCores = 0;
                 } else if (!(inModal.dbInbound.xrayCores > 0)) {
-                    inModal.dbInbound.xrayCores = inModal.xrayInfo.totalCores > 0 ? Math.max(1, inModal.xrayCoresAvailable()) : 1;
+                    inModal.dbInbound.xrayCores = inModal.xrayInfo.totalCores > 0 ? Math.max(1, inModal.xrayCoresMax()) : 1;
                 }
             },
             get delayedExpireDays() {

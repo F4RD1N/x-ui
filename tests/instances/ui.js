@@ -140,6 +140,23 @@ const check = (name, ok, detail) => {
     await openEdit();
     const shown = await page.inputValue(coresBox);
     check(label + ': saved fixed cores show as saved (3)', shown === '3', shown);
+    if (label !== 'desktop') {
+      // This inbound has sub-inbounds on instances of their own now: their
+      // cores are not free.
+      const info = await page.evaluate(async () => (await HttpUtil.get('/panel/api/inbounds/xrayInstances')).obj);
+      const id = await page.evaluate(() => inModal.dbInbound.id);
+      const own = info.instances.find((it) => it.inbounds.some((i) => i.id === id && !i.sub)).name;
+      const others = info.instances.filter((it) => it.name !== own);
+      const subCores = others.filter((it) => it.inbounds.some((i) => i.id === id && i.sub)).reduce((a, it) => a + it.cores, 0);
+      const want = info.totalCores - others.reduce((a, it) => a + (it.cores > 0 ? it.cores : 0), 0) - (others.some((it) => !(it.cores > 0)) ? 1 : 0) - 3;
+      const h = await page.textContent('#inbound-modal .xray-instance-hint');
+      const got = +(h.match(/Available:\s*(\d+)/) || [])[1];
+      check(label + ': available counts the sub-inbounds\' cores', subCores >= 2 && got === Math.max(0, want), `shown ${got}, want ${want} (subs hold ${subCores})`);
+      await page.fill(coresBox, '4');
+      await page.waitForTimeout(300);
+      const got4 = +((await page.textContent('#inbound-modal .xray-instance-hint')).match(/Available:\s*(\d+)/) || [])[1];
+      check(label + ': available follows the number typed', got4 === Math.max(0, want - 1), `${got} -> ${got4}`);
+    }
     await page.fill(coresBox, '');
     await page.waitForTimeout(300);
     const modeAfter = await page.$eval('#inbound-modal .ant-form-item:has-text("CPU cores") .ant-radio-button-wrapper-checked', (e) => e.textContent.trim());
