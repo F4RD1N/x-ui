@@ -208,6 +208,9 @@ func renderPolicyScript(pcis []string) string {
 		"case \"${1##*/}\" in\n" + strings.Join(pcis, "|") + ") echo ban=true ;;\nesac\nexit 0\n"
 }
 
+// PolicyBans is the PCI functions x-ui's irqbalance policy script bans.
+func PolicyBans(script string) []string { return scriptPCIs(script) }
+
 // scriptPCIs reads back the PCI functions a policy script bans.
 func scriptPCIs(s string) []string {
 	for _, l := range strings.Split(s, "\n") {

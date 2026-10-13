@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/util/hw"
 )
 
@@ -34,7 +35,7 @@ func (c *ctx) warnings() []string {
 				d := ns.Counters[k].Delta
 				switch {
 				case d == 0 || k == "fdir_overflow":
-				case strings.Contains(k, "allowance"):
+				case strings.Contains(k, "allowance_exceeded"):
 					allowance = append(allowance, fmt.Sprintf("%s +%d", k, d))
 				default:
 					lost = append(lost, fmt.Sprintf("%s +%d", k, d))
@@ -70,7 +71,9 @@ func (c *ctx) warnings() []string {
 					add("%s hashes UDP on IP addresses only (its driver's setting)", nr.Name)
 				}
 			}
-			if nr.RPS.On {
+			// RPS is redundant with a hardware queue per CPU; with fewer
+			// queues it may spread the work (kernel scaling.rst).
+			if nr.RPS.On && nr.Queues >= r.Hardware.CPUs {
 				add("%s has %d queues and RPS is on: it moves packets between CPUs for nothing; clear its queues/rx-*/rps_cpus", nr.Name, nr.Queues)
 			}
 		} else if !nr.RPS.On && r.Hardware.CPUs >= 2 && !r.Hardware.Container {
@@ -113,7 +116,7 @@ func (c *ctx) warnings() []string {
 		}
 	}
 	if len(unruly) > 0 {
-		add("irqbalance runs without x-ui's policy script and moves %s's interrupts: x-ui tune apply, or add %s=%s to IRQBALANCE_ARGS",
+		add("irqbalance runs without x-ui's policy script and moves %s's interrupts: x-ui tune apply (if you set IRQBALANCE_ARGS, add %s=%s to it first)",
 			strings.Join(unruly, " and "), policyFlag, irqbalancePol)
 	}
 	if c.nodesWithCPUs() > 1 {
@@ -168,8 +171,9 @@ func near(count, max int64) bool {
 	return max > 0 && float64(count) >= 0.8*float64(max)
 }
 
-// coresWithoutQueueIRQ counts the cores open to interrupts (a thread online
-// and not isolated) that no uplink's queue interrupt runs on.
+// coresWithoutQueueIRQ counts the cores open to queue interrupts (a thread
+// x-ui tune may put one on: allowed, in the default interrupt affinity, not
+// isolated) that no uplink's queue interrupt runs on.
 func (c *ctx) coresWithoutQueueIRQ() int {
 	if c.topo == nil {
 		return 0
@@ -182,9 +186,14 @@ func (c *ctx) coresWithoutQueueIRQ() int {
 			}
 		}
 	}
+	open := c.allowed
+	if d, err := hw.ParseMask(c.e.fs.ReadTrim("/proc/irq/default_smp_affinity")); err == nil && len(open.And(d)) > 0 {
+		open = open.And(d)
+	}
+	open = open.Minus(c.topo.Isolated)
 	n := 0
 	for _, core := range c.topo.Cores {
-		if len(core.Threads.Minus(c.topo.Isolated)) > 0 && !busy[core.ID] {
+		if len(core.Threads.And(open)) > 0 && !busy[core.ID] {
 			n++
 		}
 	}
@@ -257,7 +266,10 @@ func sortedCounts(m map[int][]string, desc bool) []int {
 }
 
 // layoutWarnings: an instance on two NUMA nodes though one node could hold
-// it, and instances sharing more than one physical core with others.
+// it, and instances sharing more than one physical core with others. An
+// instance on the CPUs x-ui's own split gives it is left out: where that
+// split has to cut a node or share a core, no setting but the instances'
+// CPU counts changes it.
 func (c *ctx) layoutWarnings() []string {
 	t := c.topo
 	insts := c.r.Instances
@@ -268,10 +280,11 @@ func (c *ctx) layoutWarnings() []string {
 	for _, n := range t.Nodes {
 		biggest = max(biggest, len(n.CPUs.And(c.allowed)))
 	}
+	own := c.ownSplit()
 	var span, share []string
 	var spanned []int
 	for _, in := range insts {
-		if !in.pinned {
+		if !in.pinned || (own[in.Name] != nil && own[in.Name].Equal(in.CPUs)) {
 			continue
 		}
 		if len(in.Nodes) > 1 && len(in.CPUs) <= biggest {
@@ -305,6 +318,28 @@ func (c *ctx) layoutWarnings() []string {
 		out = append(out, share[0]+" shares more than one physical core with other instances")
 	default:
 		out = append(out, short(share, 8)+" share more than one physical core with other instances")
+	}
+	return out
+}
+
+// ownSplit is the CPUs x-ui's split gives the instances in instances.json
+// on this machine (as the panel makes it: hw.SplitCPUs over the allowed
+// CPUs, the uplink's node first); nil without the file.
+func (c *ctx) ownSplit() map[string]hw.CPUSet {
+	if c.file == nil || c.topo == nil {
+		return nil
+	}
+	allowed, err := hw.ParseList(c.file.Allowed)
+	if err != nil || len(allowed) == 0 {
+		return nil
+	}
+	var reqs []hw.CPURequest
+	for _, in := range c.file.Instances {
+		reqs = append(reqs, hw.CPURequest{Name: in.Name, CPUs: in.Cores})
+	}
+	out := map[string]hw.CPUSet{}
+	for name, l := range hw.SplitCPUs(c.topo, allowed, hw.UplinkNode(c.e.fs), reqs, model.LessInstanceName) {
+		out[name] = hw.NewCPUSet(l...)
 	}
 	return out
 }

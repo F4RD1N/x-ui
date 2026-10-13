@@ -18,6 +18,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/util/hw"
 	"github.com/mhsanaei/3x-ui/v2/util/sys"
+	"github.com/mhsanaei/3x-ui/v2/util/tune"
 )
 
 // env is everything diag reads through: the /sys, /proc and /etc tree, the
@@ -242,6 +243,7 @@ type ctx struct {
 	irqb    IRQBalance
 	udp     *sys.UDPPortUse
 	a, b    *snap
+	file    *hw.Instances // the panel's instances.json
 }
 
 // gather reads everything but the sample. scan: count sockets.
@@ -416,6 +418,7 @@ func (c *ctx) instances() {
 	if file == nil && e.exe != "" {
 		file = readFile(hw.InstancesPath(filepath.Join(filepath.Dir(e.exe), "bin")))
 	}
+	c.file = file
 	if file != nil && c.topo != nil {
 		if a, err := hw.ParseList(file.Allowed); err == nil && len(a.And(c.topo.Online)) > 0 {
 			c.allowed = a.And(c.topo.Online)
@@ -687,11 +690,7 @@ func (c *ctx) nicReport(n *hw.NIC, policy string) *NICReport {
 	default:
 		nr.Routes = "v4"
 	}
-	key := n.PCI
-	if key == "" {
-		key = n.Name
-	}
-	nr.Managed = c.tuned[key] && !c.disable
+	nr.Managed = c.tuned[n.Key()] && !c.disable
 	for k, bits := range n.Hash {
 		nr.Hash[k] = hw.HashLetters(bits)
 	}
@@ -732,7 +731,7 @@ func (c *ctx) nicReport(n *hw.NIC, policy string) *NICReport {
 	nr.Siblings = c.rssSiblings(nr)
 
 	nr.IRQBal = c.irqb
-	nr.IRQBal.Banned = n.PCI != "" && strings.Contains(policy, n.PCI+")")
+	nr.IRQBal.Banned = n.PCI != "" && slices.Contains(tune.PolicyBans(policy), n.PCI)
 	nr.XPS = c.xps(nr)
 	nr.RPS = rpsReport(n)
 	return nr

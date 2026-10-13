@@ -140,14 +140,8 @@ func parseCPUText(s string) (hw.CPUSet, error) {
 	return hw.ParseList(s)
 }
 
-// nicKey is a NIC's state key: its PCI function ("0000:82:00.0"), else its
-// name (a VMBus or platform device's "PCI" is not one).
-func nicKey(n *hw.NIC) string {
-	if strings.Count(n.PCI, ":") >= 2 {
-		return n.PCI
-	}
-	return n.Name
-}
+// nicKey is a NIC's state key (hw.NIC.Key).
+func nicKey(n *hw.NIC) string { return n.Key() }
 
 func irqKey(q hw.QueueIRQ) string {
 	if q.Kind == "txrx" {

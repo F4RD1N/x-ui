@@ -4,10 +4,12 @@ package diag
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/util/hw"
 	"github.com/mhsanaei/3x-ui/v2/util/hw/hwtest"
 )
@@ -79,11 +81,9 @@ func TestWarnings(t *testing.T) {
 			f.b.WriteFile("/sys/class/net/eth0/queues/rx-0/rps_cpus", "0\n")
 		}, "eth0 has one queue and RPS is off: one CPU takes all its packets; x-ui tune apply"},
 		{"RSS on sibling threads", productionAfter, func(f *fixture) {
-			f.moveIRQ("eno1", 16, 4)  // CPU 2's queue
-			f.moveIRQ("eno1", 34, 4)  // and its sibling 30's: core 2 has none
 			f.moveIRQ("eno1", 7, 29)  // RSS queue 7 beside RSS queue 6 on CPU 1
-			f.moveIRQ("eno1", 33, 31) // the queue that was on 29
-		}, "eno1: RSS interrupts on both threads of 3 cores (1/29, 26/54, 27/55) while 1 core has no queue interrupt: x-ui tune apply"},
+			f.moveIRQ("eno1", 41, 29) // the queue on 35: core 7/35 has none
+		}, "eno1: RSS interrupts on both threads of 1 core (1/29) while 1 core has no queue interrupt: x-ui tune apply"},
 		{"RSS uneven", productionAfter, func(f *fixture) {
 			f.moveIRQ("eno1", 7, 3)  // xray-2's
 			f.moveIRQ("eno1", 8, 5)  // xray-3's
@@ -95,7 +95,7 @@ func TestWarnings(t *testing.T) {
 		{"irqbalance without the policy", productionAfter, func(f *fixture) {
 			f.b.WriteFile("/proc/812/comm", "irqbalance\n")
 			f.b.WriteFile("/proc/812/cmdline", "/usr/sbin/irqbalance\x00--foreground\x00")
-		}, "irqbalance runs without x-ui's policy script and moves eno1's interrupts: x-ui tune apply, or add --policyscript=/var/lib/x-ui/tune/irqbalance-policy to IRQBALANCE_ARGS"},
+		}, "irqbalance runs without x-ui's policy script and moves eno1's interrupts: x-ui tune apply (if you set IRQBALANCE_ARGS, add --policyscript=/var/lib/x-ui/tune/irqbalance-policy to it first)"},
 		{"XPS on another node", productionAfter, func(f *fixture) {
 			f.b.WriteFile("/sys/class/net/eno1/queues/tx-11/xps_cpus", "0\n")
 			f.b.WriteFile("/sys/class/net/eno1/queues/tx-0/xps_cpus", hw.CPUSet{0, 27}.Mask(56)+"\n")
@@ -192,5 +192,180 @@ func TestNoSample(t *testing.T) {
 	var out2 strings.Builder
 	if rc := run(f.e, []string{"-h"}, "x", &out2, &stderr); rc != 0 || !strings.Contains(out2.String(), "Usage: x-ui diag") {
 		t.Errorf("-h: exit %d: %s", rc, out2.String())
+	}
+}
+
+// placeIRQs puts a NIC's queue interrupts where hw.PlaceQueues puts them for
+// the fixture's instances (what "x-ui tune" does), with XPS to match.
+func (f *fixture) placeIRQs(dev string) {
+	f.t.Helper()
+	topo, err := hw.ReadTopology(f.b.FS())
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	n := hw.ReadNIC(f.b.FS(), f.b.Eth, dev)
+	var units []hw.Unit
+	for _, in := range f.insts {
+		units = append(units, hw.Unit{Name: in.name, CPUs: mustList(f.t, in.cpus)})
+	}
+	var rss []int
+	for q := range n.RSSUse() {
+		rss = append(rss, q)
+	}
+	sort.Ints(rss)
+	pl := hw.PlaceQueues(topo, topo.Online, units, []hw.PlaceNIC{{NIC: n, RSS: rss}})
+	for _, qi := range n.IRQs {
+		f.b.WriteFile(fmt.Sprintf("/proc/irq/%d/smp_affinity_list", qi.IRQ), fmt.Sprintf("%d\n", pl.CPU[dev][qi.Queue]))
+	}
+	for q, cpus := range pl.XPS[dev] {
+		f.b.WriteFile(fmt.Sprintf("/sys/class/net/%s/queues/tx-%d/xps_cpus", dev, q), cpus.Mask(len(topo.Online))+"\n")
+	}
+	f.b.Settle()
+}
+
+func mustList(t *testing.T, s string) hw.CPUSet {
+	t.Helper()
+	l, err := hw.ParseList(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l
+}
+
+// splitInsts is x-ui's own split of these requests on a machine, as
+// instances for the fixture.
+func splitInsts(t *testing.T, m hwtest.Machine, prefer int, cores ...int) []fakeInst {
+	t.Helper()
+	topo := hwtest.Topo(t, m)
+	var reqs []hw.CPURequest
+	for i, c := range cores {
+		reqs = append(reqs, hw.CPURequest{Name: fmt.Sprintf("xray-%d", i+1), CPUs: c})
+	}
+	got := hw.SplitCPUs(topo, topo.Online, prefer, reqs, model.LessInstanceName)
+	var out []fakeInst
+	for i, c := range cores {
+		name := fmt.Sprintf("xray-%d", i+1)
+		out = append(out, fakeInst{name: name, cpus: hw.CPUSet(got[name]).List(), cores: c})
+	}
+	return out
+}
+
+// x-ui's own split and placement draw no warning about themselves: a node
+// cut by an odd number of autos, the panel's split of odd sizes, RSS
+// interrupts placed one per core with 16 or 4 queues.
+func TestNoWarningsAboutOwnLayout(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		m     func() hwtest.Machine
+		cores []int
+	}{
+		{"3 autos", hwtest.Production, []int{0, 0, 0}},
+		{"7 autos", hwtest.Production, []int{0, 0, 0, 0, 0, 0, 0}},
+		{"11 autos", hwtest.Production, []int{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+		{"3,4,4,4,4", hwtest.Production, []int{3, 4, 4, 4, 4}},
+		{"1 and 10 autos", hwtest.Production, []int{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+		{"10x5, 16 queues", func() hwtest.Machine {
+			m := hwtest.Production()
+			m.NICs[0].Channels.Combined = 16
+			return m
+		}, []int{5, 5, 5, 5, 5, 5, 5, 5, 5, 5}},
+		{"desktop 7+7", hwtest.Desktop, []int{7, 7}},
+	} {
+		m := c.m()
+		f := newFixture(t, m)
+		prefer := hw.UplinkNode(f.b.FS())
+		f.addInstances(hwtest.Topo(t, m).Online.List(), splitInsts(t, m, prefer, c.cores...)...)
+		f.placeIRQs(m.NICs[0].Name)
+		for _, w := range f.gather(0).r.Warnings {
+			if strings.Contains(w, "NUMA nodes") || strings.Contains(w, "physical core") || strings.Contains(w, "both threads") {
+				t.Errorf("%s: %s", c.name, w)
+			}
+		}
+	}
+}
+
+// A core outside the default interrupt affinity is no core "without a
+// queue interrupt": x-ui may not put one there.
+func TestSiblingWarningEligibleCores(t *testing.T) {
+	f := productionAfter(t)
+	f.moveIRQ("eno1", 7, 29)  // RSS queue 7 beside RSS queue 6 on CPU 1
+	f.moveIRQ("eno1", 41, 29) // the queue on 35: core 7/35 has none
+	if w := f.gather(0).r.Warnings; !contains(w, "RSS interrupts on both threads") {
+		t.Fatalf("no warning to start from:\n%s", strings.Join(w, "\n"))
+	}
+	f.b.WriteFile("/proc/irq/default_smp_affinity", hw.NewCPUSet(0, 1, 2, 3, 4, 5, 6).Union(mustList(t, "8-34,36-55")).Mask(56)+"\n")
+	if w := f.gather(0).r.Warnings; contains(w, "RSS interrupts on both threads") {
+		t.Errorf("warned about a core interrupts may not go to:\n%s", strings.Join(w, "\n"))
+	}
+}
+
+// RPS beside several queues is advice only with a queue per CPU: with fewer
+// queues than CPUs it may spread the work.
+func TestRPSAdvice(t *testing.T) {
+	for _, c := range []struct {
+		cpus, queues int
+		warn         bool
+	}{{8, 2, false}, {8, 8, true}, {4, 4, true}} {
+		m := hwtest.VPS(c.cpus)
+		m.NICs[0].Channels = hw.Channels{MaxCombined: uint32(c.queues), Combined: uint32(c.queues)}
+		f := newFixture(t, m)
+		f.addInstances(fmt.Sprintf("0-%d", c.cpus-1), fakeInst{name: "xray-1", cpus: fmt.Sprintf("0-%d", c.cpus-1)})
+		for q := 0; q < c.queues; q++ {
+			f.b.WriteFile(fmt.Sprintf("/sys/class/net/eth0/queues/rx-%d/rps_cpus", q), "ff\n")
+		}
+		if got := contains(f.gather(0).r.Warnings, "RPS is on: it moves packets between CPUs for nothing"); got != c.warn {
+			t.Errorf("%d CPUs, %d queues: warned %v", c.cpus, c.queues, got)
+		}
+	}
+}
+
+// ENA's conntrack_allowance_available is a gauge of what is left, not a
+// limit that was hit.
+func TestENAAllowanceGauge(t *testing.T) {
+	m := hwtest.VPS(4)
+	m.NICs[0].Driver, m.NICs[0].IRQNames = "ena", "ena"
+	m.NICs[0].Stats = map[string]uint64{"conntrack_allowance_available": 250000}
+	f := newFixture(t, m)
+	f.addInstances("0-3", fakeInst{name: "xray-1", cpus: "0-3"})
+	f.during = append(f.during, func() {
+		f.b.SetStat("eth0", "conntrack_allowance_available", 251200)
+		f.b.SetStat("eth0", "pps_allowance_exceeded", 3)
+	})
+	c := f.gather(3)
+	if contains(c.r.Warnings, "conntrack_allowance_available") || !contains(c.r.Warnings, "went over the cloud provider's allowance: pps_allowance_exceeded +3") {
+		t.Errorf("warnings:\n%s", strings.Join(c.r.Warnings, "\n"))
+	}
+	if _, ok := c.r.Sample.NICs[0].Counters["conntrack_allowance_available"]; ok {
+		t.Error("the gauge listed among the drop counters")
+	}
+}
+
+// x-ui's policy script banning two functions (a bond's slaves): both are
+// banned.
+func TestPolicyBansEveryFunction(t *testing.T) {
+	f := newFixture(t, hwtest.Bond())
+	f.b.WriteFile(irqbalancePol, "#!/bin/sh\n# Written by x-ui tune\ncase \"${1##*/}\" in\n0000:82:00.0|0000:82:00.1) echo ban=true ;;\nesac\nexit 0\n")
+	c := f.gather(0)
+	for _, nr := range c.r.NICs {
+		if !nr.IRQBal.Banned {
+			t.Errorf("%s (%s) not banned", nr.Name, nr.PCI)
+		}
+	}
+}
+
+// A NIC whose device is not a PCI function (Hyper-V's VMBus): "x-ui tune"
+// keys it by name, and diag finds it managed.
+func TestManagedNonPCI(t *testing.T) {
+	f := newFixture(t, hwtest.VPS(2))
+	f.addInstances("0-1", fakeInst{name: "xray-1", cpus: "0-1"})
+	guid := "000d3a6e-1111-2222-3333-444455556666"
+	f.b.WriteFile("/sys/bus/vmbus/drivers/hv_netvsc/uevent", "")
+	f.b.WriteFile("/sys/devices/LNXSYSTM:00/VMBUS:00/"+guid+"/uevent", "")
+	f.link("/sys/bus/vmbus/drivers/hv_netvsc", "/sys/devices/LNXSYSTM:00/VMBUS:00/"+guid+"/driver")
+	f.link("/sys/devices/LNXSYSTM:00/VMBUS:00/"+guid, "/sys/class/net/eth0/device")
+	f.b.WriteFile("/var/lib/x-ui/tune/state.json", `{"version": 1, "nics": {"eth0": {"name": "eth0", "driver": "hv_netvsc"}}}`+"\n")
+	c := f.gather(0)
+	if len(c.r.NICs) != 1 || c.r.NICs[0].PCI != guid || !c.r.NICs[0].Managed {
+		t.Fatalf("NICs %+v", c.r.NICs)
 	}
 }

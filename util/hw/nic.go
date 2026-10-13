@@ -298,6 +298,16 @@ func (n *NIC) readIRQs(fs FS, fn string) {
 	}
 }
 
+// Key is how x-ui's tuning state names the NIC: its PCI function
+// ("0000:82:00.0"), else its name (a VMBus or platform device's "PCI" is
+// not one).
+func (n *NIC) Key() string {
+	if strings.Count(n.PCI, ":") >= 2 {
+		return n.PCI
+	}
+	return n.Name
+}
+
 // dedupIRQs keeps one interrupt per queue and kind (n.IRQs sorted): when
 // several claim one, the one named after the device is the queue's and the
 // others are not queue interrupts; when that does not tell them apart, the

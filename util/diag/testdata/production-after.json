@@ -84,8 +84,8 @@
           "queue": 0,
           "kind": "txrx",
           "rss": true,
-          "cpus": "27",
-          "effective": "27",
+          "cpus": "43",
+          "effective": "43",
           "owner": "free"
         },
         {
@@ -94,8 +94,8 @@
           "queue": 1,
           "kind": "txrx",
           "rss": true,
-          "cpus": "26",
-          "effective": "26",
+          "cpus": "49",
+          "effective": "49",
           "owner": "free"
         },
         {
@@ -114,8 +114,8 @@
           "queue": 3,
           "kind": "txrx",
           "rss": true,
-          "cpus": "54",
-          "effective": "54",
+          "cpus": "42",
+          "effective": "42",
           "owner": "free"
         },
         {
@@ -124,8 +124,8 @@
           "queue": 4,
           "kind": "txrx",
           "rss": true,
-          "cpus": "53",
-          "effective": "53",
+          "cpus": "48",
+          "effective": "48",
           "owner": "free"
         },
         {
@@ -134,8 +134,8 @@
           "queue": 5,
           "kind": "txrx",
           "rss": true,
-          "cpus": "52",
-          "effective": "52",
+          "cpus": "54",
+          "effective": "54",
           "owner": "free"
         },
         {
@@ -184,8 +184,8 @@
           "queue": 10,
           "kind": "txrx",
           "rss": true,
-          "cpus": "21",
-          "effective": "21",
+          "cpus": "23",
+          "effective": "23",
           "owner": "xray-5"
         },
         {
@@ -234,8 +234,8 @@
           "queue": 15,
           "kind": "txrx",
           "rss": true,
-          "cpus": "20",
-          "effective": "20",
+          "cpus": "22",
+          "effective": "22",
           "owner": "xray-10"
         },
         {
@@ -364,9 +364,9 @@
           "queue": 28,
           "kind": "txrx",
           "rss": false,
-          "cpus": "22",
-          "effective": "22",
-          "owner": "xray-10"
+          "cpus": "20",
+          "effective": "20",
+          "owner": "xray-9"
         },
         {
           "irq": 130,
@@ -374,9 +374,9 @@
           "queue": 29,
           "kind": "txrx",
           "rss": false,
-          "cpus": "23",
-          "effective": "23",
-          "owner": "xray-5"
+          "cpus": "21",
+          "effective": "21",
+          "owner": "xray-4"
         },
         {
           "irq": 131,
@@ -404,9 +404,9 @@
           "queue": 32,
           "kind": "txrx",
           "rss": false,
-          "cpus": "28",
-          "effective": "28",
-          "owner": "xray-6"
+          "cpus": "26",
+          "effective": "26",
+          "owner": "xray-10"
         },
         {
           "irq": 134,
@@ -414,9 +414,9 @@
           "queue": 33,
           "kind": "txrx",
           "rss": false,
-          "cpus": "29",
-          "effective": "29",
-          "owner": "xray-1"
+          "cpus": "27",
+          "effective": "27",
+          "owner": "xray-5"
         },
         {
           "irq": 135,
@@ -424,8 +424,8 @@
           "queue": 34,
           "kind": "txrx",
           "rss": false,
-          "cpus": "30",
-          "effective": "30",
+          "cpus": "28",
+          "effective": "28",
           "owner": "xray-6"
         },
         {
@@ -434,8 +434,8 @@
           "queue": 35,
           "kind": "txrx",
           "rss": false,
-          "cpus": "31",
-          "effective": "31",
+          "cpus": "29",
+          "effective": "29",
           "owner": "xray-1"
         },
         {
@@ -444,9 +444,9 @@
           "queue": 36,
           "kind": "txrx",
           "rss": false,
-          "cpus": "32",
-          "effective": "32",
-          "owner": "xray-7"
+          "cpus": "30",
+          "effective": "30",
+          "owner": "xray-6"
         },
         {
           "irq": 138,
@@ -454,9 +454,9 @@
           "queue": 37,
           "kind": "txrx",
           "rss": false,
-          "cpus": "33",
-          "effective": "33",
-          "owner": "xray-2"
+          "cpus": "31",
+          "effective": "31",
+          "owner": "xray-1"
         },
         {
           "irq": 139,
@@ -464,8 +464,8 @@
           "queue": 38,
           "kind": "txrx",
           "rss": false,
-          "cpus": "34",
-          "effective": "34",
+          "cpus": "32",
+          "effective": "32",
           "owner": "xray-7"
         },
         {
@@ -474,8 +474,8 @@
           "queue": 39,
           "kind": "txrx",
           "rss": false,
-          "cpus": "35",
-          "effective": "35",
+          "cpus": "33",
+          "effective": "33",
           "owner": "xray-2"
         },
         {
@@ -484,8 +484,8 @@
           "queue": 40,
           "kind": "txrx",
           "rss": false,
-          "cpus": "36",
-          "effective": "36",
+          "cpus": "34",
+          "effective": "34",
           "owner": "xray-7"
         },
         {
@@ -494,8 +494,8 @@
           "queue": 41,
           "kind": "txrx",
           "rss": false,
-          "cpus": "37",
-          "effective": "37",
+          "cpus": "35",
+          "effective": "35",
           "owner": "xray-2"
         },
         {
@@ -504,9 +504,9 @@
           "queue": 42,
           "kind": "txrx",
           "rss": false,
-          "cpus": "38",
-          "effective": "38",
-          "owner": "xray-8"
+          "cpus": "36",
+          "effective": "36",
+          "owner": "xray-7"
         },
         {
           "irq": 144,
@@ -514,9 +514,9 @@
           "queue": 43,
           "kind": "txrx",
           "rss": false,
-          "cpus": "39",
-          "effective": "39",
-          "owner": "xray-3"
+          "cpus": "37",
+          "effective": "37",
+          "owner": "xray-2"
         },
         {
           "irq": 145,
@@ -524,8 +524,8 @@
           "queue": 44,
           "kind": "txrx",
           "rss": false,
-          "cpus": "40",
-          "effective": "40",
+          "cpus": "38",
+          "effective": "38",
           "owner": "xray-8"
         },
         {
@@ -534,8 +534,8 @@
           "queue": 45,
           "kind": "txrx",
           "rss": false,
-          "cpus": "41",
-          "effective": "41",
+          "cpus": "39",
+          "effective": "39",
           "owner": "xray-3"
         },
         {
@@ -544,9 +544,9 @@
           "queue": 46,
           "kind": "txrx",
           "rss": false,
-          "cpus": "42",
-          "effective": "42",
-          "owner": "xray-9"
+          "cpus": "40",
+          "effective": "40",
+          "owner": "xray-8"
         },
         {
           "irq": 148,
@@ -554,9 +554,9 @@
           "queue": 47,
           "kind": "txrx",
           "rss": false,
-          "cpus": "43",
-          "effective": "43",
-          "owner": "xray-4"
+          "cpus": "41",
+          "effective": "41",
+          "owner": "xray-3"
         },
         {
           "irq": 149,
@@ -604,8 +604,8 @@
           "queue": 52,
           "kind": "txrx",
           "rss": false,
-          "cpus": "48",
-          "effective": "48",
+          "cpus": "50",
+          "effective": "50",
           "owner": "xray-10"
         },
         {
@@ -614,8 +614,8 @@
           "queue": 53,
           "kind": "txrx",
           "rss": false,
-          "cpus": "49",
-          "effective": "49",
+          "cpus": "51",
+          "effective": "51",
           "owner": "xray-5"
         },
         {
@@ -624,8 +624,8 @@
           "queue": 54,
           "kind": "txrx",
           "rss": false,
-          "cpus": "50",
-          "effective": "50",
+          "cpus": "52",
+          "effective": "52",
           "owner": "xray-10"
         },
         {
@@ -634,17 +634,13 @@
           "queue": 55,
           "kind": "txrx",
           "rss": false,
-          "cpus": "51",
-          "effective": "51",
+          "cpus": "53",
+          "effective": "53",
           "owner": "xray-5"
         }
       ],
       "other_irqs": [
         157
-      ],
-      "rss_siblings": [
-        "26/54",
-        "27/55"
       ],
       "irqbalance": {
         "installed": true,
@@ -663,14 +659,14 @@
         "remote": 0,
         "none": 0,
         "map": {
-          "tx-0": "27",
-          "tx-1": "26",
-          "tx-10": "21",
+          "tx-0": "43",
+          "tx-1": "49",
+          "tx-10": "23",
           "tx-11": "0",
           "tx-12": "6",
           "tx-13": "10",
           "tx-14": "16",
-          "tx-15": "20",
+          "tx-15": "22",
           "tx-16": "2",
           "tx-17": "3",
           "tx-18": "4",
@@ -684,37 +680,37 @@
           "tx-25": "15",
           "tx-26": "18",
           "tx-27": "19",
-          "tx-28": "22",
-          "tx-29": "23",
-          "tx-3": "54",
+          "tx-28": "20",
+          "tx-29": "21",
+          "tx-3": "42",
           "tx-30": "24",
           "tx-31": "25",
-          "tx-32": "28",
-          "tx-33": "29",
-          "tx-34": "30",
-          "tx-35": "31",
-          "tx-36": "32",
-          "tx-37": "33",
-          "tx-38": "34",
-          "tx-39": "35",
-          "tx-4": "53",
-          "tx-40": "36",
-          "tx-41": "37",
-          "tx-42": "38",
-          "tx-43": "39",
-          "tx-44": "40",
-          "tx-45": "41",
-          "tx-46": "42",
-          "tx-47": "43",
+          "tx-32": "26",
+          "tx-33": "27",
+          "tx-34": "28",
+          "tx-35": "29",
+          "tx-36": "30",
+          "tx-37": "31",
+          "tx-38": "32",
+          "tx-39": "33",
+          "tx-4": "48",
+          "tx-40": "34",
+          "tx-41": "35",
+          "tx-42": "36",
+          "tx-43": "37",
+          "tx-44": "38",
+          "tx-45": "39",
+          "tx-46": "40",
+          "tx-47": "41",
           "tx-48": "44",
           "tx-49": "45",
-          "tx-5": "52",
+          "tx-5": "54",
           "tx-50": "46",
           "tx-51": "47",
-          "tx-52": "48",
-          "tx-53": "49",
-          "tx-54": "50",
-          "tx-55": "51",
+          "tx-52": "50",
+          "tx-53": "51",
+          "tx-54": "52",
+          "tx-55": "53",
           "tx-6": "1",
           "tx-7": "7",
           "tx-8": "11",
@@ -852,26 +848,26 @@
       },
       {
         "cpu": 20,
-        "busy": 27,
-        "softirq": 7,
+        "busy": 21.3,
+        "softirq": 1.3,
         "steal": 0
       },
       {
         "cpu": 21,
+        "busy": 21.3,
+        "softirq": 1.3,
+        "steal": 0
+      },
+      {
+        "cpu": 22,
         "busy": 27,
         "softirq": 7,
         "steal": 0
       },
       {
-        "cpu": 22,
-        "busy": 21.3,
-        "softirq": 1.3,
-        "steal": 0
-      },
-      {
         "cpu": 23,
-        "busy": 21.3,
-        "softirq": 1.3,
+        "busy": 27,
+        "softirq": 7,
         "steal": 0
       },
       {
@@ -888,14 +884,14 @@
       },
       {
         "cpu": 26,
-        "busy": 27,
-        "softirq": 7,
+        "busy": 21.3,
+        "softirq": 1.3,
         "steal": 0
       },
       {
         "cpu": 27,
-        "busy": 27,
-        "softirq": 7,
+        "busy": 21.3,
+        "softirq": 1.3,
         "steal": 0
       },
       {
@@ -984,14 +980,14 @@
       },
       {
         "cpu": 42,
-        "busy": 21.3,
-        "softirq": 1.3,
+        "busy": 27,
+        "softirq": 7,
         "steal": 0
       },
       {
         "cpu": 43,
-        "busy": 21.3,
-        "softirq": 1.3,
+        "busy": 27,
+        "softirq": 7,
         "steal": 0
       },
       {
@@ -1020,14 +1016,14 @@
       },
       {
         "cpu": 48,
-        "busy": 21.3,
-        "softirq": 1.3,
+        "busy": 27,
+        "softirq": 7,
         "steal": 0
       },
       {
         "cpu": 49,
-        "busy": 21.3,
-        "softirq": 1.3,
+        "busy": 27,
+        "softirq": 7,
         "steal": 0
       },
       {
@@ -1044,14 +1040,14 @@
       },
       {
         "cpu": 52,
-        "busy": 27,
-        "softirq": 7,
+        "busy": 21.3,
+        "softirq": 1.3,
         "steal": 0
       },
       {
         "cpu": 53,
-        "busy": 27,
-        "softirq": 7,
+        "busy": 21.3,
+        "softirq": 1.3,
         "steal": 0
       },
       {
@@ -1533,7 +1529,7 @@
       "name": "xray-4",
       "pid": 2004,
       "cpu_pct": 30,
-      "cpus": "17,19,43,45,47",
+      "cpus": "17,19,21,45,47",
       "nodes": [
         1
       ],
@@ -1560,7 +1556,7 @@
       "name": "xray-5",
       "pid": 2005,
       "cpu_pct": 30,
-      "cpus": "21,23,25,49,51",
+      "cpus": "23,25,27,51,53",
       "nodes": [
         1
       ],
@@ -1668,7 +1664,7 @@
       "name": "xray-9",
       "pid": 2009,
       "cpu_pct": 30,
-      "cpus": "16,18,42,44,46",
+      "cpus": "16,18,20,44,46",
       "nodes": [
         0
       ],
@@ -1695,7 +1691,7 @@
       "name": "xray-10",
       "pid": 2010,
       "cpu_pct": 30,
-      "cpus": "20,22,24,48,50",
+      "cpus": "22,24,26,50,52",
       "nodes": [
         0
       ],

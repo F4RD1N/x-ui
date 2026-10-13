@@ -89,8 +89,10 @@ type snap struct {
 	ticks   map[int]uint64 // pid -> utime+stime
 }
 
-// dropCounter matches the driver counters that count lost packets.
-var dropCounter = regexp.MustCompile(`missed|no_buffer|no_dma|out_of_buffer|discard|fifo|overflow|allowance`)
+// dropCounter matches the driver counters that count lost packets (and a
+// cloud provider's limits that were hit; not ENA's *_allowance_available
+// gauges).
+var dropCounter = regexp.MustCompile(`missed|no_buffer|no_dma|out_of_buffer|discard|fifo|overflow|allowance_exceeded`)
 
 // queueCounters are the drivers' per-queue receive packet counters.
 var queueCounters = []*regexp.Regexp{

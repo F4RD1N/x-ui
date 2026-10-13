@@ -337,13 +337,13 @@ func (f *fixture) productionLoad(rssCPUs []int) {
 }
 
 // afterCPUs is the NUMA-aware split of 10 instances of 5 CPUs on
-// production (spec section 3).
-var afterCPUs = []string{"1,3,5,29,31", "7,9,33,35,37", "11,13,15,39,41", "17,19,43,45,47", "21,23,25,49,51",
-	"0,2,4,28,30", "6,8,32,34,36", "10,12,14,38,40", "16,18,42,44,46", "20,22,24,48,50"}
+// production (hw.SplitCPUs); 42,43,48,49,54,55 stay free.
+var afterCPUs = []string{"1,3,5,29,31", "7,9,33,35,37", "11,13,15,39,41", "17,19,21,45,47", "23,25,27,51,53",
+	"0,2,4,28,30", "6,8,32,34,36", "10,12,14,38,40", "16,18,20,44,46", "22,24,26,50,52"}
 
 // afterRSS is where the NIC tuning puts RSS queues 0-15 for that split
-// (spec section 5.6): 6 on the free CPUs, then one per instance.
-var afterRSS = []int{27, 26, 55, 54, 53, 52, 1, 7, 11, 17, 21, 0, 6, 10, 16, 20}
+// (hw.PlaceQueues): 6 on the free CPUs, then one per instance, one per core.
+var afterRSS = []int{43, 49, 55, 42, 48, 54, 1, 7, 11, 17, 23, 0, 6, 10, 16, 22}
 
 // productionAfter is production after the update and "x-ui tune apply":
 // node-pure instances, one RSS interrupt each, every other queue on its own
