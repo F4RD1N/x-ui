@@ -13,8 +13,9 @@
 #   - XUI_TUNE_ONLY=net limits live writes to /proc/sys/net and runs no
 #     external command.
 # It checks that apply writes what its plan said, that a second apply
-# changes nothing, that revert restores the namespace's values exactly, and
-# finally that the host's sysctls and files are byte-for-byte unchanged.
+# changes nothing, that revert restores the namespace's values exactly (a key
+# handed back to another sysctl file keeps that file's value), and finally
+# that the host's sysctls and files are byte-for-byte unchanged.
 set -euo pipefail
 
 BIN=$(readlink -f "${1:?usage: netns.sh <x-ui binary>}")
@@ -105,7 +106,14 @@ for k, kb in b.items():
         errors.append(f"{k}: changed without a plan: {kb['live']} -> {ka['live']}")
     if ka.get("write"):
         errors.append(f"{k}: still not applied ({ka['write']})")
-    if kr["live"] != kb["live"]:
+    # A key handed back takes another sysctl file's value and x-ui drops it,
+    # so revert leaves that value; every other key goes back to before.
+    if kb.get("hand_back"):
+        if kb["write"] != kb.get("others"):
+            errors.append(f"{k}: handed back {kb['write']}, but {kb.get('others_file')} sets {kb.get('others')}")
+        if kr["live"] != kb["write"]:
+            errors.append(f"{k}: revert left {kr['live']}, handed back {kb['write']}")
+    elif kr["live"] != kb["live"]:
         errors.append(f"{k}: revert left {kr['live']}, was {kb['live']}")
     if not k.startswith("net.") and kb["state"] != "read-only":
         errors.append(f"{k}: {kb['state']}, expected read-only")
