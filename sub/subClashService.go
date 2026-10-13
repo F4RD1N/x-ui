@@ -2,6 +2,7 @@ package sub
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/goccy/go-json"
@@ -88,11 +89,22 @@ func (s *SubClashService) GetClash(subId string, host string) (string, string, e
 		}
 	}
 
+	// Clash refuses the whole profile when two proxies share a name, which
+	// external proxies without a remark do.
 	proxyNames := make([]string, 0, len(proxies)+1)
+	used := make(map[string]bool, len(proxies))
 	for _, proxy := range proxies {
-		if name, ok := proxy["name"].(string); ok && name != "" {
-			proxyNames = append(proxyNames, name)
+		name, ok := proxy["name"].(string)
+		if !ok || name == "" {
+			continue
 		}
+		unique := name
+		for n := 2; used[unique]; n++ {
+			unique = fmt.Sprintf("%s %d", name, n)
+		}
+		used[unique] = true
+		proxy["name"] = unique
+		proxyNames = append(proxyNames, unique)
 	}
 	proxyNames = append(proxyNames, "DIRECT")
 
@@ -121,7 +133,7 @@ func (s *SubClashService) getProxies(inbound *model.Inbound, client model.Client
 	if !ok || len(externalProxies) == 0 {
 		externalProxies = []any{map[string]any{
 			"forceTls": "same",
-			"dest":     host,
+			"dest":     linkAddress(inbound, host),
 			"port":     float64(inbound.Port),
 			"remark":   "",
 		}}
@@ -189,8 +201,13 @@ func (s *SubClashService) buildProxy(inbound *model.Inbound, client model.Client
 		}
 		var inboundSettings map[string]any
 		json.Unmarshal([]byte(inbound.Settings), &inboundSettings)
-		if encryption, ok := inboundSettings["encryption"].(string); ok && encryption != "" {
-			proxy["packet-encoding"] = encryption
+		// An inbound that lets in only dialects other than stock VLESS (0)
+		// turns a plain VLESS client away, and Clash speaks no dialect.
+		if dialects, ok := inboundSettings["dialects"].([]any); ok && len(dialects) > 0 && !slices.Contains(dialects, any(float64(0))) {
+			return nil
+		}
+		if encryption, ok := inboundSettings["encryption"].(string); ok && encryption != "" && encryption != "none" {
+			proxy["encryption"] = encryption
 		}
 	case model.Trojan:
 		proxy["type"] = "trojan"

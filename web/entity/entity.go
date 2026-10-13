@@ -178,6 +178,32 @@ func (s *AllSetting) CheckValid() error {
 		s.SubClashPath += "/"
 	}
 
+	// gin refuses two routes on one path and a route under the static
+	// assets, and the subscription server would then not start.
+	if s.SubEnable {
+		paths := map[string]string{"subscription": s.SubPath}
+		if s.SubJsonEnable {
+			paths["JSON subscription"] = s.SubJsonPath
+		}
+		if s.SubClashEnable {
+			paths["Clash subscription"] = s.SubClashPath
+		}
+		seen := map[string]string{}
+		for _, name := range []string{"subscription", "JSON subscription", "Clash subscription"} {
+			path, ok := paths[name]
+			if !ok {
+				continue
+			}
+			if strings.HasPrefix(path, "/assets/") {
+				return common.NewError("the", name, "path cannot be under /assets/:", path)
+			}
+			if other, dup := seen[path]; dup {
+				return common.NewError("the", name, "path is the same as the", other, "path:", path)
+			}
+			seen[path] = name
+		}
+	}
+
 	_, err := time.LoadLocation(s.TimeLocation)
 	if err != nil {
 		return common.NewError("time location not exist:", s.TimeLocation)

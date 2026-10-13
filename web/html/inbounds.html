@@ -327,7 +327,7 @@
                       <a-tooltip v-if="dbInbound.subs.length" :overlay-class-name="themeSwitcher.currentTheme">
                         <template slot="title">
                           <div>{{ i18n "pages.inbounds.subInbounds" }}:</div>
-                          <div v-for="sub in dbInbound.subs" :key="sub.port">[[ sub.port ]] &middot; [[ sub.instance ]] &middot; [[ sub.cores > 0 ? sub.cores + ' {{ i18n "pages.inbounds.xrayCoresUnit" }}' : '{{ i18n "pages.inbounds.xrayCoresAuto" }}' ]][[ sub.enable ? '' : ' &middot; off' ]]</div>
+                          <div v-for="sub in dbInbound.subs" :key="sub.port">[[ sub.port ]] &middot; [[ sub.instance ]] &middot; [[ sub.cores > 0 ? sub.cores + ' {{ i18n "pages.inbounds.xrayCoresUnit" }}' : '{{ i18n "pages.inbounds.xrayCoresAuto" }}' ]][[ sub.enable ? '' : ' &middot; {{ i18n "disabled" }}' ]]</div>
                         </template>
                         <a-tag :style="{ margin: '0' }" color="cyan" class="sub-count">+[[ dbInbound.subs.length ]]</a-tag>
                       </a-tooltip>

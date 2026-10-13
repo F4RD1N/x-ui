@@ -1006,7 +1006,8 @@ class Outbound extends CommonClass {
         var settings;
         switch (protocol) {
             case Protocols.VLESS:
-                settings = new Outbound.VLESSSettings(address, port, userData, url.searchParams.get('flow') ?? '', url.searchParams.get('encryption') ?? 'none');
+                settings = new Outbound.VLESSSettings(address, port, userData, url.searchParams.get('flow') ?? '', url.searchParams.get('encryption') ?? 'none',
+                    0, undefined, Number(url.searchParams.get('x-dialect')) || 0);
                 break;
             case Protocols.Trojan:
                 settings = new Outbound.TrojanSettings(address, port, userData);
@@ -1315,7 +1316,8 @@ Outbound.VmessSettings = class extends CommonClass {
     }
 };
 Outbound.VLESSSettings = class extends CommonClass {
-    constructor(address, port, id, flow, encryption, testpre = 0, testseed = [900, 500, 900, 256]) {
+    // dialect is the VLESS dialect the server lets in; 0 is stock VLESS.
+    constructor(address, port, id, flow, encryption, testpre = 0, testseed = [900, 500, 900, 256], dialect = 0) {
         super();
         this.address = address;
         this.port = port;
@@ -1324,6 +1326,7 @@ Outbound.VLESSSettings = class extends CommonClass {
         this.encryption = encryption;
         this.testpre = testpre;
         this.testseed = testseed;
+        this.dialect = dialect;
     }
 
     static fromJson(json = {}) {
@@ -1335,7 +1338,8 @@ Outbound.VLESSSettings = class extends CommonClass {
             json.flow,
             json.encryption,
             json.testpre || 0,
-            json.testseed && json.testseed.length >= 4 ? json.testseed : [900, 500, 900, 256]
+            json.testseed && json.testseed.length >= 4 ? json.testseed : [900, 500, 900, 256],
+            json.dialect || 0
         );
     }
 
@@ -1347,6 +1351,10 @@ Outbound.VLESSSettings = class extends CommonClass {
             flow: this.flow,
             encryption: this.encryption,
         };
+        // Left out for stock VLESS, as in configs that name no dialect.
+        if (this.dialect > 0) {
+            result.dialect = this.dialect;
+        }
         // Only include Vision settings when flow is set
         if (this.flow && this.flow !== '') {
             if (this.testpre > 0) {

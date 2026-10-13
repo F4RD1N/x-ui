@@ -279,7 +279,7 @@ func (a *ServerController) getXrayLogs(c *gin.Context) {
 func (a *ServerController) checkUpdate(c *gin.Context) {
 	info, err := a.serverService.CheckPanelUpdate()
 	if err != nil {
-		jsonMsg(c, "Check update", err)
+		jsonMsg(c, I18nWeb(c, "pages.index.panelUpdateCheck"), err)
 		return
 	}
 	jsonObj(c, info, nil)
@@ -289,7 +289,7 @@ func (a *ServerController) checkUpdate(c *gin.Context) {
 // stopped and restarted by the updater, so this returns before it finishes.
 func (a *ServerController) updatePanel(c *gin.Context) {
 	err := a.serverService.UpdatePanel()
-	jsonMsg(c, "Update panel", err)
+	jsonMsg(c, I18nWeb(c, "pages.index.panelUpdateTitle"), err)
 }
 
 // getConfigJson retrieves the Xray configuration as JSON.

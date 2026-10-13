@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"github.com/mhsanaei/3x-ui/v2/web/global"
+	"github.com/mhsanaei/3x-ui/v2/web/locale"
 	"strconv"
 	"strings"
 
@@ -131,7 +132,7 @@ func (a *SUBController) subs(c *gin.Context) {
 				basePathStr = strings.TrimRight(basePathStr, "/") + "/" + subId + "/"
 			}
 			page := a.subService.BuildPageData(subId, hostHeader, traffic, lastOnline, subs, subURL, subJsonURL, subClashURL, basePathStr)
-			c.HTML(200, "subpage.html", gin.H{
+			locale.HTML(c, 200, "subpage.html", gin.H{
 				"title":        "subscription.title",
 				"cur_ver":      global.AssetVersion(),
 				"host":         page.Host,

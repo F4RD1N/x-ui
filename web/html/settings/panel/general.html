@@ -97,14 +97,14 @@
             <template #title>{{ i18n "pages.settings.publicKeyPath"}}</template>
             <template #description>{{ i18n "pages.settings.publicKeyPathDesc"}}</template>
             <template #control>
-                <a-input type="text" v-model="allSetting.webCertFile" placeholder="/path/to/file or https://host/file"></a-input>
+                <a-input type="text" v-model="allSetting.webCertFile" placeholder='{{ i18n "certFileOrLink" }}'></a-input>
             </template>
         </a-setting-list-item>
         <a-setting-list-item paddings="small">
             <template #title>{{ i18n "pages.settings.privateKeyPath"}}</template>
             <template #description>{{ i18n "pages.settings.privateKeyPathDesc"}}</template>
             <template #control>
-                <a-input type="text" v-model="allSetting.webKeyFile" placeholder="/path/to/file or https://host/file"></a-input>
+                <a-input type="text" v-model="allSetting.webKeyFile" placeholder='{{ i18n "certFileOrLink" }}'></a-input>
             </template>
         </a-setting-list-item>
     </a-collapse-panel>

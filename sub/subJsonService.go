@@ -157,20 +157,23 @@ func (s *SubJsonService) getConfig(inbound *model.Inbound, client model.Client, 
 		externalProxies = []any{
 			map[string]any{
 				"forceTls": "same",
-				"dest":     host,
+				"dest":     linkAddress(inbound, host),
 				"port":     float64(inbound.Port),
 				"remark":   "",
 			},
 		}
 	}
 
-	delete(stream, "externalProxy")
-
 	for _, ep := range externalProxies {
 		extPrxy := ep.(map[string]any)
+		// Each proxy gets its own copy of the inbound and of the stream, so
+		// one proxy's forceTls does not carry over into the next.
+		workingInbound := *inbound
+		inbound := &workingInbound
 		inbound.Listen = extPrxy["dest"].(string)
 		inbound.Port = int(extPrxy["port"].(float64))
-		newStream := stream
+		newStream := s.streamData(inbound.StreamSettings)
+		delete(newStream, "externalProxy")
 		switch extPrxy["forceTls"].(string) {
 		case "tls":
 			if newStream["security"] != "tls" {
@@ -328,7 +331,12 @@ func (s *SubJsonService) genVless(inbound *model.Inbound, streamSettings json_ut
 	// Add encryption for VLESS outbound from inbound settings
 	var inboundSettings map[string]any
 	json.Unmarshal([]byte(inbound.Settings), &inboundSettings)
+	// The core refuses a VLESS user without encryption, and inbounds from
+	// before it existed have none.
 	encryption, _ := inboundSettings["encryption"].(string)
+	if encryption == "" {
+		encryption = "none"
+	}
 
 	user := map[string]any{
 		"id":         client.ID,

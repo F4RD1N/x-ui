@@ -69,13 +69,15 @@ func runWebServer() {
 		return
 	}
 
+	// The subscription server is not worth the panel: exiting here would
+	// also kill every xray core, and systemd would restart into the same
+	// failure. Log it and keep the panel up so the setting can be fixed.
 	var subServer *sub.Server
 	subServer = sub.NewServer()
 	global.SetSubServer(subServer)
 	err = subServer.Start()
 	if err != nil {
-		log.Fatalf("Error starting sub server: %v", err)
-		return
+		logger.Error("Error starting sub server:", err)
 	}
 
 	sigCh := make(chan os.Signal, 1)
@@ -114,10 +116,10 @@ func runWebServer() {
 			global.SetSubServer(subServer)
 			err = subServer.Start()
 			if err != nil {
-				log.Fatalf("Error restarting sub server: %v", err)
-				return
+				logger.Error("Error restarting sub server:", err)
+			} else {
+				log.Println("Sub server restarted successfully.")
 			}
-			log.Println("Sub server restarted successfully.")
 		case sys.SIGUSR1:
 			logger.Info("Received USR1 signal, restarting xray-core...")
 			err := server.RestartXray()
@@ -231,7 +233,6 @@ func updateTgbotEnableSts(status bool) error {
 	return nil
 }
 
-// updateTgbotSetting updates Telegram bot settings including token, chat ID, and runtime schedule.
 // updateXrayEgress sets instances' outgoing IPs from "name=ip,name=ip". An
 // empty ip sends that instance from the server's default address again. A
 // running panel applies it when it restarts.
@@ -289,6 +290,7 @@ func updateXrayEgress(spec string) error {
 	return nil
 }
 
+// updateTgbotSetting updates Telegram bot settings including token, chat ID, and runtime schedule.
 func updateTgbotSetting(tgBotToken string, tgBotChatid string, tgBotRuntime string) error {
 	err := database.InitDB(config.GetDBPath())
 	if err != nil {

@@ -626,6 +626,17 @@ class NumberFormatter {
 }
 
 class Utils {
+    // escapeHtml makes text safe to put into HTML, as element content or as
+    // a quoted attribute value.
+    static escapeHtml(text) {
+        return String(text ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
     static debounce(fn, delay) {
         let timeoutID = null;
         return function () {

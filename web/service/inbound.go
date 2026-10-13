@@ -237,6 +237,12 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 	} else if name != "" {
 		return inbound, false, common.NewError("Port already used by a sub-inbound of", name+":", inbound.Port)
 	}
+	if name := panelPortUser(inbound.Listen, inbound.Port); name != "" {
+		return inbound, false, common.NewError("Port already used by the", name, "server:", inbound.Port)
+	}
+	if err := checkDialects(inbound); err != nil {
+		return inbound, false, err
+	}
 	// Sub-inbounds are added with Multi Instance, never with the inbound.
 	inbound.SubInbounds = ""
 	if err = s.prepareXrayInstance(inbound, nil); err != nil {
@@ -437,6 +443,12 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 		return inbound, false, err
 	} else if name != "" {
 		return inbound, false, common.NewError("Port already used by a sub-inbound of", name+":", inbound.Port)
+	}
+	if name := panelPortUser(inbound.Listen, inbound.Port); name != "" {
+		return inbound, false, common.NewError("Port already used by the", name, "server:", inbound.Port)
+	}
+	if err := checkDialects(inbound); err != nil {
+		return inbound, false, err
 	}
 
 	oldInbound, err := s.GetInbound(inbound.Id)

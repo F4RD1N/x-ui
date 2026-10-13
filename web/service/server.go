@@ -94,6 +94,9 @@ type Status struct {
 	} `json:"appStats"`
 	XrayInstances []XrayInstanceStatus `json:"xrayInstances"`
 	XrayCpus      XrayCpuSummary       `json:"xrayCpus"`
+	// PanelVersion is the running panel's; the page watches it change
+	// after starting an update.
+	PanelVersion string `json:"panelVersion"`
 }
 
 // ServerService provides business logic for server monitoring and management.
@@ -225,7 +228,8 @@ func getPublicIP(url string) string {
 func (s *ServerService) GetStatus(lastStatus *Status) *Status {
 	now := time.Now()
 	status := &Status{
-		T: now,
+		T:            now,
+		PanelVersion: strings.TrimPrefix(config.GetVersion(), "v"),
 	}
 
 	// CPU stats

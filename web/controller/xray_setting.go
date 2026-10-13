@@ -2,7 +2,9 @@ package controller
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/mhsanaei/3x-ui/v2/util/common"
 	"github.com/mhsanaei/3x-ui/v2/web/service"
@@ -82,6 +84,22 @@ func (a *XraySettingController) getXraySetting(c *gin.Context) {
 
 // updateSetting updates the Xray configuration settings.
 func (a *XraySettingController) updateSetting(c *gin.Context) {
+	// Where the config template is fetched from, and how often, in whole
+	// minutes. An interval of zero turns the fetch off, which is the default.
+	// A request without them, such as an API client posting the template
+	// alone, leaves them as they are.
+	configUrl, hasUrl := c.GetPostForm("xrayConfigUrl")
+	intervalText, hasInterval := c.GetPostForm("xrayConfigInterval")
+	interval := 0
+	if text := strings.TrimSpace(intervalText); hasInterval && text != "" {
+		n, err := strconv.Atoi(text)
+		if err != nil || n < 0 {
+			jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), fmt.Errorf("update interval %q is not a whole number of minutes", intervalText))
+			return
+		}
+		interval = n
+	}
+
 	xraySetting := c.PostForm("xraySetting")
 	if err := a.XraySettingService.SaveXraySetting(xraySetting); err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), err)
@@ -93,14 +111,12 @@ func (a *XraySettingController) updateSetting(c *gin.Context) {
 	}
 	_ = a.SettingService.SetXrayOutboundTestUrl(outboundTestUrl)
 
-	// Where the config template is fetched from, and how often. An interval of
-	// zero turns the fetch off, which is the default.
-	_ = a.SettingService.SetXrayConfigUrl(c.PostForm("xrayConfigUrl"))
-	interval, err := strconv.Atoi(c.PostForm("xrayConfigInterval"))
-	if err != nil || interval < 0 {
-		interval = 0
+	if hasUrl {
+		_ = a.SettingService.SetXrayConfigUrl(configUrl)
 	}
-	_ = a.SettingService.SetXrayConfigInterval(interval)
+	if hasInterval {
+		_ = a.SettingService.SetXrayConfigInterval(interval)
+	}
 
 	jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), nil)
 }

@@ -778,6 +778,9 @@ func (s *SettingService) UpdateAllSetting(allSetting *entity.AllSetting) error {
 	if err := allSetting.CheckValid(); err != nil {
 		return err
 	}
+	if err := s.checkServerPorts(allSetting.WebListen, allSetting.WebPort, allSetting.SubEnable, allSetting.SubListen, allSetting.SubPort); err != nil {
+		return err
+	}
 
 	v := reflect.ValueOf(allSetting).Elem()
 	t := reflect.TypeFor[entity.AllSetting]()

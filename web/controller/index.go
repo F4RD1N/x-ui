@@ -75,17 +75,18 @@ func (a *IndexController) login(c *gin.Context) {
 	user, checkErr := a.userService.CheckUser(form.Username, form.Password, form.TwoFactorCode)
 	timeStr := time.Now().Format("2006-01-02 15:04:05")
 	safeUser := template.HTMLEscapeString(form.Username)
-	safePass := template.HTMLEscapeString(form.Password)
 
 	if user == nil {
-		logger.Warningf("wrong username: \"%s\", password: \"%s\", IP: \"%s\"", safeUser, safePass, getRemoteIp(c))
-
-		notifyPass := safePass
-
+		// The password typed is never logged or sent on: after a wrong 2FA
+		// code it is the right one, and otherwise often a near miss of it.
+		reason := "invalid credentials"
+		notifyPass := "***"
 		if checkErr != nil && checkErr.Error() == "invalid 2fa code" {
+			reason = "invalid 2fa code"
 			translatedError := a.tgbot.I18nBot("tgbot.messages.2faFailed")
 			notifyPass = fmt.Sprintf("*** (%s)", translatedError)
 		}
+		logger.Warningf("failed login: username %q, IP %q, reason: %s", form.Username, getRemoteIp(c), reason)
 
 		a.tgbot.UserLoginNotify(safeUser, notifyPass, getRemoteIp(c), timeStr, 0)
 		pureJsonMsg(c, http.StatusOK, false, I18nWeb(c, "pages.login.toasts.wrongUsernameOrPassword"))

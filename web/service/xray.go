@@ -374,7 +374,13 @@ func (s *XrayService) SetToNeedRestart() {
 }
 
 // IsNeedRestartAndSetFalse checks if restart is needed and resets the flag to false.
+// While the cores are stopped by hand it says no and keeps the flag: the
+// periodic restart would start them all again, and the change is applied
+// when they are started anyway.
 func (s *XrayService) IsNeedRestartAndSetFalse() bool {
+	if isManuallyStopped.Load() {
+		return false
+	}
 	return isNeedXrayRestart.CompareAndSwap(true, false)
 }
 

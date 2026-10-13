@@ -40,7 +40,16 @@ const check = (name, ok, detail) => {
     check(label + ': cores read like "Auto · 4 Core (0-3)"', cores.length > 0 && cores.every((t) => /^(Auto|Fixed) · \d+ Core \([\d,\- ]+\)$/.test(t)), cores.join(' | '));
     const cardText = await page.textContent('.xi-card');
     check(label + ': card shows CPU, TCP, RAM, threads, uptime', /CPU/.test(cardText) && /TCP connections/.test(cardText) && /RAM/.test(cardText) && /Threads/.test(cardText), cardText.slice(0, 200));
-    const cut = await page.$$eval('.xi-card .xi-egress-ip, .xi-card .xi-udp', (els) => els.filter((e) => e.scrollWidth > e.clientWidth + 1).map((e) => e.textContent.trim()));
+    // Measured with a full IPv4 address in place of the default label, as a
+    // real outgoing IP is; the text node is put back for Vue.
+    const cut = await page.$$eval('.xi-card .xi-egress-ip, .xi-card .xi-udp', (els) => {
+      const ips = els.filter((e) => e.classList.contains('xi-egress-ip') && e.firstChild);
+      const saved = ips.map((e) => e.firstChild.data);
+      ips.forEach((e) => { e.firstChild.data = '203.0.113.250'; });
+      const out = els.filter((e) => e.scrollWidth > e.clientWidth + 1).map((e) => e.textContent.trim());
+      ips.forEach((e, i) => { e.firstChild.data = saved[i]; });
+      return out;
+    });
     check(label + ': outgoing IP and UDP ports are not cut off', cut.length === 0, cut.join(' | '));
     // The panel scrolls an inner element, so shoot the viewport with the
     // section scrolled to the top of it.

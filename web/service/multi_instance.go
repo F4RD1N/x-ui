@@ -42,6 +42,22 @@ type SubPlan struct {
 	Clients    int           `json:"clients"`
 	Items      []SubPlanItem `json:"items"`
 	Error      string        `json:"error"` // why they cannot be added; "" if they can
+	// Error as a translation key and its parameters.
+	ErrorKey    string   `json:"-"`
+	ErrorParams []string `json:"-"`
+}
+
+// planMsg is a message of a sub-inbound plan in English, and as a key under
+// pages.inbounds with its parameters ("Name==value") for the panel to show
+// in the viewer's language.
+type planMsg struct {
+	Text   string
+	Key    string
+	Params []string
+}
+
+func (p *SubPlan) setError(m planMsg) {
+	p.Error, p.ErrorKey, p.ErrorParams = m.Text, m.Key, m.Params
 }
 
 // subPlanMax caps one request.
@@ -131,15 +147,18 @@ func (s *InboundService) PlanSubInbounds(id int, current []model.SubInbound, cou
 	plan.Count = count
 	switch {
 	case model.SocketListen(src.Listen):
-		plan.Error = errSocketSubs
+		plan.setError(planMsg{errSocketSubs, "subInboundSocket", nil})
 	case count < 1 && useMax:
-		plan.Error = fmt.Sprintf("no CPU cores are left for new instances (%d in total, %d reserved)", total, reserved)
+		plan.setError(planMsg{fmt.Sprintf("no CPU cores are left for new instances (%d in total, %d reserved)", total, reserved),
+			"multiInstanceNoCores", []string{"Total==" + strconv.Itoa(total), "Reserved==" + strconv.Itoa(reserved)}})
 	case count < 1:
-		plan.Error = "choose at least one instance"
+		plan.setError(planMsg{"choose at least one instance", "multiInstanceChooseOne", nil})
 	case cores > 0 && count*cores > plan.Available:
-		plan.Error = fmt.Sprintf("%d instances × %d cores need %d CPU cores, but only %d are available", count, cores, count*cores, plan.Available)
+		plan.setError(planMsg{fmt.Sprintf("%d instances × %d cores need %d CPU cores, but only %d are available", count, cores, count*cores, plan.Available),
+			"multiInstanceNeedCores", []string{"Count==" + strconv.Itoa(count), "Cores==" + strconv.Itoa(cores), "Need==" + strconv.Itoa(count*cores), "Available==" + strconv.Itoa(plan.Available)}})
 	case cores == 0 && total-reserved < 1:
-		plan.Error = fmt.Sprintf("auto instances need a free CPU core, but all %d are reserved", total)
+		plan.setError(planMsg{fmt.Sprintf("auto instances need a free CPU core, but all %d are reserved", total),
+			"multiInstanceAllReserved", []string{"Total==" + strconv.Itoa(total)}})
 	}
 
 	// A unix socket has no port to put sub-inbounds on: the switch above
@@ -172,7 +191,8 @@ func (s *InboundService) PlanSubInbounds(id int, current []model.SubInbound, cou
 		plan.Items = append(plan.Items, item)
 	}
 	if len(plan.Items) < count && plan.Error == "" {
-		plan.Error = fmt.Sprintf("only %d free ports are left after %d", len(plan.Items), start)
+		plan.setError(planMsg{fmt.Sprintf("only %d free ports are left after %d", len(plan.Items), start),
+			"multiInstanceFewPorts", []string{"Count==" + strconv.Itoa(len(plan.Items)), "Port==" + strconv.Itoa(start)}})
 	}
 	return plan, nil
 }
