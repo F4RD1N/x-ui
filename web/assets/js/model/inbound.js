@@ -2191,16 +2191,27 @@ Inbound.VLESSSettings = class extends Inbound.Settings {
         this.dialects = dialects;
     }
 
-    // dialectList is the parsed form of this.dialects, used for the config and
-    // for share links. Anything that is not a number is left out rather than
-    // written into the config as null.
-    get dialectList() {
+    // dialectTokens are the comma-separated entries of this.dialects.
+    get dialectTokens() {
         return String(this.dialects || "")
             .split(",")
             .map(d => d.trim())
-            .filter(d => d !== "")
-            .map(d => Number(d))
-            .filter(d => Number.isFinite(d));
+            .filter(d => d !== "");
+    }
+
+    // dialectsValid says whether every entry is a whole number 0-255, the
+    // only dialects the core takes; one it refuses stops the instance.
+    get dialectsValid() {
+        return this.dialectTokens.every(d => /^\d{1,3}$/.test(d) && Number(d) <= 255);
+    }
+
+    // dialectList is the parsed form of this.dialects, used for the config and
+    // for share links. Anything that is not a dialect is left out rather than
+    // written into the config; the form refuses to save it first.
+    get dialectList() {
+        return this.dialectTokens
+            .filter(d => /^\d{1,3}$/.test(d) && Number(d) <= 255)
+            .map(d => Number(d));
     }
 
     addFallback() {
@@ -2226,7 +2237,7 @@ Inbound.VLESSSettings = class extends Inbound.Settings {
             Inbound.VLESSSettings.Fallback.fromJson(json.fallbacks || []),
             json.selectedAuth,
             testseed,
-            (json.dialects || []).join(",")
+            Array.isArray(json.dialects) ? json.dialects.join(",") : ""
         );
         return obj;
     }

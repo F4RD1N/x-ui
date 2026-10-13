@@ -426,7 +426,7 @@
       // IntlUtil, whose locale-driven options put some languages on a 12-hour
       // one. Times are the viewer's own.
       formatFetchTime(seconds) {
-        if (!seconds) return 'never';
+        if (!seconds) return '{{ i18n "pages.xray.remoteConfigNever" }}';
         const d = new Date(seconds * 1000);
         const pad = n => String(n).padStart(2, '0');
         return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
@@ -438,7 +438,7 @@
           xraySetting: this.xraySetting,
           outboundTestUrl: this.outboundTestUrl || 'https://www.google.com/generate_204',
           xrayConfigUrl: this.xrayConfigUrl || '',
-          xrayConfigInterval: this.xrayConfigInterval || 0
+          xrayConfigInterval: Math.max(0, Math.floor(Number(this.xrayConfigInterval))) || 0
         });
         this.loading(false);
         if (msg.success) {

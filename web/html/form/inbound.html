@@ -62,11 +62,12 @@
         </template>
         <a-radio-group v-model="xrayCoresMode" button-style="solid" size="small">
             <a-radio-button value="auto">{{ i18n "pages.inbounds.xrayCoresAuto" }}</a-radio-button>
-            <a-radio-button value="fixed" :disabled="xrayCoresMax < 1">{{ i18n "pages.inbounds.xrayCoresFixed" }}</a-radio-button>
+            <a-radio-button value="fixed" :disabled="xrayInfoLoading || xrayCoresMax < 1">{{ i18n "pages.inbounds.xrayCoresFixed" }}</a-radio-button>
         </a-radio-group>
         <a-input-number v-if="xrayCoresMode === 'fixed'" v-model.number="dbInbound.xrayCores" :min="1"
             :precision="0" :style="{ marginLeft: '8px', width: '90px' }"></a-input-number>
-        <div class="xray-instance-hint">
+        <div v-if="xrayInfoLoading" class="xray-instance-hint"><a-icon type="loading"></a-icon></div>
+        <div v-else class="xray-instance-hint">
             {{ i18n "pages.inbounds.xrayCoresTotal" }}: <b>[[ xrayTotalCores ]]</b>
             &middot; {{ i18n "pages.inbounds.xrayCoresAvailable" }}: <b>[[ xrayCoresFree ]]</b>
             <template v-if="xrayCoresMode === 'auto' && xrayAutoShare > 0">

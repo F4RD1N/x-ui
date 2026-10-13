@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -18,6 +19,7 @@ import (
 	"github.com/xlzd/gotp"
 
 	"github.com/mhsanaei/3x-ui/v2/database"
+	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/logger"
 	"github.com/mhsanaei/3x-ui/v2/web/global"
 	"github.com/mhsanaei/3x-ui/v2/web/service"
@@ -243,4 +245,44 @@ func TestXraySettingKeepsRemoteConfig(t *testing.T) {
 		t.Fatal("full form refused")
 	}
 	check("full form", "", 7)
+}
+
+// The Multi Instance plan's messages come in the viewer's language.
+func TestMultiInstancePlanTranslated(t *testing.T) {
+	engine := testEngine(t)
+	cookie := loginCookie(t, engine)
+	db := database.GetDB()
+	settings := `{"clients":[{"id":"6b0e9c1c-2d6f-4c6e-9b8a-00000000aa01","email":"plan@test","enable":true}],"decryption":"none"}`
+	src := &model.Inbound{UserId: 1, Enable: true, Remark: "src", Port: 39100, Protocol: model.VLESS, Tag: "inbound-39100",
+		Settings: settings, StreamSettings: `{"network":"tcp","security":"none"}`, Sniffing: `{"enabled":false}`}
+	other := &model.Inbound{UserId: 1, Enable: true, Remark: "other", Port: 39101, Protocol: model.VLESS, Tag: "inbound-39101",
+		Settings: strings.Replace(settings, "plan@test", "plan2@test", 1), StreamSettings: src.StreamSettings, Sniffing: src.Sniffing}
+	for _, in := range []*model.Inbound{src, other} {
+		if err := db.Create(in).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for lang, want := range map[string][2]string{
+		"fa-IR": {"1 پورت از این پورت‌ها گرفته شده است", "در اختیار اینباند other است"},
+		"en-US": {"1 of the ports are taken", "used by inbound other"},
+	} {
+		form := url.Values{"count": {"1"}, "cores": {"0"}, "max": {"false"}, "subs": {"[]"}}
+		r := httptest.NewRequest("POST", "/hetzner/panel/api/inbounds/"+strconv.Itoa(src.Id)+"/multiInstance", strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.Header.Set("Cookie", cookie+"; lang="+lang)
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, r)
+		var msg struct {
+			Obj struct {
+				Error string `json:"error"`
+				Items []struct {
+					Conflict string `json:"conflict"`
+				} `json:"items"`
+			} `json:"obj"`
+		}
+		json.Unmarshal(w.Body.Bytes(), &msg)
+		if msg.Obj.Error != want[0] || len(msg.Obj.Items) != 1 || msg.Obj.Items[0].Conflict != want[1] {
+			t.Errorf("%s: %s", lang, w.Body.String())
+		}
+	}
 }

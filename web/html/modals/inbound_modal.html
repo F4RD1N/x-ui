@@ -1,6 +1,6 @@
 {{define "modals/inboundModal"}}
 <a-modal id="inbound-modal" v-model="inModal.visible" :title="inModal.title" :dialog-style="{ top: '20px' }"
-    @ok="inModal.ok" :confirm-loading="inModal.confirmLoading" :closable="true" :mask-closable="false"
+    @ok="inModal.ok" :confirm-loading="inModal.confirmLoading || inModal.xrayInfoLoading" :closable="true" :mask-closable="false"
     :class="themeSwitcher.currentTheme" :ok-text="inModal.okText" cancel-text='{{ i18n "close" }}'>
     {{template "form/inbound"}}
 </a-modal>
@@ -23,15 +23,27 @@
         // Xray core instances and the CPU cores they have, for the instance
         // and cores fields.
         xrayInfo: { totalCores: 0, nextName: "", instances: [] },
+        xrayInfoLoading: false,
+        xrayInfoLoaded: false,
+        xrayInfoSeq: 0,
         // Auto or fixed cores, kept apart from the number so that clearing
         // the number while typing does not switch to auto.
         coresMode: "auto",
+        // Only the answer to the latest request is kept; a failed one leaves
+        // the info unloaded, and OK asks again.
         async loadXrayInfo() {
-            const msg = await HttpUtil.get("/panel/api/inbounds/xrayInstances");
-            if (!msg || !msg.success || !msg.obj) return;
-            inModal.xrayInfo = msg.obj;
-            if (!inModal.isEdit && !inModal.dbInbound.xrayInstance) {
-                inModal.dbInbound.xrayInstance = msg.obj.nextName;
+            const seq = ++inModal.xrayInfoSeq;
+            inModal.xrayInfoLoading = true;
+            try {
+                const msg = await HttpUtil.get("/panel/api/inbounds/xrayInstances");
+                if (seq !== inModal.xrayInfoSeq || !msg || !msg.success || !msg.obj) return;
+                inModal.xrayInfo = msg.obj;
+                inModal.xrayInfoLoaded = true;
+                if (!inModal.isEdit && !inModal.dbInbound.xrayInstance) {
+                    inModal.dbInbound.xrayInstance = msg.obj.nextName;
+                }
+            } finally {
+                if (seq === inModal.xrayInfoSeq) inModal.xrayInfoLoading = false;
             }
         },
         // cores the other instances have, leaving out this inbound's own
@@ -62,7 +74,18 @@
             const own = inModal.coresMode === "fixed" && inModal.dbInbound.xrayCores > 0 ? inModal.dbInbound.xrayCores : 0;
             return Math.max(0, inModal.xrayCoresMax() - own);
         },
-        ok() {
+        async ok() {
+            if (inModal.xrayInfoLoading) return;
+            if (!inModal.xrayInfoLoaded) {
+                // The cores check needs the instances; ask again first.
+                await inModal.loadXrayInfo();
+                if (!inModal.xrayInfoLoaded) return;
+            }
+            const settings = inModal.inbound.settings;
+            if (inModal.inbound.protocol === Protocols.VLESS && settings && !settings.dialectsValid) {
+                Vue.prototype.$message.error('{{ i18n "pages.inbounds.dialectsInvalid" }}');
+                return;
+            }
             if (inModal.coresMode === "auto") {
                 inModal.dbInbound.xrayCores = 0;
             } else {
@@ -114,6 +137,7 @@
             this.visible = true;
             this.isEdit = isEdit;
             this.xrayInfo = { totalCores: 0, nextName: "", instances: [] };
+            this.xrayInfoLoaded = false;
             this.coresMode = this.dbInbound.xrayCores > 0 ? "fixed" : "auto";
             this.loadXrayInfo();
         },
@@ -205,6 +229,9 @@
             },
             get xrayTotalCores() {
                 return inModal.xrayInfo.totalCores;
+            },
+            get xrayInfoLoading() {
+                return inModal.xrayInfoLoading;
             },
             get xrayCoresMax() {
                 return inModal.xrayCoresMax();

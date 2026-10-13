@@ -73,7 +73,7 @@ func (a *InboundController) getInbounds(c *gin.Context) {
 func (a *InboundController) getInbound(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
-		jsonMsg(c, I18nWeb(c, "get"), err)
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.obtain"), err)
 		return
 	}
 	inbound, err := a.inboundService.GetInbound(id)
@@ -420,6 +420,17 @@ func (a *InboundController) multiInstance(c *gin.Context) {
 		}
 	}
 	plan, err := a.inboundService.PlanSubInbounds(id, current, count, cores, c.PostForm("max") == "true")
+	if err == nil {
+		// The modal shows the plan's messages; they come in English.
+		if plan.ErrorKey != "" {
+			plan.Error = I18nWeb(c, "pages.inbounds."+plan.ErrorKey, plan.ErrorParams...)
+		}
+		for i := range plan.Items {
+			if it := &plan.Items[i]; it.ConflictKey != "" {
+				it.Conflict = I18nWeb(c, "pages.inbounds."+it.ConflictKey, it.ConflictParams...)
+			}
+		}
+	}
 	jsonObj(c, plan, err)
 }
 

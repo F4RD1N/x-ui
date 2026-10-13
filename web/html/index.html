@@ -21,6 +21,8 @@
   .xi-inbounds { margin-top: 14px; }
   .xi-inbounds .ant-tag { margin: 0 4px 4px 0; }
   .xi-error { color: #e04141; font-size: 12px; margin-top: 6px; word-break: break-word; }
+  /* a whole row, so a full IPv4 address fits beside the gauge on phones */
+  .xi-fact-wide { grid-column: 1 / -1; }
   .xi-egress { display: flex; align-items: center; gap: 2px; }
   .xi-egress-ip { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .xi-egress .ant-btn { flex: 0 0 auto; height: 22px; padding: 0 4px; }
@@ -196,19 +198,19 @@
                 <a-card title='x-ui' hoverable>
                   <a rel="noopener" href="https://github.com/F4RD1N/x-ui/releases" target="_blank">
                     <a-tag color="green">
-                      <span>v{{ .cur_ver }}</span>
+                      <span>v{{ .version }}</span>
                     </a-tag>
                   </a>
                   <a-tag v-if="panelUpdate.available" color="orange">
-                    <span>v[[ panelUpdate.latest ]] available</span>
+                    <span>[[ '{{ i18n "pages.index.panelUpdateAvailable" }}'.replace('#version#', panelUpdate.latest) ]]</span>
                   </a-tag>
                   <a-tag v-else-if="panelUpdate.checked" color="blue">
-                    <span>up to date</span>
+                    <span>{{ i18n "pages.index.panelUpToDate" }}</span>
                   </a-tag>
                   <template #actions>
                     <a-space direction="horizontal" @click="updatePanel" class="jc-center">
                       <a-icon :type="panelUpdate.busy ? 'loading' : 'cloud-download'"></a-icon>
-                      <span v-if="!isMobile">[[ panelUpdate.busyText || 'Update' ]]</span>
+                      <span v-if="!isMobile">[[ panelUpdate.busyText || '{{ i18n "pages.index.panelUpdate" }}' ]]</span>
                     </a-space>
                   </template>
                 </a-card>
@@ -419,16 +421,16 @@
                         <div class="xi-value">[[ inst.uptime ? TimeFormatter.formatSecond(inst.uptime) : '–' ]]</div>
                       </div>
                       <div class="xi-fact">
+                        <div class="xi-label">{{ i18n "pages.index.xrayInstanceUdpPorts" }}</div>
+                        <div class="xi-value xi-udp" :style="{ color: udpColor(inst) }">[[ udpText(inst) ]]</div>
+                      </div>
+                      <div class="xi-fact xi-fact-wide">
                         <div class="xi-label">{{ i18n "pages.index.xrayInstanceEgress" }}</div>
                         <div class="xi-value xi-egress">
                           <span class="xi-egress-ip" :title="inst.egress">[[ inst.egress || '{{ i18n "pages.index.xrayInstanceEgressDefault" }}' ]]</span>
                           <a-button type="link" size="small" icon="edit" class="xi-egress-edit" @click="openEgress(inst)"></a-button>
                         </div>
                         <div v-if="inst.egressGone" class="xi-gone">{{ i18n "pages.index.xrayInstanceEgressGone" }}</div>
-                      </div>
-                      <div class="xi-fact">
-                        <div class="xi-label">{{ i18n "pages.index.xrayInstanceUdpPorts" }}</div>
-                        <div class="xi-value xi-udp" :style="{ color: udpColor(inst) }">[[ udpText(inst) ]]</div>
                       </div>
                     </div>
                   </div>
@@ -458,10 +460,10 @@
       </a-select-option>
     </a-select>
   </a-modal>
-  <a-modal id="version-modal" v-model="versionModal.visible" title='Geofiles'
+  <a-modal id="version-modal" v-model="versionModal.visible" title='{{ i18n "pages.index.geofiles" }}'
     :closable="true" @ok="() => versionModal.visible = false" :class="themeSwitcher.currentTheme" footer="">
     <a-collapse default-active-key="2">
-      <a-collapse-panel key="2" header='Geofiles'>
+      <a-collapse-panel key="2" header='{{ i18n "pages.index.geofiles" }}'>
         <a-list class="ant-version-list w-100" bordered>
           <a-list-item class="ant-version-list-item"
             v-for="file, index in ['geosite.dat', 'geoip.dat', 'geosite_IR.dat', 'geoip_IR.dat', 'geosite_RU.dat', 'geoip_RU.dat']">
@@ -960,6 +962,9 @@
       const levels = ["DEBUG", "INFO", "NOTICE", "WARNING", "ERROR"];
       const levelColors = ["#3c89e8", "#008771", "#008771", "#f37b24", "#e04141", "#bcbcbc"];
 
+      // Log lines carry text from outside (a login's headers, a client's
+      // address), so every piece is escaped before it goes into the HTML.
+      const esc = Utils.escapeHtml;
       logs.forEach((log, index) => {
         let [data, message] = log.split(" - ", 2);
         const parts = data.split(" ")
@@ -972,18 +977,20 @@
           const levelIndex = levels.indexOf(level, levels) || 5;
 
           //formattedLogs += `<span style="color: gray;">${index + 1}.</span>`;
-          formattedLogs += `<span style="color: ${levelColors[0]};">${d} ${t}</span> `;
-          formattedLogs += `<span style="color: ${levelColors[levelIndex]}">${level}</span>`;
+          formattedLogs += `<span style="color: ${levelColors[0]};">${esc(d)} ${esc(t)}</span> `;
+          formattedLogs += `<span style="color: ${levelColors[levelIndex]}">${esc(level)}</span>`;
         } else {
           const levelIndex = levels.indexOf(data, levels) || 5;
-          formattedLogs += `<span style="color: ${levelColors[levelIndex]}">${data}</span>`;
+          formattedLogs += `<span style="color: ${levelColors[levelIndex]}">${esc(data)}</span>`;
         }
 
         if (message) {
-          if (message.startsWith("XRAY:"))
-            message = "<b>XRAY: </b>" + message.substring(5);
+          // Core lines start "XRAY:" or, from an instance, "XRAY[name]:".
+          const core = message.match(/^XRAY(\[[^\]]*\])?:/);
+          if (core)
+            message = `<b>${esc(core[0])} </b>` + esc(message.substring(core[0].length).replace(/^ /, ''));
           else
-            message = "<b>X-UI: </b>" + message;
+            message = "<b>X-UI: </b>" + esc(message);
         }
 
         formattedLogs += message ? ' - ' + message : '';
@@ -1033,6 +1040,7 @@
     </tr>
 `;
 
+        const esc = Utils.escapeHtml;
         logs.reverse().forEach((log, index) => {
           let outboundColor = '';
           if (log.Event === 1) {
@@ -1044,16 +1052,16 @@
 
           let text = ``;
           if (log.Email !== "") {
-            text = `<td>${log.Email}</td>`;
+            text = `<td>${esc(log.Email)}</td>`;
           }
 
           formattedLogs += `
 <tr ${outboundColor}>
-    <td><b>${IntlUtil.formatDate(log.DateTime)}</b></td>
-    <td>${log.FromAddress}</td>
-    <td>${log.ToAddress}</td>
-    <td>${log.Inbound}</td>
-    <td>${log.Outbound}</td>
+    <td><b>${esc(IntlUtil.formatDate(log.DateTime))}</b></td>
+    <td>${esc(log.FromAddress)}</td>
+    <td>${esc(log.ToAddress)}</td>
+    <td>${esc(log.Inbound)}</td>
+    <td>${esc(log.Outbound)}</td>
     ${text}
 </tr>
 `;
@@ -1199,7 +1207,7 @@
       async updatePanel() {
         if (this.panelUpdate.busy) return;
         this.panelUpdate.busy = true;
-        this.panelUpdate.busyText = 'Checking...';
+        this.panelUpdate.busyText = '{{ i18n "pages.index.panelUpdateChecking" }}';
 
         const msg = await HttpUtil.get('/panel/api/server/checkUpdate');
         this.panelUpdate.busy = false;
@@ -1213,30 +1221,52 @@
         this.panelUpdate.available = info.available;
 
         if (!info.available) {
-          this.$message.success(`Already on the latest version (v${info.current}).`);
+          this.$message.success('{{ i18n "pages.index.panelUpdateLatest" }}'.replace('#version#', info.current));
           return;
         }
 
         this.$confirm({
-          title: 'Update panel',
-          content: `Update from v${info.current} to v${info.latest}? `
-            + 'The panel and its Xray core are replaced together and the panel restarts. '
-            + 'Your database, inbounds and login are kept.',
+          title: '{{ i18n "pages.index.panelUpdateTitle" }}',
+          content: '{{ i18n "pages.index.panelUpdateConfirm" }}'.replace('#current#', info.current).replace('#latest#', info.latest),
           okText: '{{ i18n "confirm"}}',
           class: themeSwitcher.currentTheme,
           cancelText: '{{ i18n "cancel"}}',
           onOk: async () => {
             this.panelUpdate.busy = true;
-            this.panelUpdate.busyText = 'Updating...';
+            this.panelUpdate.busyText = '{{ i18n "pages.index.panelUpdating" }}';
             const res = await HttpUtil.post('/panel/api/server/updatePanel');
             if (!res.success) {
               this.panelUpdate.busy = false;
               this.panelUpdate.busyText = '';
               return;
             }
-            this.$message.success('Update started. The panel will restart shortly.');
+            this.$message.success('{{ i18n "pages.index.panelUpdateStarted" }}');
+            this.waitForPanelUpdate(info.current);
           },
         });
+      },
+      // The updater stops the panel, replaces it and starts the new one. The
+      // button keeps spinning until the panel reports another version, then
+      // the page reloads to get the new pages and scripts. Requests fail
+      // while it restarts; after three minutes the update counts as failed.
+      async waitForPanelUpdate(from) {
+        const deadline = Date.now() + 3 * 60 * 1000;
+        while (Date.now() < deadline) {
+          await PromiseUtil.sleep(4000);
+          try {
+            const resp = await axios.get('/panel/api/server/status');
+            const version = resp.data && resp.data.success && resp.data.obj && resp.data.obj.panelVersion;
+            if (version && version !== from) {
+              location.reload();
+              return;
+            }
+          } catch (e) {
+            // restarting
+          }
+        }
+        this.panelUpdate.busy = false;
+        this.panelUpdate.busyText = '';
+        this.$message.error('{{ i18n "pages.index.panelUpdateFailed" }}');
       },
       openGeofiles() {
         versionModal.show([]);

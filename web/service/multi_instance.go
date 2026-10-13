@@ -29,6 +29,9 @@ type SubPlanItem struct {
 	Port     int    `json:"port"`
 	Instance string `json:"instance"`
 	Conflict string `json:"conflict"` // why this port cannot be used; "" if it can
+	// Conflict as a translation key and its parameters.
+	ConflictKey    string   `json:"-"`
+	ConflictParams []string `json:"-"`
 }
 
 // SubPlan is what adding sub-inbounds would do.
@@ -42,6 +45,22 @@ type SubPlan struct {
 	Clients    int           `json:"clients"`
 	Items      []SubPlanItem `json:"items"`
 	Error      string        `json:"error"` // why they cannot be added; "" if they can
+	// Error as a translation key and its parameters.
+	ErrorKey    string   `json:"-"`
+	ErrorParams []string `json:"-"`
+}
+
+// planMsg is a message of a sub-inbound plan in English, and as a key under
+// pages.inbounds with its parameters ("Name==value") for the panel to show
+// in the viewer's language.
+type planMsg struct {
+	Text   string
+	Key    string
+	Params []string
+}
+
+func (p *SubPlan) setError(m planMsg) {
+	p.Error, p.ErrorKey, p.ErrorParams = m.Text, m.Key, m.Params
 }
 
 // subPlanMax caps one request.
@@ -127,13 +146,16 @@ func (s *InboundService) PlanSubInbounds(id int, current []model.SubInbound, cou
 	plan.Count = count
 	switch {
 	case count < 1 && useMax:
-		plan.Error = fmt.Sprintf("no CPU cores are left for new instances (%d in total, %d reserved)", total, reserved)
+		plan.setError(planMsg{fmt.Sprintf("no CPU cores are left for new instances (%d in total, %d reserved)", total, reserved),
+			"multiInstanceNoCores", []string{"Total==" + strconv.Itoa(total), "Reserved==" + strconv.Itoa(reserved)}})
 	case count < 1:
-		plan.Error = "choose at least one instance"
+		plan.setError(planMsg{"choose at least one instance", "multiInstanceChooseOne", nil})
 	case cores > 0 && count*cores > plan.Available:
-		plan.Error = fmt.Sprintf("%d instances × %d cores need %d CPU cores, but only %d are available", count, cores, count*cores, plan.Available)
+		plan.setError(planMsg{fmt.Sprintf("%d instances × %d cores need %d CPU cores, but only %d are available", count, cores, count*cores, plan.Available),
+			"multiInstanceNeedCores", []string{"Count==" + strconv.Itoa(count), "Cores==" + strconv.Itoa(cores), "Need==" + strconv.Itoa(count*cores), "Available==" + strconv.Itoa(plan.Available)}})
 	case cores == 0 && total-reserved < 1:
-		plan.Error = fmt.Sprintf("auto instances need a free CPU core, but all %d are reserved", total)
+		plan.setError(planMsg{fmt.Sprintf("auto instances need a free CPU core, but all %d are reserved", total),
+			"multiInstanceAllReserved", []string{"Total==" + strconv.Itoa(total)}})
 	}
 
 	used := map[string]bool{}
@@ -154,18 +176,20 @@ func (s *InboundService) PlanSubInbounds(id int, current []model.SubInbound, cou
 		port := start + i
 		item := SubPlanItem{Port: port, Instance: model.NextXrayInstanceName(used)}
 		used[item.Instance] = true
+		var conflict planMsg
 		if taken[port] {
-			item.Conflict = "used by this inbound"
+			conflict = planMsg{"used by this inbound", "portUsedByThisInbound", nil}
 		} else {
-			item.Conflict = portConflict(src, port, others, running)
+			conflict = portConflictMsg(src, port, others, running)
 		}
+		item.Conflict, item.ConflictKey, item.ConflictParams = conflict.Text, conflict.Key, conflict.Params
 		if item.Conflict != "" {
 			conflicts++
 		}
 		plan.Items = append(plan.Items, item)
 	}
 	if conflicts > 0 && plan.Error == "" {
-		plan.Error = fmt.Sprintf("%d of the ports are taken", conflicts)
+		plan.setError(planMsg{fmt.Sprintf("%d of the ports are taken", conflicts), "multiInstancePortsTaken", []string{"Count==" + strconv.Itoa(conflicts)}})
 	}
 	return plan, nil
 }
@@ -186,8 +210,15 @@ func wildcardListen(l string) bool { return l == "" || l == "0.0.0.0" || l == ":
 // the other inbounds with their sub-inbounds; ports in own are the
 // inbound's own and are not tried.
 func portConflict(src *model.Inbound, port int, others []*model.Inbound, own map[int]bool) string {
+	return portConflictMsg(src, port, others, own).Text
+}
+
+// portConflictMsg is portConflict as a plan message; its Text is "" when
+// the port is free.
+func portConflictMsg(src *model.Inbound, port int, others []*model.Inbound, own map[int]bool) planMsg {
+	inUse := planMsg{"in use by another program", "portInUse", nil}
 	if port < 1 || port > 65535 {
-		return "not a port number"
+		return planMsg{"not a port number", "portNotANumber", nil}
 	}
 	for _, in := range others {
 		if in.Port == port && (wildcardListen(src.Listen) || wildcardListen(in.Listen) || in.Listen == src.Listen) {
@@ -196,16 +227,16 @@ func portConflict(src *model.Inbound, port int, others []*model.Inbound, own map
 				name = "#" + strconv.Itoa(in.Id)
 			}
 			if in.SubOf != 0 {
-				return "used by a sub-inbound of " + name
+				return planMsg{"used by a sub-inbound of " + name, "portUsedBySubInbound", []string{"Name==" + name}}
 			}
-			return "used by inbound " + name
+			return planMsg{"used by inbound " + name, "portUsedByInbound", []string{"Name==" + name}}
 		}
 	}
 	if name := corePortUser(port); name != "" {
-		return "used by the API of " + name
+		return planMsg{"used by the API of " + name, "portUsedByAPI", []string{"Name==" + name}}
 	}
 	if own[port] {
-		return ""
+		return planMsg{}
 	}
 	host := src.Listen
 	if wildcardListen(host) || strings.HasPrefix(host, "/") || strings.HasPrefix(host, "@") {
@@ -215,17 +246,17 @@ func portConflict(src *model.Inbound, port int, others []*model.Inbound, own map
 	if usesUDP(src) {
 		c, err := net.ListenPacket("udp", addr)
 		if err != nil {
-			return "in use by another program"
+			return inUse
 		}
 		c.Close()
-		return ""
+		return planMsg{}
 	}
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
-		return "in use by another program"
+		return inUse
 	}
 	l.Close()
-	return ""
+	return planMsg{}
 }
 
 // usesUDP reports whether an inbound listens on UDP rather than TCP.

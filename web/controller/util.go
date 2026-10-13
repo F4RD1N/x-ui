@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"github.com/mhsanaei/3x-ui/v2/config"
 	"github.com/mhsanaei/3x-ui/v2/web/global"
 	"net"
 	"net/http"
@@ -99,8 +100,11 @@ func html(c *gin.Context, name string, title string, data gin.H) {
 
 // getContext adds version and other context data to the provided gin.H.
 func getContext(h gin.H) gin.H {
+	// cur_ver keys the asset URLs and changes with the assets; version is
+	// the panel's release, for showing.
 	a := gin.H{
 		"cur_ver": global.AssetVersion(),
+		"version": strings.TrimPrefix(config.GetVersion(), "v"),
 	}
 	for key, value := range h {
 		a[key] = value

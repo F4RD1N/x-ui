@@ -51,23 +51,23 @@
             </template>
         </a-setting-list-item>
     </a-collapse-panel>
-    <a-collapse-panel key="7" header='Remote config'>
+    <a-collapse-panel key="7" header='{{ i18n "pages.xray.remoteConfig" }}'>
         <a-setting-list-item paddings="small">
-            <template #title>Config URL</template>
+            <template #title>{{ i18n "pages.xray.remoteConfigUrl" }}</template>
             <template #control>
                 <a-input type="text" placeholder="https://example.com/xray.json"
                     v-model="xrayConfigUrl"></a-input>
             </template>
         </a-setting-list-item>
         <a-setting-list-item paddings="small">
-            <template #title>Update interval in minutes (0 = off)</template>
+            <template #title>{{ i18n "pages.xray.remoteConfigInterval" }}</template>
             <template #control>
-                <a-input-number :min="0" v-model="xrayConfigInterval"
+                <a-input-number :min="0" :precision="0" v-model="xrayConfigInterval"
                     :style="{ width: '100%' }"></a-input-number>
             </template>
         </a-setting-list-item>
         <a-setting-list-item paddings="small">
-            <template #title>Last checked</template>
+            <template #title>{{ i18n "pages.xray.remoteConfigLastCheck" }}</template>
             <template #control>
                 <a-tag :color="xrayConfigLastCheck ? 'green' : 'default'">
                     [[ formatFetchTime(xrayConfigLastCheck) ]]
@@ -75,7 +75,7 @@
             </template>
         </a-setting-list-item>
         <a-setting-list-item paddings="small">
-            <template #title>Last applied</template>
+            <template #title>{{ i18n "pages.xray.remoteConfigLastApply" }}</template>
             <template #control>
                 <a-tag :color="xrayConfigLastApply ? 'green' : 'default'">
                     [[ formatFetchTime(xrayConfigLastApply) ]]
