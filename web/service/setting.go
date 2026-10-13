@@ -767,6 +767,9 @@ func (s *SettingService) UpdateAllSetting(allSetting *entity.AllSetting) error {
 	if err := allSetting.CheckValid(); err != nil {
 		return err
 	}
+	if err := s.checkServerPorts(allSetting.WebListen, allSetting.WebPort, allSetting.SubEnable, allSetting.SubListen, allSetting.SubPort); err != nil {
+		return err
+	}
 
 	// A certificate field may hold a link instead of a path. Fetch it now and
 	// store where it landed, so the panel only ever reads local files.

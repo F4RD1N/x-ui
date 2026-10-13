@@ -67,13 +67,15 @@ func runWebServer() {
 		return
 	}
 
+	// The subscription server is not worth the panel: exiting here would
+	// also kill every xray core, and systemd would restart into the same
+	// failure. Log it and keep the panel up so the setting can be fixed.
 	var subServer *sub.Server
 	subServer = sub.NewServer()
 	global.SetSubServer(subServer)
 	err = subServer.Start()
 	if err != nil {
-		log.Fatalf("Error starting sub server: %v", err)
-		return
+		logger.Error("Error starting sub server:", err)
 	}
 
 	sigCh := make(chan os.Signal, 1)
@@ -112,10 +114,10 @@ func runWebServer() {
 			global.SetSubServer(subServer)
 			err = subServer.Start()
 			if err != nil {
-				log.Fatalf("Error restarting sub server: %v", err)
-				return
+				logger.Error("Error restarting sub server:", err)
+			} else {
+				log.Println("Sub server restarted successfully.")
 			}
-			log.Println("Sub server restarted successfully.")
 		case sys.SIGUSR1:
 			logger.Info("Received USR1 signal, restarting xray-core...")
 			err := server.RestartXray()

@@ -5,6 +5,7 @@ package sub
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"html/template"
 	"io"
 	"io/fs"
@@ -70,7 +71,13 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 	gin.DefaultErrorWriter = io.Discard
 	gin.SetMode(gin.ReleaseMode)
 
-	engine := gin.Default()
+	// gin.Default's recovery writes to the discarded error writer; log a
+	// panic instead, so a link that cannot be built shows up somewhere.
+	engine := gin.New()
+	engine.Use(gin.CustomRecoveryWithWriter(io.Discard, func(c *gin.Context, err any) {
+		logger.Error("sub: panic serving ", c.FullPath(), ": ", err)
+		c.AbortWithStatus(http.StatusInternalServerError)
+	}))
 
 	subDomain, err := s.settingService.GetSubDomain()
 	if err != nil {
@@ -271,6 +278,19 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 	return engine, nil
 }
 
+// buildRouter runs initRouter and turns a panic into an error. gin panics
+// on routes that clash, such as a JSON or Clash path equal to the
+// subscription path, and the sub server failing to start must not take the
+// panel and its cores down with it.
+func (s *Server) buildRouter() (engine *gin.Engine, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			engine, err = nil, fmt.Errorf("sub: setting up routes: %v", r)
+		}
+	}()
+	return s.initRouter()
+}
+
 // getHtmlFiles loads templates from local folder (used in debug mode)
 func (s *Server) getHtmlFiles() ([]string, error) {
 	dir, _ := os.Getwd()
@@ -312,7 +332,7 @@ func (s *Server) Start() (err error) {
 		return nil
 	}
 
-	engine, err := s.initRouter()
+	engine, err := s.buildRouter()
 	if err != nil {
 		return err
 	}

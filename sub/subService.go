@@ -23,10 +23,11 @@ import (
 
 // SubService provides business logic for generating subscription links and managing subscription data.
 type SubService struct {
+	// address is the host of the request a copy of the service is building
+	// links for; GetSubs sets it on its own copy, never on the shared one.
 	address        string
 	showInfo       bool
 	remarkModel    string
-	datepicker     string
 	inboundService service.InboundService
 	settingService service.SettingService
 }
@@ -41,7 +42,10 @@ func NewSubService(showInfo bool, remarkModel string) *SubService {
 
 // GetSubs retrieves subscription links for a given subscription ID and host.
 func (s *SubService) GetSubs(subId string, host string) ([]string, int64, xray.ClientTraffic, error) {
-	s.address = host
+	// One service answers every request at once, so the host goes on a copy.
+	sc := *s
+	sc.address = host
+	s = &sc
 	var result []string
 	var traffic xray.ClientTraffic
 	var lastOnline int64
@@ -55,10 +59,6 @@ func (s *SubService) GetSubs(subId string, host string) ([]string, int64, xray.C
 		return nil, 0, traffic, common.NewError("No inbounds found with ", subId)
 	}
 
-	s.datepicker, err = s.settingService.GetDatepicker()
-	if err != nil {
-		s.datepicker = "gregorian"
-	}
 	for _, inbound := range inbounds {
 		clients, err := s.inboundService.GetClients(inbound)
 		if err != nil {
@@ -182,12 +182,7 @@ func (s *SubService) genVmessLink(inbound *model.Inbound, email string) string {
 	if inbound.Protocol != model.VMESS {
 		return ""
 	}
-	var address string
-	if inbound.Listen == "" || inbound.Listen == "0.0.0.0" || inbound.Listen == "::" || inbound.Listen == "::0" {
-		address = s.address
-	} else {
-		address = inbound.Listen
-	}
+	address := linkAddress(inbound, s.address)
 	obj := map[string]any{
 		"v":    "2",
 		"add":  address,
@@ -323,12 +318,7 @@ func (s *SubService) genVmessLink(inbound *model.Inbound, email string) string {
 }
 
 func (s *SubService) genVlessLink(inbound *model.Inbound, email string) string {
-	var address string
-	if inbound.Listen == "" || inbound.Listen == "0.0.0.0" || inbound.Listen == "::" || inbound.Listen == "::0" {
-		address = s.address
-	} else {
-		address = inbound.Listen
-	}
+	address := linkAddress(inbound, s.address)
 
 	if inbound.Protocol != model.VLESS {
 		return ""
@@ -379,10 +369,15 @@ func (s *SubService) genVlessLink(inbound *model.Inbound, email string) string {
 			params["headerType"] = "http"
 		}
 	case "kcp":
+		// The panel saves mKCP without a header or seed, so either may be absent.
 		kcp, _ := stream["kcpSettings"].(map[string]any)
 		header, _ := kcp["header"].(map[string]any)
-		params["headerType"] = header["type"].(string)
-		params["seed"] = kcp["seed"].(string)
+		if headerType, _ := header["type"].(string); headerType != "" {
+			params["headerType"] = headerType
+		}
+		if seed, _ := kcp["seed"].(string); seed != "" {
+			params["seed"] = seed
+		}
 	case "ws":
 		ws, _ := stream["wsSettings"].(map[string]any)
 		params["path"] = ws["path"].(string)
@@ -494,14 +489,13 @@ func (s *SubService) genVlessLink(inbound *model.Inbound, email string) string {
 			newSecurity, _ := ep["forceTls"].(string)
 			dest, _ := ep["dest"].(string)
 			port := int(ep["port"].(float64))
-			link := fmt.Sprintf("vless://%s@%s:%d", uuid, dest, port)
+			url := shareURL("vless", uuid, dest, port)
 
 			if newSecurity != "same" {
 				params["security"] = newSecurity
 			} else {
 				params["security"] = security
 			}
-			url, _ := url.Parse(link)
 			q := url.Query()
 
 			for k, v := range params {
@@ -520,8 +514,7 @@ func (s *SubService) genVlessLink(inbound *model.Inbound, email string) string {
 		return strings.Join(links, "\n")
 	}
 
-	link := fmt.Sprintf("vless://%s@%s:%d", uuid, address, port)
-	url, _ := url.Parse(link)
+	url := shareURL("vless", uuid, address, port)
 	q := url.Query()
 
 	for k, v := range params {
@@ -536,12 +529,7 @@ func (s *SubService) genVlessLink(inbound *model.Inbound, email string) string {
 }
 
 func (s *SubService) genTrojanLink(inbound *model.Inbound, email string) string {
-	var address string
-	if inbound.Listen == "" || inbound.Listen == "0.0.0.0" || inbound.Listen == "::" || inbound.Listen == "::0" {
-		address = s.address
-	} else {
-		address = inbound.Listen
-	}
+	address := linkAddress(inbound, s.address)
 	if inbound.Protocol != model.Trojan {
 		return ""
 	}
@@ -575,10 +563,15 @@ func (s *SubService) genTrojanLink(inbound *model.Inbound, email string) string 
 			params["headerType"] = "http"
 		}
 	case "kcp":
+		// The panel saves mKCP without a header or seed, so either may be absent.
 		kcp, _ := stream["kcpSettings"].(map[string]any)
 		header, _ := kcp["header"].(map[string]any)
-		params["headerType"] = header["type"].(string)
-		params["seed"] = kcp["seed"].(string)
+		if headerType, _ := header["type"].(string); headerType != "" {
+			params["headerType"] = headerType
+		}
+		if seed, _ := kcp["seed"].(string); seed != "" {
+			params["seed"] = seed
+		}
 	case "ws":
 		ws, _ := stream["wsSettings"].(map[string]any)
 		params["path"] = ws["path"].(string)
@@ -686,14 +679,13 @@ func (s *SubService) genTrojanLink(inbound *model.Inbound, email string) string 
 			newSecurity, _ := ep["forceTls"].(string)
 			dest, _ := ep["dest"].(string)
 			port := int(ep["port"].(float64))
-			link := fmt.Sprintf("trojan://%s@%s:%d", password, dest, port)
+			url := shareURL("trojan", password, dest, port)
 
 			if newSecurity != "same" {
 				params["security"] = newSecurity
 			} else {
 				params["security"] = security
 			}
-			url, _ := url.Parse(link)
 			q := url.Query()
 
 			for k, v := range params {
@@ -715,9 +707,7 @@ func (s *SubService) genTrojanLink(inbound *model.Inbound, email string) string 
 		return links
 	}
 
-	link := fmt.Sprintf("trojan://%s@%s:%d", password, address, port)
-
-	url, _ := url.Parse(link)
+	url := shareURL("trojan", password, address, port)
 	q := url.Query()
 
 	for k, v := range params {
@@ -732,12 +722,7 @@ func (s *SubService) genTrojanLink(inbound *model.Inbound, email string) string 
 }
 
 func (s *SubService) genShadowsocksLink(inbound *model.Inbound, email string) string {
-	var address string
-	if inbound.Listen == "" || inbound.Listen == "0.0.0.0" || inbound.Listen == "::" || inbound.Listen == "::0" {
-		address = s.address
-	} else {
-		address = inbound.Listen
-	}
+	address := linkAddress(inbound, s.address)
 	if inbound.Protocol != model.Shadowsocks {
 		return ""
 	}
@@ -774,10 +759,15 @@ func (s *SubService) genShadowsocksLink(inbound *model.Inbound, email string) st
 			params["headerType"] = "http"
 		}
 	case "kcp":
+		// The panel saves mKCP without a header or seed, so either may be absent.
 		kcp, _ := stream["kcpSettings"].(map[string]any)
 		header, _ := kcp["header"].(map[string]any)
-		params["headerType"] = header["type"].(string)
-		params["seed"] = kcp["seed"].(string)
+		if headerType, _ := header["type"].(string); headerType != "" {
+			params["headerType"] = headerType
+		}
+		if seed, _ := kcp["seed"].(string); seed != "" {
+			params["seed"] = seed
+		}
 	case "ws":
 		ws, _ := stream["wsSettings"].(map[string]any)
 		params["path"] = ws["path"].(string)
@@ -853,14 +843,13 @@ func (s *SubService) genShadowsocksLink(inbound *model.Inbound, email string) st
 			newSecurity, _ := ep["forceTls"].(string)
 			dest, _ := ep["dest"].(string)
 			port := int(ep["port"].(float64))
-			link := fmt.Sprintf("ss://%s@%s:%d", base64.StdEncoding.EncodeToString([]byte(encPart)), dest, port)
+			url := ssURL(encPart, dest, port)
 
 			if newSecurity != "same" {
 				params["security"] = newSecurity
 			} else {
 				params["security"] = security
 			}
-			url, _ := url.Parse(link)
 			q := url.Query()
 
 			for k, v := range params {
@@ -882,8 +871,7 @@ func (s *SubService) genShadowsocksLink(inbound *model.Inbound, email string) st
 		return links
 	}
 
-	link := fmt.Sprintf("ss://%s@%s:%d", base64.StdEncoding.EncodeToString([]byte(encPart)), address, inbound.Port)
-	url, _ := url.Parse(link)
+	url := ssURL(encPart, address, inbound.Port)
 	q := url.Query()
 
 	for k, v := range params {
@@ -898,7 +886,7 @@ func (s *SubService) genShadowsocksLink(inbound *model.Inbound, email string) st
 }
 
 func (s *SubService) genHysteriaLink(inbound *model.Inbound, email string) string {
-	address := s.address
+	address := linkAddress(inbound, s.address)
 	if inbound.Protocol != model.Hysteria {
 		return ""
 	}
@@ -950,8 +938,7 @@ func (s *SubService) genHysteriaLink(inbound *model.Inbound, email string) strin
 		protocol = "hysteria"
 	}
 
-	link := fmt.Sprintf("%s://%s@%s:%d", protocol, auth, address, port)
-	url, _ := url.Parse(link)
+	url := shareURL(protocol, auth, address, port)
 	q := url.Query()
 	for k, v := range params {
 		q.Add(k, v)
@@ -1046,6 +1033,30 @@ func (s *SubService) genRemark(inbound *model.Inbound, email string, extra strin
 	return strings.Join(remark, separationChar)
 }
 
+// linkAddress is the address a client dials for inbound: the address it
+// listens on when that is a specific one, otherwise host, the address the
+// subscription was fetched from.
+func linkAddress(inbound *model.Inbound, host string) string {
+	switch inbound.Listen {
+	case "", "0.0.0.0", "::", "::0":
+		return host
+	}
+	return inbound.Listen
+}
+
+// shareURL starts a share link scheme://user@host:port. Built from its parts,
+// a credential holding %, # or ? stays intact and an IPv6 host gets its
+// brackets, which formatting a string and parsing it back got wrong.
+func shareURL(scheme, user, host string, port int) *url.URL {
+	return &url.URL{Scheme: scheme, User: url.User(user), Host: net.JoinHostPort(host, strconv.Itoa(port))}
+}
+
+// ssURL starts a Shadowsocks share link. Its user part is base64, which
+// clients read as it stands, so unlike shareURL it is not escaped.
+func ssURL(encPart, host string, port int) *url.URL {
+	return &url.URL{Scheme: "ss", Opaque: "//" + base64.StdEncoding.EncodeToString([]byte(encPart)) + "@" + net.JoinHostPort(host, strconv.Itoa(port))}
+}
+
 func searchKey(data any, key string) (any, bool) {
 	switch val := data.(type) {
 	case map[string]any:
@@ -1121,11 +1132,9 @@ func (s *SubService) ResolveRequest(c *gin.Context) (scheme string, host string,
 	}
 
 	// base host (no port)
+	// X-Real-IP is not a candidate: it carries the client's address.
 	if h, err := getHostFromXFH(c.GetHeader("X-Forwarded-Host")); err == nil && h != "" {
 		host = h
-	}
-	if host == "" {
-		host = c.GetHeader("X-Real-IP")
 	}
 	if host == "" {
 		var err error
@@ -1146,9 +1155,6 @@ func (s *SubService) ResolveRequest(c *gin.Context) (scheme string, host string,
 
 	// header display host
 	hostHeader = c.GetHeader("X-Forwarded-Host")
-	if hostHeader == "" {
-		hostHeader = c.GetHeader("X-Real-IP")
-	}
 	if hostHeader == "" {
 		hostHeader = host
 	}
@@ -1234,8 +1240,8 @@ func (s *SubService) BuildPageData(subId string, hostHeader string, traffic xray
 		remained = common.FormatTraffic(left)
 	}
 
-	datepicker := s.datepicker
-	if datepicker == "" {
+	datepicker, err := s.settingService.GetDatepicker()
+	if err != nil || datepicker == "" {
 		datepicker = "gregorian"
 	}
 
