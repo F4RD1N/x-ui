@@ -347,7 +347,9 @@ const (
 // login cannot run the panel -- and with it every xray core -- out of
 // memory.
 func limitRequestBody(c *gin.Context) {
-	if c.Request.Body == nil {
+	// Requests without a body, assets and pages among them, need no cap,
+	// nor the session look-up.
+	if c.Request.Body == nil || c.Request.Body == http.NoBody {
 		return
 	}
 	limit := int64(maxBodyAnonymous)
