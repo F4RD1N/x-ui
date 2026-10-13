@@ -75,13 +75,30 @@ Every install and update also tunes the server for x-ui (`x-ui tune`):
   `TasksMax=infinity`, and a `GOMEMLIMIT` sized from the RAM;
 - kernel limits are raised: local port range 10000-65535, accept and SYN
   queues, TIME_WAIT and orphan limits, socket buffers, conntrack (when it is
-  loaded), BBR with fq;
+  loaded; up to 32M entries from 512 GiB of RAM), BBR with fq;
+- the NICs under the default routes are tuned (see below);
 - on a fresh install (and with `x-ui tune apply`), but never on an update:
   chrony when no time-sync client is installed (VMess and Shadowsocks 2022
-  reject clients whose clock is off), irqbalance on multi-queue NICs whose
-  interrupts nobody has placed, and a 1 GiB swapfile on VMs with less than
-  1.75 GiB of RAM. A time-sync client that is turned off stays off, and a
-  package you removed is not installed again.
+  reject clients whose clock is off), and a 1 GiB swapfile on VMs with less
+  than 1.75 GiB of RAM. A time-sync client that is turned off stays off, and
+  a package you removed is not installed again. x-ui no longer installs
+  irqbalance: when it is installed, x-ui only takes the uplink NICs'
+  interrupts away from it (a policy script) and it keeps balancing the rest.
+
+The NIC's interrupts are placed by the xray instances' CPU split: the queues
+RSS spreads by hash go one per physical core, NIC-local cores first, shared
+out so that no instance carries more than its share (free CPUs first), and
+each CPU sends (XPS) on the queue whose interrupt is on its own core. The
+panel re-places them whenever the split changes. On ixgbe, igb and igc, UDP
+is hashed on ports as well as addresses (their default is addresses only).
+A single-queue NIC (a typical VPS) gets RPS and RFS instead. The queue count
+is only ever raised, to one queue per physical core near the NIC, and never
+while the server is in use: at boot, before x-ui starts
+(`x-ui-nic.service`), or with `x-ui tune queues --now` (the link resets for a
+few seconds; if the gateway stops answering, the old count is put back).
+Interrupts placed by someone else are kept (`x-ui tune apply --take-irqs`
+hands them over). Revert puts every value back, but leaves raised queues
+until the next reboot.
 
 It only ever raises a limit: a value set higher elsewhere (another
 `/etc/sysctl.d` file, `/etc/sysctl.conf`, a drop-in of your own) is kept, and
@@ -95,6 +112,7 @@ any sysctl file, run `x-ui tune apply` so x-ui's file follows it.
 ```bash
 x-ui tune status    # what is set, what is kept, and health counters
 x-ui tune apply     # apply now
+x-ui tune queues    # the NICs' queue counts (--now raises them now)
 x-ui tune revert    # undo exactly, and keep it off for later updates
 ```
 
