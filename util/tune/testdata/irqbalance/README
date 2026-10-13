@@ -1,0 +1,4 @@
+irqbalance units and environment files as the packages ship them, extracted
+read-only (debian:bookworm irqbalance 1.9.2-1, ubuntu:24.04 1.9.3-2ubuntu5,
+almalinux:9 irqbalance-1.9.4-5.el9, upstream master misc/irqbalance.service.in
+with meson's defaults: pkgconfdir /usr/etc/default, usrconfdir /etc/default).

@@ -28,6 +28,7 @@ func TestSummary(t *testing.T) {
 		"Conntrack: max 8388608 (kept: /etc/sysctl.d/90-edge-proxy.conf)",
 		"Backlog: somaxconn 65535, netdev_max_backlog 16384, tcp_max_syn_backlog 65536",
 		"Congestion control: bbr with fq",
+		"NIC: no default route",
 	}
 	if got := e.summary(); !slices.Equal(got, want) {
 		t.Errorf("summary:\n%s", strings.Join(got, "\n"))
@@ -56,7 +57,7 @@ func TestSummary(t *testing.T) {
 	e = machine{mem: 2 * GiB, cpus: 2}.build(t)
 	mustApply(t, e, ApplyOptions{})
 	got := e.summary()
-	if len(got) != 3 || got[0] != "Open files: 1048576 per process (x-ui and its cores)" || !strings.HasPrefix(got[1], "Backlog: somaxconn 16384,") {
+	if len(got) != 4 || got[0] != "Open files: 1048576 per process (x-ui and its cores)" || !strings.HasPrefix(got[1], "Backlog: somaxconn 16384,") {
 		t.Errorf("small machine: %q", got)
 	}
 }

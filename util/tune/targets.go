@@ -134,8 +134,10 @@ func ServiceTargets(f *Facts) Service {
 	return s
 }
 
+// conntrackMax is 65536 entries per GiB: a proxied connection takes two,
+// plus what TIME_WAIT leaves. 32M (about 10 GB) at 512 GiB and more.
 func conntrackMax(f *Facts) int64 {
-	return clamp(pow2ceil(65536*f.G), 131072, 8388608)
+	return clamp(pow2ceil(65536*f.G), 131072, 33554432)
 }
 
 // Targets computes every sysctl target for the machine. It is pure: all
@@ -187,6 +189,10 @@ func Targets(f *Facts) []Target {
 			Why: "more packets per softirq round on fast NICs or many CPUs"})
 		add(Target{Key: "net.core.netdev_budget_usecs", Class: ClassLimit, Num: 4000,
 			Why: "more time per softirq round on fast NICs or many CPUs"})
+	}
+	if f.RPSUplink {
+		add(Target{Key: "net.core.rps_sock_flow_entries", Class: ClassLimit, Num: rpsFlowEntries(f),
+			Why: "RFS flow table: packets of a single-queue NIC go to the CPU of their socket"})
 	}
 	add(Target{Key: "net.ipv4.tcp_max_tw_buckets", Class: ClassLimit, Num: clamp(pow2floor(16384*g), 65536, 2097152),
 		Why: "TIME_WAIT sockets kept before the kernel destroys them early"})

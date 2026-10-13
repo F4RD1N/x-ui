@@ -30,6 +30,10 @@ const (
 	StateFile        = StateDir + "/state.json"
 	BackupDir        = StateDir + "/backup"
 	SwapFile         = "/var/lib/x-ui/swapfile"
+	NICUnitFile      = "/etc/systemd/system/x-ui-nic.service"
+	IRQBalanceDropIn = "/etc/systemd/system/irqbalance.service.d/90-x-ui.conf"
+	IRQBalanceScript = StateDir + "/irqbalance-policy"
+	IRQBalanceEnv    = StateDir + "/irqbalance.env"
 	legacyDropInMark = "# Written by x-ui tune.sh"
 )
 

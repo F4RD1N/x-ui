@@ -39,6 +39,8 @@ type machine struct {
 	bbr      string // "available" (default), "module", "missing"
 	// conntrack: nf_conntrack is loaded (kernel defaults for its keys).
 	conntrack bool
+	// root is a tree to build on (a hwtest machine's); "" a new one.
+	root string
 }
 
 func kernelDefaults(m machine) map[string]string {
@@ -116,7 +118,10 @@ func (m machine) build(t *testing.T) *Env {
 	if m.cpus == 0 {
 		m.cpus = 1
 	}
-	root := t.TempDir()
+	root := m.root
+	if root == "" {
+		root = t.TempDir()
+	}
 	vals := kernelDefaults(m)
 	if m.conntrack {
 		vals["net.netfilter.nf_conntrack_max"] = "65536"
@@ -921,8 +926,8 @@ func fakeCommands(e *Env, answers map[string]string, ok ...string) {
 // hostCommands are what the host services run when they change something.
 var hostCommands = []string{"timedatectl set-ntp", "apt-get install", "systemctl enable --now", "mkswap"}
 
-// Host services on a tiny KVM VM with no time-sync client: chrony and
-// irqbalance installed, a swapfile created; revert undoes them.
+// Host services on a tiny KVM VM with no time-sync client: chrony installed
+// (never irqbalance), a swapfile created; revert undoes them.
 func TestServicesSmallVM(t *testing.T) {
 	e := machine{mem: GiB, cpus: 4, nics: []NIC{{Name: "eth0", Speed: 1000, RxQueues: 4}}}.build(t)
 	os.MkdirAll(e.P("/var/lib"), 0o755)
@@ -931,20 +936,19 @@ func TestServicesSmallVM(t *testing.T) {
 	mustApply(t, e, ApplyOptions{})
 	ran := strings.Join(e.Ran, "\n")
 	for _, want := range []string{"apt-get install -y -qq chrony", "systemctl enable --now chronyd",
-		"apt-get install -y -qq irqbalance", "systemctl enable --now irqbalance",
 		`systemctl enable --now var-lib-x\x2dui-swapfile.swap`} {
 		if !strings.Contains(ran, want) {
 			t.Errorf("did not run %q:\n%s", want, ran)
 		}
 	}
-	if strings.Contains(ran, "timedatectl set-ntp") {
-		t.Errorf("timedatectl run without timesyncd:\n%s", ran)
+	if strings.Contains(ran, "timedatectl set-ntp") || strings.Contains(ran, "irqbalance") {
+		t.Errorf("timedatectl run without timesyncd, or irqbalance touched:\n%s", ran)
 	}
 	if !e.exists(SwapFile) || !e.exists(`/etc/systemd/system/var-lib-x\x2dui-swapfile.swap`) {
 		t.Fatal("no swapfile or unit")
 	}
 	st, _, _ := e.loadState()
-	if st.NTP || st.Swap == "" || fmt.Sprint(st.Enabled) != "[chronyd irqbalance]" || fmt.Sprint(st.Installed) != "[chrony irqbalance]" {
+	if st.NTP || st.Swap == "" || fmt.Sprint(st.Enabled) != "[chronyd]" || fmt.Sprint(st.Installed) != "[chrony]" {
 		t.Fatalf("state %+v", st)
 	}
 	e.Ran = nil
@@ -952,7 +956,7 @@ func TestServicesSmallVM(t *testing.T) {
 		t.Fatal(err)
 	}
 	ran = strings.Join(e.Ran, "\n")
-	for _, want := range []string{"systemctl disable --now chronyd", "systemctl disable --now irqbalance", "swapoff /var/lib/x-ui/swapfile"} {
+	for _, want := range []string{"systemctl disable --now chronyd", "swapoff /var/lib/x-ui/swapfile"} {
 		if !strings.Contains(ran, want) {
 			t.Errorf("revert did not run %q:\n%s", want, ran)
 		}
@@ -1052,86 +1056,6 @@ func TestTimeSyncRespectsAdmin(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(r.Problems, "\n"), "chrony was removed") {
 		t.Errorf("not reported: %v", r.Problems)
-	}
-}
-
-// irqbalance is not installed when the admin removed it, nor when the NIC's
-// interrupts are already placed; interrupts at the kernel's default (also
-// on a NUMA node, and a virtio NIC's on its PCI parent) still get it.
-func TestIRQBalanceRespectsAdmin(t *testing.T) {
-	type irqs map[string]string // IRQ -> smp_affinity
-	build := func(t *testing.T, virtio bool, node string, aff irqs) *Env {
-		e := machine{mem: 4 * GiB, cpus: 8, nics: []NIC{{Name: "eth0", Speed: 10000, RxQueues: 4}}}.build(t)
-		writeT(t, e.Root, "/proc/irq/default_smp_affinity", "ff\n")
-		writeT(t, e.Root, "/sys/devices/system/cpu/online", "0-7\n")
-		writeT(t, e.Root, "/sys/devices/system/node/node0/cpulist", "0-3\n")
-		writeT(t, e.Root, "/sys/devices/system/node/node1/cpulist", "4-7\n")
-		pci := "/sys/devices/pci0000:00/0000:00:03.0"
-		dev := pci
-		if virtio {
-			dev = pci + "/virtio0"
-		}
-		os.MkdirAll(e.P(dev), 0o755)
-		for irq, m := range aff {
-			writeT(t, e.Root, pci+"/msi_irqs/"+irq, "msix\n")
-			writeT(t, e.Root, "/proc/irq/"+irq+"/smp_affinity", m+"\n")
-		}
-		if node != "" {
-			writeT(t, e.Root, dev+"/numa_node", node+"\n")
-		}
-		link := e.P("/sys/class/net/eth0/device")
-		os.RemoveAll(link)
-		if err := os.Symlink("../../../.."+dev, link); err != nil {
-			t.Fatal(err)
-		}
-		fakeCommands(e, map[string]string{"command -v apt-get": "/usr/bin/apt-get"}, "apt-get install", "systemctl enable", "systemctl daemon-reload")
-		return e
-	}
-	for _, c := range []struct {
-		name    string
-		virtio  bool
-		node    string
-		aff     irqs
-		install bool
-	}{
-		{"default masks", false, "", irqs{"40": "ff", "41": "ff", "42": "ff"}, true},
-		{"one queue pinned", false, "", irqs{"40": "ff", "41": "02", "42": "ff"}, false},
-		{"all moved off the cores", false, "", irqs{"40": "03", "41": "03", "42": "03"}, false},
-		{"NUMA node default", false, "1", irqs{"40": "f0", "41": "f0"}, true},
-		{"NUMA node, spread", false, "1", irqs{"40": "10", "41": "20"}, false},
-		{"virtio, spread by the driver", true, "", irqs{"24": "ff", "25": "01", "26": "02"}, false},
-		{"virtio, default", true, "", irqs{"24": "ff", "25": "ff"}, true},
-	} {
-		e := build(t, c.virtio, c.node, c.aff)
-		r := mustApply(t, e, ApplyOptions{})
-		ran := strings.Join(e.Ran, "\n")
-		if got := strings.Contains(ran, "apt-get install -y -qq irqbalance"); got != c.install {
-			t.Errorf("%s: installed %v, want %v\n%v", c.name, got, c.install, r.Problems)
-		}
-		if !c.install && !strings.Contains(strings.Join(r.Problems, "\n"), "already have CPUs set") {
-			t.Errorf("%s: not reported: %v", c.name, r.Problems)
-		}
-	}
-
-	// Removed by the admin (dpkg remembers it): not installed again.
-	e := build(t, false, "", irqs{"40": "ff"})
-	fakeCommands(e, map[string]string{
-		"command -v apt-get":    "/usr/bin/apt-get",
-		"command -v dpkg-query": "/usr/bin/dpkg-query",
-		"dpkg-query -W --showformat=${Package} ${Status}\n irqbalance": "irqbalance deinstall ok config-files\n",
-	}, "apt-get install", "systemctl enable", "systemctl daemon-reload")
-	r := mustApply(t, e, ApplyOptions{})
-	if strings.Contains(strings.Join(e.Ran, "\n"), "install -y -qq irqbalance") {
-		t.Fatal("irqbalance installed again after the admin removed it")
-	}
-	if !strings.Contains(strings.Join(r.Problems, "\n"), "irqbalance: removed") {
-		t.Errorf("not reported: %v", r.Problems)
-	}
-	var buf bytes.Buffer
-	e.Out = &buf
-	e.Status(false)
-	if !strings.Contains(buf.String(), "irqbalance: removed from this server") {
-		t.Errorf("status:\n%s", buf.String())
 	}
 }
 

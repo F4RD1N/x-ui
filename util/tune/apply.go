@@ -19,10 +19,15 @@ type ApplyOptions struct {
 	Auto   bool // respect the disabled flag (installer, update)
 	Boot   bool // sysctls, conntrack and modules only (the unit's ExecStartPre)
 	Quiet  bool
-	// Host also sets up the host services (time sync, irqbalance, swap)
-	// with Auto: the installer passes it on a fresh install, never on an
-	// update. A manual apply always does them.
+	// Host also sets up the host services (time sync, irqbalance's policy,
+	// swap) with Auto: the installer passes it on a fresh install, never on
+	// an update. A manual apply always does them.
 	Host bool
+	// TakeIRQs hands NIC interrupts someone else placed to x-ui.
+	TakeIRQs bool
+	// Instances is the panel's instances.json ("" the one next to the
+	// binary).
+	Instances string
 }
 
 // Result summarises an apply or revert.
@@ -91,6 +96,16 @@ func (e *Env) Apply(o ApplyOptions, version string) (*Result, error) {
 	p := e.plan(f, st)
 	if o.DryRun {
 		e.printPlan(p, st, true)
+		if !o.Boot {
+			host := !o.Auto || o.Host
+			no := nicOpts{Instances: o.Instances, Host: host, Assume: host}
+			np := e.planNICs(f, st, no)
+			if o.TakeIRQs && np.Skip == "" && e.syncNICState(st, np, true) { // in memory only
+				np = e.planNICs(f, st, no)
+			}
+			e.printNICs(np, st, true)
+		}
+		e.printf("\nDry run: nothing was changed.\n")
 		return r, nil
 	}
 
@@ -195,6 +210,7 @@ func (e *Env) Apply(o ApplyOptions, version string) (*Result, error) {
 		if !o.Auto || o.Host {
 			e.services(f, st, r)
 		}
+		e.applyNICs(f, st, o, r)
 	}
 
 	if !had || !bytesEqual(before, stateSnapshot(st)) {
@@ -234,10 +250,17 @@ func (e *Env) ownFile(path, content string, r *Result) bool {
 	return changed
 }
 
-// isOurs says whether a file starts with x-ui tune's header.
+// isOurs says whether a file starts with x-ui tune's header (after the
+// "#!" line of a script).
 func (e *Env) isOurs(path string) bool {
 	data, err := e.read(path)
-	return err == nil && strings.HasPrefix(data, Header[:40])
+	if err != nil {
+		return false
+	}
+	if strings.HasPrefix(data, "#!") {
+		_, data, _ = strings.Cut(data, "\n")
+	}
+	return strings.HasPrefix(data, Header[:40])
 }
 
 // migrateLegacy moves aside files an older x-ui wrote for the same purpose:
@@ -317,6 +340,7 @@ func (e *Env) Revert(purge, dry bool) (*Result, error) {
 	}
 	f := e.gatherFacts()
 	if dry {
+		e.revertNICs(f, st, true, r)
 		for _, p := range ownFiles {
 			if e.isOurs(p) {
 				r.change("would remove %s", p)
@@ -333,10 +357,19 @@ func (e *Env) Revert(purge, dry bool) (*Result, error) {
 		return r, nil
 	}
 
-	unitChanged := false
+	e.revertNICs(f, st, false, r)
+	if e.isOurs(NICUnitFile) {
+		_, _ = e.run("systemctl", "disable", "x-ui-nic.service")
+	}
+	unitChanged, irqbalanceChanged := false, false
 	for _, p := range ownFiles {
-		if e.ownFile(p, "", r) && p == DropInFile {
-			unitChanged = true
+		if e.ownFile(p, "", r) {
+			switch p {
+			case DropInFile, NICUnitFile:
+				unitChanged = true
+			case IRQBalanceDropIn:
+				irqbalanceChanged = true
+			}
 		}
 	}
 	for i := len(st.Moved) - 1; i >= 0; i-- {
@@ -383,9 +416,14 @@ func (e *Env) Revert(purge, dry bool) (*Result, error) {
 		}
 	}
 	e.revertServices(f, st, r)
-	if unitChanged && f.Init == "systemd" {
+	if (unitChanged || irqbalanceChanged) && f.Init == "systemd" {
 		_, _ = e.run("systemctl", "daemon-reload")
-		r.Restart = true
+		if unitChanged {
+			r.Restart = true
+		}
+	}
+	if irqbalanceChanged && f.Init == "systemd" {
+		_, _ = e.run("systemctl", "try-restart", "irqbalance")
 	}
 
 	ns := newState()
@@ -405,4 +443,5 @@ func (e *Env) Revert(purge, dry bool) (*Result, error) {
 var errNotRoot = errors.New("x-ui tune must run as root")
 
 // ownFiles are the files revert removes when they carry x-ui's header.
-var ownFiles = []string{SysctlFile, OldSysctlFile, DropInFile, ModulesLoadFile, ModprobeFile, OpenRCConfFile}
+var ownFiles = []string{SysctlFile, OldSysctlFile, DropInFile, ModulesLoadFile, ModprobeFile, OpenRCConfFile,
+	NICUnitFile, IRQBalanceDropIn, IRQBalanceEnv, IRQBalanceScript}

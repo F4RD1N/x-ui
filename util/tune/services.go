@@ -4,11 +4,8 @@ package tune
 
 import (
 	"fmt"
-	"math/big"
 	"os"
-	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -16,12 +13,13 @@ import (
 )
 
 // Host services: a time-sync client (VMess and Shadowsocks 2022 reject
-// clients whose clock is off by more than 120 s / 30 s), irqbalance on
-// multi-queue NICs, and a small swapfile on tiny VMs. None of it applies in a
-// container. They run on a fresh install and a manual apply, never on an
-// update (see ApplyOptions.Host), and never undo an admin's choice: a client
-// that is installed but off stays off, and a package the admin removed is
-// not installed again.
+// clients whose clock is off by more than 120 s / 30 s) and a small swapfile
+// on tiny VMs; irqbalance's policy for the NICs is in irqbalance.go (x-ui no
+// longer installs irqbalance; revert still undoes what older versions did).
+// None of it applies in a container. They run on a fresh install and a
+// manual apply, never on an update (see ApplyOptions.Host), and never undo an
+// admin's choice: a client that is installed but off stays off, and a
+// package the admin removed is not installed again.
 
 var timeUnits = []string{"chronyd", "chrony", "ntpd", "ntp", "ntpsec", "openntpd", "systemd-timesyncd"}
 
@@ -93,7 +91,6 @@ func (e *Env) services(f *Facts, st *State, r *Result) {
 		return
 	}
 	e.timeSync(f, st, r)
-	e.irqbalance(f, st, r)
 	e.swap(f, st, r)
 }
 
@@ -133,178 +130,6 @@ func (e *Env) timeSync(f *Facts, st *State, r *Result) {
 	}
 	st.Enabled = addOnce(st.Enabled, unit)
 	r.change("time sync: installed and enabled chrony")
-}
-
-// wantsIRQBalance says whether irqbalance can help here: a systemd host, not
-// a container, with 4 or more CPUs and a multi-queue NIC.
-func wantsIRQBalance(f *Facts) bool {
-	if f.Container() || f.Init != "systemd" || f.CPUs < 4 {
-		return false
-	}
-	for _, n := range f.NICs {
-		if n.RxQueues >= 2 {
-			return true
-		}
-	}
-	return false
-}
-
-func (e *Env) irqbalance(f *Facts, st *State, r *Result) {
-	if !wantsIRQBalance(f) {
-		return
-	}
-	if e.unitExists("irqbalance.service") || e.have("irqbalance") {
-		return // installed: running or not, that is the admin's choice
-	}
-	if len(e.pkgRemoved("irqbalance")) > 0 {
-		r.problem("irqbalance: removed from this server earlier: not installed again")
-		return
-	}
-	if irq := e.placedNICIRQ(f); irq != "" {
-		r.problem("irqbalance: not installed: the NIC's interrupts already have CPUs set (%s)", irq)
-		return
-	}
-	if err := e.pkgInstall("irqbalance"); err != nil {
-		r.problem("irqbalance: %v", err)
-		return
-	}
-	st.Installed = addOnce(st.Installed, "irqbalance")
-	if _, err := e.run("systemctl", "enable", "--now", "irqbalance"); err != nil {
-		r.problem("irqbalance: enable: %v", err)
-		return
-	}
-	st.Enabled = addOnce(st.Enabled, "irqbalance")
-	r.change("irqbalance: installed and enabled (multi-queue NIC)")
-}
-
-// placedNICIRQ names an interrupt of a multi-queue NIC whose CPUs are not
-// the kernel's default for it, or returns "". Someone (an admin, a tuning
-// script, irqbalance before it was removed, or the driver) has placed the
-// NIC's interrupts, and irqbalance would move them, possibly onto the CPUs
-// x-ui pins its cores to.
-func (e *Env) placedNICIRQ(f *Facts) string {
-	for _, n := range f.NICs {
-		if n.RxQueues < 2 {
-			continue
-		}
-		want := e.defaultIRQMask(n.Name)
-		if want == nil {
-			continue
-		}
-		for _, irq := range e.nicIRQs(n.Name) {
-			m := parseMask(e.readTrim("/proc/irq/" + irq + "/smp_affinity"))
-			if m != nil && m.Cmp(want) != 0 {
-				return "IRQ " + irq + " of " + n.Name
-			}
-		}
-	}
-	return ""
-}
-
-// nicIRQs lists the MSI interrupts of a network device's PCI function; a
-// virtio device's are on its parent.
-func (e *Env) nicIRQs(name string) []string {
-	dev, err := filepath.EvalSymlinks(e.P("/sys/class/net/" + name + "/device"))
-	if err != nil || (e.Root != "" && !strings.HasPrefix(dev, e.Root+string(os.PathSeparator))) {
-		return nil
-	}
-	dirs := []string{dev}
-	if strings.HasPrefix(filepath.Base(dev), "virtio") {
-		dirs = append(dirs, filepath.Dir(dev))
-	}
-	for _, d := range dirs {
-		ents, err := os.ReadDir(filepath.Join(d, "msi_irqs"))
-		if err != nil || len(ents) == 0 {
-			continue
-		}
-		var out []string
-		for _, en := range ents {
-			out = append(out, en.Name())
-		}
-		return out
-	}
-	return nil
-}
-
-// defaultIRQMask is the CPU mask the kernel gives a new interrupt of the
-// device: the default affinity, limited to the online CPUs and, when that
-// leaves any, to the CPUs of the device's NUMA node.
-func (e *Env) defaultIRQMask(name string) *big.Int {
-	m := parseMask(e.readTrim("/proc/irq/default_smp_affinity"))
-	if m == nil {
-		return nil
-	}
-	if on := parseCPUList(e.readTrim("/sys/devices/system/cpu/online")); on != nil {
-		m.And(m, on)
-	}
-	if node, err := strconv.Atoi(e.readTrim("/sys/class/net/" + name + "/device/numa_node")); err == nil && node >= 0 {
-		if nm := parseCPUList(e.readTrim(fmt.Sprintf("/sys/devices/system/node/node%d/cpulist", node))); nm != nil {
-			if x := new(big.Int).And(m, nm); x.Sign() != 0 {
-				m = x
-			}
-		}
-	}
-	return m
-}
-
-// parseMask reads a kernel CPU mask ("ff,ffffffff"); nil when it is not one.
-func parseMask(s string) *big.Int {
-	s = strings.ReplaceAll(strings.TrimSpace(s), ",", "")
-	if s == "" {
-		return nil
-	}
-	m, ok := new(big.Int).SetString(s, 16)
-	if !ok {
-		return nil
-	}
-	return m
-}
-
-// parseCPUList reads a kernel CPU list ("0-27,56-83") as a mask; nil when it
-// is not one.
-func parseCPUList(s string) *big.Int {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return nil
-	}
-	m := new(big.Int)
-	for _, part := range strings.Split(s, ",") {
-		lo, hi, isRange := strings.Cut(part, "-")
-		a, err := strconv.Atoi(lo)
-		if err != nil {
-			return nil
-		}
-		b := a
-		if isRange {
-			if b, err = strconv.Atoi(hi); err != nil || b < a {
-				return nil
-			}
-		}
-		for c := a; c <= b && c < 1<<16; c++ {
-			m.SetBit(m, c, 1)
-		}
-	}
-	return m
-}
-
-// irqbalanceInfo describes irqbalance for "x-ui tune status"; "" when it
-// would not help here.
-func (e *Env) irqbalanceInfo(f *Facts) string {
-	if !wantsIRQBalance(f) {
-		return ""
-	}
-	switch {
-	case e.unitActive("irqbalance"):
-		return "running"
-	case e.unitExists("irqbalance.service") || e.have("irqbalance"):
-		return "installed, not running"
-	case len(e.pkgRemoved("irqbalance")) > 0:
-		return "removed from this server"
-	}
-	if irq := e.placedNICIRQ(f); irq != "" {
-		return "not installed; the NIC's interrupts already have CPUs set (" + irq + ")"
-	}
-	return "not installed ('x-ui tune apply' installs it)"
 }
 
 const swapMark = "# x-ui tune swapfile"
