@@ -6,6 +6,8 @@
 #   1. the "x-ui tune" unit tests: every formula at every machine size, the
 #      sysctl.d / unit parsers, the never-lower property, idempotence, exact
 #      revert, containers (read-only /proc/sys, LXC), legacy files, services;
+#      and the util/hw readers (CPU topology, NUMA nodes, uplink NICs, their
+#      interrupts and queues) on fake machines from production to a VPS;
 #      all against fake /proc, /sys and /etc trees;
 #   2. bash -n and shellcheck (when available) on every shell script;
 #   3. x-ui.sh's command line in a scratch folder with a fake binary: the
@@ -20,8 +22,8 @@ fail=0
 step() { echo "== $*"; }
 bad() { echo "FAIL: $*"; fail=1; }
 
-step "go test ./util/tune/"
-nice -n 10 go test -count=1 ./util/tune/ || bad "util/tune tests"
+step "go test ./util/tune/ ./util/hw/..."
+nice -n 10 go test -count=1 ./util/tune/ ./util/hw/... || bad "util/tune and util/hw tests"
 
 step "bash -n"
 for f in install.sh update.sh x-ui.sh build.sh tests/install/*.sh; do

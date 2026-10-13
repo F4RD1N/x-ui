@@ -14,3 +14,6 @@ func Main(args []string, version string) int {
 	fmt.Fprintln(os.Stderr, "x-ui tune: server tuning works on Linux only")
 	return 1
 }
+
+// Summary has nothing to report outside Linux.
+func Summary() []string { return nil }
