@@ -105,50 +105,6 @@ func TestApplyEgressSkipsAddressNotOnHost(t *testing.T) {
 	}
 }
 
-func TestReadUDPPortUse(t *testing.T) {
-	dir := t.TempDir()
-	rangeFile := filepath.Join(dir, "range")
-	os.WriteFile(rangeFile, []byte("1000\t1009\n"), 0o644)
-	reservedFile := filepath.Join(dir, "reserved")
-	os.WriteFile(reservedFile, []byte("1009\n"), 0o644)
-	oldRange, oldReserved := localPortRangePath, reservedPortsPath
-	localPortRangePath, reservedPortsPath = rangeFile, reservedFile
-	t.Cleanup(func() { localPortRangePath, reservedPortsPath = oldRange, oldReserved })
-
-	sockets := []sys.LocalEndpoint{
-		{IP: "", Port: 1000}, {IP: "", Port: 1001}, // all addresses
-		{IP: "192.0.2.7", Port: 1001}, {IP: "192.0.2.7", Port: 1002}, // its own
-		{IP: "192.0.2.8", Port: 1002},
-		{IP: "", Port: 53},   // outside the range
-		{IP: "", Port: 1009}, // reserved
-	}
-	u, err := readUDPPortUse(func(fn func(sys.LocalEndpoint)) error {
-		for _, s := range sockets {
-			fn(s)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if u.pool != 9 {
-		t.Errorf("pool %d, want 9 (10 ports, 1 reserved)", u.pool)
-	}
-	for _, c := range []struct {
-		from string
-		want int
-	}{
-		{"", 3},          // ports 1000-1002 are taken for a socket on all addresses
-		{"192.0.2.7", 3}, // 1000, 1001 (all addresses) and 1002
-		{"192.0.2.8", 3}, // 1000, 1001 and 1002
-		{"192.0.2.9", 2}, // only the all-address ones
-	} {
-		if got := u.used(c.from); got != c.want {
-			t.Errorf("used(%q) = %d, want %d", c.from, got, c.want)
-		}
-	}
-}
-
 func TestSetInstanceEgress(t *testing.T) {
 	dir := t.TempDir()
 	if err := database.InitDB(filepath.Join(dir, "x-ui.db")); err != nil {
@@ -307,7 +263,7 @@ func startSleeper(t *testing.T, p *xray.Process) error {
 func TestUDPPortUseOnlyWhileWatched(t *testing.T) {
 	udpMu.Lock()
 	oldAt, oldUse := udpAt, udpUse
-	udpAt, udpUse = time.Now().Add(-time.Hour), &udpPortUse{pool: 1}
+	udpAt, udpUse = time.Now().Add(-time.Hour), &sys.UDPPortUse{Pool: 1}
 	udpMu.Unlock()
 	t.Cleanup(func() {
 		udpMu.Lock()
@@ -316,11 +272,11 @@ func TestUDPPortUseOnlyWhileWatched(t *testing.T) {
 		SetStatusWatched(true)
 	})
 	SetStatusWatched(false)
-	if u := currentUDPPortUse(); u == nil || u.pool != 1 {
+	if u := currentUDPPortUse(); u == nil || u.Pool != 1 {
 		t.Fatalf("refreshed while nobody watches: %+v", u)
 	}
 	SetStatusWatched(true)
-	if u := currentUDPPortUse(); u != nil && u.pool == 1 {
+	if u := currentUDPPortUse(); u != nil && u.Pool == 1 {
 		t.Fatal("not refreshed while watched")
 	}
 }

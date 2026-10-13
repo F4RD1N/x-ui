@@ -152,9 +152,9 @@ func (s *XrayService) XrayInstancesStatus() ([]XrayInstanceStatus, XrayCpuSummar
 			if p := running[name]; p != nil && p.IsRunning() {
 				from = applied[name]
 			}
-			st.UdpPorts = udp.used(from)
-			st.UdpShared = udp.shared
-			st.UdpPool = udp.pool
+			st.UdpPorts = udp.Used(from)
+			st.UdpShared = udp.Shared
+			st.UdpPool = udp.Pool
 		}
 	}
 	now := time.Now()
@@ -238,23 +238,19 @@ func (s *XrayService) instanceTCPCounts(inbounds []*model.Inbound) map[string]in
 	tcpAt = time.Now()
 	statMu.Unlock()
 
-	type owner struct{ instance, ip string }
-	byPort := map[int][]owner{}
+	var owners []sys.PortOwner
+	seen := map[int]bool{}
 	var ports []int
 	for _, in := range inbounds {
 		if !in.Enable || in.Port <= 0 || strings.HasPrefix(in.Listen, "/") || strings.HasPrefix(in.Listen, "@") {
 			continue
 		}
-		ip := in.Listen
-		if ip == "0.0.0.0" || ip == "::" || ip == "::0" {
-			ip = ""
-		}
-		if len(byPort[in.Port]) == 0 {
+		if !seen[in.Port] {
+			seen[in.Port] = true
 			ports = append(ports, in.Port)
 		}
-		byPort[in.Port] = append(byPort[in.Port], owner{instanceName(in), ip})
+		owners = append(owners, sys.PortOwner{Port: in.Port, IP: in.Listen, Name: instanceName(in)})
 	}
-	counts := map[string]int{}
 	eps, err := sys.CountEstablishedTCP(ports)
 	statMu.Lock()
 	defer statMu.Unlock()
@@ -263,22 +259,7 @@ func (s *XrayService) instanceTCPCounts(inbounds []*model.Inbound) map[string]in
 		tcpCounts, tcpErr = nil, true
 		return nil
 	}
-	for ep, n := range eps {
-		var wildcard string
-		matched := false
-		for _, o := range byPort[ep.Port] {
-			if o.ip == "" {
-				wildcard = o.instance
-			} else if o.ip == ep.IP {
-				counts[o.instance] += n
-				matched = true
-				break
-			}
-		}
-		if !matched && wildcard != "" {
-			counts[wildcard] += n
-		}
-	}
+	counts := sys.AttributeTCP(eps, owners)
 	tcpCounts, tcpErr = counts, false
 	return counts
 }
