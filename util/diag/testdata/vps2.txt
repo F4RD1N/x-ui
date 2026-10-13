@@ -10,7 +10,7 @@ NIC eth0 (default route v4+v6)
   link        up
   queues      1 of 1
   RSS table   not readable
-  hashing     not readable
+  hashing     none
   offloads    on: gro gso rx rxhash rxvlan sg tso tx txvlan; off: lro ntuple
   interrupts  q0 0
   irqbalance  not installed

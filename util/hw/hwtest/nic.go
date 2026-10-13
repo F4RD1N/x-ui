@@ -394,7 +394,8 @@ func (b *Built) addNIC(s NICSpec) {
 
 	// The fake driver.
 	dev := &FakeDev{Driver: s.Driver, PCI: s.PCI, Channels: s.Channels, TableSize: s.TableSize, RSSCap: s.RSSCap,
-		Configured: s.Configured, Hash: map[string]uint64{}, Features: s.Features, Stats: map[string]uint64{}, VF: s.VF}
+		Configured: s.Configured, Hash: map[string]uint64{}, Features: s.Features, Stats: map[string]uint64{}, VF: s.VF,
+		HashNone: s.Driver == "virtio_net" && len(s.Hash) == 0}
 	for k, v := range s.Hash {
 		dev.Hash[k] = v
 	}

@@ -178,11 +178,7 @@ func (s *sysEthtool) RxRings(dev string) (int, error) {
 }
 
 func (s *sysEthtool) FlowHash(dev string, f Flow) (uint64, error) {
-	bits, err := s.rxnfc(dev, ethtoolGRxFH, f, 0, false)
-	if err == nil && bits == 0 {
-		return 0, fmt.Errorf("ethtool rx-flow-hash %s %s: %w", f, dev, ErrNotSupported)
-	}
-	return bits, err
+	return s.rxnfc(dev, ethtoolGRxFH, f, 0, false)
 }
 
 func (s *sysEthtool) SetFlowHash(dev string, f Flow, bits uint64) error {

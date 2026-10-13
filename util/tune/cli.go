@@ -3,12 +3,10 @@
 package tune
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -147,21 +145,12 @@ func run(args []string, version string, stdout, stderr io.Writer) int {
 		return 0
 
 	case "queues":
-		if *now && !*worker && !e.fake() && e.detachable() {
+		if *now && !*worker && !e.fake() && e.detachQueues() {
 			// A transient unit, so a dropped SSH session cannot stop it
-			// halfway.
-			args := e.detachArgs()
-			cmd := exec.Command(args[0], args[1:]...)
-			cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, stdout, stderr
-			if err := cmd.Run(); err != nil {
-				var ee *exec.ExitError
-				if errors.As(err, &ee) {
-					return ee.ExitCode()
-				}
-				fmt.Fprintln(stderr, "x-ui tune:", err)
-				return 1
+			// halfway; when systemd-run cannot start one, it runs here.
+			if code, ran := e.runDetached(stdout, stderr); ran {
+				return code
 			}
-			return 0
 		}
 		if *now {
 			signal.Ignore(syscall.SIGHUP, syscall.SIGPIPE)

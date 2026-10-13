@@ -48,7 +48,12 @@
       },
       "queues": 1,
       "rss": null,
-      "hash": {},
+      "hash": {
+        "tcp4": "",
+        "tcp6": "",
+        "udp4": "",
+        "udp6": ""
+      },
       "offloads": {
         "gro": true,
         "gso": true,

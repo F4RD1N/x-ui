@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1707,6 +1708,120 @@ func TestNICDetachDecision(t *testing.T) {
 	if !slices.Equal(args[2:], []string{"--collect", "--wait", "--pipe", "--quiet", "-p", "TimeoutStartSec=600", "/usr/local/x-ui/x-ui", "tune", "queues", "--now", "--worker"}) ||
 		!strings.HasPrefix(args[1], "--unit=x-ui-queues-") {
 		t.Errorf("args %v", args)
+	}
+}
+
+// "queues --now" is detached only for a raise, and only when systemd-run can
+// wait for the unit (the D-Bus system bus is there); a container, tuning that
+// is off and nothing to raise are answered at once in the process itself.
+func TestNICDetachQueues(t *testing.T) {
+	t.Setenv("DBUS_SYSTEM_BUS_ADDRESS", "")
+	setup := func(t *testing.T, mod ...func(*machine)) *Env {
+		e, _ := onHW(t, raiseMachine("i40e", 0), mod...)
+		writeT(t, e.Root, "/proc/1/comm", "systemd\n")
+		for _, p := range []string{"/proc/1/ns/net", "/proc/self/ns/net"} {
+			os.MkdirAll(filepath.Dir(e.P(p)), 0o755)
+			if err := os.Symlink("net:[4026531840]", e.P(p)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return e
+	}
+	bus := func(t *testing.T, e *Env) {
+		os.MkdirAll(e.P("/run/dbus"), 0o755)
+		if err := syscall.Mknod(e.P("/run/dbus/system_bus_socket"), syscall.S_IFSOCK|0o666, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	e := setup(t)
+	bus(t, e)
+	if e.detachQueues() {
+		t.Error("detached with tuning never applied")
+	}
+	mustApply(t, e, ApplyOptions{Auto: true})
+	if !e.detachQueues() {
+		t.Error("a raise with the bus: not detached")
+	}
+	os.Remove(e.P("/run/dbus/system_bus_socket"))
+	if e.detachQueues() {
+		t.Error("detached without the system bus (systemd-run --wait cannot work)")
+	}
+	writeT(t, e.Root, "/run/dbus/system_bus_socket", "")
+	if e.detachQueues() {
+		t.Error("a plain file taken for the bus socket")
+	}
+	t.Setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/run/other_bus")
+	if !e.detachQueues() {
+		t.Error("an address set for the bus: not detached")
+	}
+	t.Setenv("DBUS_SYSTEM_BUS_ADDRESS", "")
+	os.Remove(e.P("/run/dbus/system_bus_socket"))
+	bus(t, e)
+	if _, err := e.Queues(QueuesOptions{Now: true}); err != nil {
+		t.Fatal(err)
+	}
+	if e.detachQueues() {
+		t.Error("detached with nothing left to raise")
+	}
+
+	// Tuning turned off.
+	e = setup(t)
+	bus(t, e)
+	mustApply(t, e, ApplyOptions{Auto: true})
+	if _, err := e.Revert(false, false); err != nil {
+		t.Fatal(err)
+	}
+	if e.detachQueues() {
+		t.Error("detached with tuning off")
+	}
+
+	// A container: its NIC is the host's.
+	e = setup(t, func(m *machine) { m.virt = "docker" })
+	bus(t, e)
+	mustApply(t, e, ApplyOptions{Auto: true})
+	if e.detachQueues() {
+		t.Error("detached in a container")
+	}
+	r, err := e.Queues(QueuesOptions{Now: true})
+	if err != nil || len(r.Problems) != 1 || r.Problems[0] != "NIC: left to the host (container)" {
+		t.Errorf("container: %v %+v", err, r)
+	}
+}
+
+// A systemd-run that could not reach the bus started nothing: the caller runs
+// "queues --now" itself, without that error line. Every other outcome is the
+// unit's, passed on as it is.
+func TestNICRunDetached(t *testing.T) {
+	e, _ := onHW(t, hwtest.Desktop())
+	dir := t.TempDir()
+	t.Setenv("PATH", dir)
+	for _, c := range []struct {
+		name, script string
+		code         int
+		ran          bool
+		out, errs    string
+	}{
+		{"no bus", `echo "Failed to connect to bus: No such file or directory" >&2; exit 1`, 0, false, "", ""},
+		{"no bus (newer wording)", `printf 'Failed to connect to system scope bus via local ' >&2; echo 'transport: Connection refused' >&2; exit 1`, 0, false, "", ""},
+		{"no bus (older wording)", `echo "Failed to create bus connection: No such file or directory" >&2; exit 1`, 0, false, "", ""},
+		{"the unit's error", `echo "x-ui tune: tuning is not on" >&2; exit 1`, 1, true, "", "x-ui tune: tuning is not on\n"},
+		{"a raise", `echo "$@"; echo "eth1: queues 16 -> 28" >&2; exit 0`, 0, true, "tune queues --now --worker\n", "eth1: queues 16 -> 28\n"},
+		{"no newline", `printf 'Job failed' >&2; exit 3`, 3, true, "", "Job failed"},
+		{"a bus error after the unit's output", `echo "x-ui tune: x" >&2; echo "Failed to connect to bus: y" >&2; exit 1`, 1, true, "", "x-ui tune: x\nFailed to connect to bus: y\n"},
+	} {
+		if err := os.WriteFile(filepath.Join(dir, "systemd-run"), []byte("#!/bin/sh\n"+c.script+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		var out, errb bytes.Buffer
+		code, ran := e.runDetached(&out, &errb)
+		if code != c.code || ran != c.ran || !strings.HasSuffix(out.String(), c.out) || errb.String() != c.errs {
+			t.Errorf("%s: code %d ran %v, out %q, err %q", c.name, code, ran, out.String(), errb.String())
+		}
+	}
+	os.Remove(filepath.Join(dir, "systemd-run"))
+	if _, ran := e.runDetached(io.Discard, io.Discard); ran {
+		t.Error("no systemd-run: taken as run")
 	}
 }
 

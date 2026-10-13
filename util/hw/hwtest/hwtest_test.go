@@ -167,10 +167,10 @@ func TestFakeFlowHash(t *testing.T) {
 	if err := v.Eth.SetFlowHash("eno1", hw.FlowUDP4, hw.HashIPs); err != nil || v.Eth.Resets != 1 {
 		t.Errorf("bnxt: %v, resets %d", err, v.Eth.Resets)
 	}
-	// virtio has none.
+	// virtio without RSS hashes on nothing, and cannot be changed.
 	p := VPS(1).Build(t)
-	if _, err := p.Eth.FlowHash("eth0", hw.FlowUDP4); !errors.Is(err, hw.ErrNotSupported) {
-		t.Errorf("virtio hash: %v", err)
+	if bits, err := p.Eth.FlowHash("eth0", hw.FlowUDP4); bits != 0 || err != nil {
+		t.Errorf("virtio hash: %x %v", bits, err)
 	}
 	if err := p.Eth.SetFlowHash("eth0", hw.FlowUDP4, hw.HashIPsPorts); !errors.Is(err, hw.ErrNotSupported) {
 		t.Errorf("virtio set hash: %v", err)

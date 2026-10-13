@@ -339,6 +339,38 @@ func TestInstanceNames(t *testing.T) {
 	}
 }
 
+// A core in another network namespace (a second panel, such as a test's) is
+// not this panel's; one whose namespace cannot be read still counts.
+func TestInstancesOwnNetns(t *testing.T) {
+	f := newFixture(t, hwtest.Desktop())
+	f.addInstances("0-15", fakeInst{name: "xray-1", cpus: "0-7"}, fakeInst{name: "xray-2", cpus: "8-15"})
+	f.b.WriteFile("/proc/3001/cmdline", "/tmp/t/x-ui/bin/xray-linux-amd64\x00-c\x00/tmp/t/x-ui/bin/config-xray-1.json\x00")
+	f.b.WriteFile("/proc/3001/status", "Cpus_allowed_list:\t0-15\nThreads:\t9\n")
+	link := func(p, target string) {
+		if err := os.MkdirAll(filepath.Dir(f.b.FS().P(p)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, f.b.FS().P(p)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	names := func() []string {
+		var out []string
+		for _, in := range f.gather(0).r.Instances {
+			out = append(out, in.Name)
+		}
+		return out
+	}
+	if got := names(); len(got) != 3 {
+		t.Fatalf("before: %q", got)
+	}
+	link("/proc/self/ns/net", "net:[4026531840]")
+	link("/proc/3001/ns/net", "net:[4026532999]")
+	if got, want := names(), []string{"xray-1", "xray-2"}; !slices.Equal(got, want) {
+		t.Errorf("another namespace: %q, want %q", got, want)
+	}
+}
+
 // Every machine the fixtures know runs through every output without
 // trouble, with or without instances.
 func TestPresets(t *testing.T) {

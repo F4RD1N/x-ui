@@ -55,6 +55,8 @@ type Ethtool interface {
 	// SetIndir writes the RSS indirection table; nil (size 0) restores the
 	// driver's default and clears the "configured by the user" flag.
 	SetIndir(dev string, table []uint32) error
+	// FlowHash is the fields the flow is hashed on (RXH bits); 0 when the
+	// driver answers that it hashes on none (virtio_net without RSS).
 	FlowHash(dev string, f Flow) (uint64, error)
 	SetFlowHash(dev string, f Flow, bits uint64) error
 	Stats(dev string) (map[string]uint64, error)

@@ -3,10 +3,13 @@
 package tune
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"slices"
 	"strconv"
@@ -474,10 +477,120 @@ func (e *Env) detachable() bool {
 	return err1 == nil && err2 == nil && self != "" && self == init
 }
 
+// detachQueues says whether "queues --now" goes to a transient unit: only
+// when it has a raise to do (a container, tuning that is off and nothing to
+// raise are answered here at once), and only when systemd-run can wait for
+// the unit, which needs the D-Bus system bus (systemd's own socket is not
+// enough for --wait and --pipe).
+func (e *Env) detachQueues() bool {
+	if !e.detachable() || !e.systemBus() {
+		return false
+	}
+	st, had, err := e.loadState()
+	if err != nil || !had || st.Disabled {
+		return false
+	}
+	f := e.gatherFacts()
+	if f.Container() {
+		return false
+	}
+	for _, it := range e.planNICs(f, st, nicOpts{Retry: true}).NICs {
+		if it.Queues.State == "raise" {
+			return true
+		}
+	}
+	return false
+}
+
+// systemBus reports whether the D-Bus system bus is there: its socket, or an
+// address someone set (systemd-run then finds out itself).
+func (e *Env) systemBus() bool {
+	if os.Getenv("DBUS_SYSTEM_BUS_ADDRESS") != "" {
+		return true
+	}
+	fi, err := os.Stat(e.P("/run/dbus/system_bus_socket"))
+	return err == nil && fi.Mode()&os.ModeSocket != 0
+}
+
 // detachArgs is the transient unit's command.
 func (e *Env) detachArgs() []string {
 	return []string{"systemd-run", "--unit=x-ui-queues-" + strconv.FormatInt(time.Now().Unix(), 10), "--collect", "--wait", "--pipe", "--quiet",
 		"-p", "TimeoutStartSec=600", e.Bin, "tune", "queues", "--now", "--worker"}
+}
+
+// runDetached runs "queues --now" in its transient unit and returns the
+// unit's exit code. ran is false when systemd-run started nothing because it
+// could not reach the bus or is missing; the caller then runs it itself.
+func (e *Env) runDetached(stdout, stderr io.Writer) (code int, ran bool) {
+	args := e.detachArgs()
+	w := &busCheck{w: stderr}
+	cmd := exec.Command(args[0], args[1:]...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, stdout, w
+	err := cmd.Run()
+	if err != nil && (w.noBus || errors.Is(err, exec.ErrNotFound)) {
+		return 0, false
+	}
+	w.flush()
+	var ee *exec.ExitError
+	switch {
+	case err == nil:
+		return 0, true
+	case errors.As(err, &ee):
+		return ee.ExitCode(), true
+	}
+	fmt.Fprintln(stderr, "x-ui tune:", err)
+	return 1, true
+}
+
+// busCheck passes systemd-run's errors on, but holds the first line back
+// until it is sure it does not say the bus is out of reach: systemd-run then
+// started nothing, and the line would only confuse.
+type busCheck struct {
+	w     io.Writer
+	held  []byte
+	open  bool // the first line was something else: everything passes
+	noBus bool
+}
+
+// Write never fails: the unit must never block on a full pipe because the
+// terminal went away.
+func (b *busCheck) Write(p []byte) (int, error) {
+	if b.open {
+		b.w.Write(p)
+		return len(p), nil
+	}
+	b.held = append(b.held, p...)
+	if b.noBus {
+		return len(p), nil
+	}
+	i := bytes.IndexByte(b.held, '\n')
+	if i < 0 && len(b.held) < 4096 {
+		return len(p), nil
+	}
+	if i >= 0 && noBusLine(string(b.held[:i])) {
+		b.noBus = true
+		return len(p), nil
+	}
+	b.open = true
+	b.flush()
+	return len(p), nil
+}
+
+// flush passes on what is held back.
+func (b *busCheck) flush() {
+	if len(b.held) > 0 {
+		b.w.Write(b.held)
+		b.held = nil
+	}
+}
+
+// noBusLine is systemd-run's error for a bus it cannot reach: "Failed to
+// connect to bus: ...", "Failed to connect to system scope bus via local
+// transport: ..." or, from older versions, "Failed to create bus
+// connection: ...".
+func noBusLine(l string) bool {
+	return strings.HasPrefix(l, "Failed to create bus connection") ||
+		strings.HasPrefix(l, "Failed to connect to") && strings.Contains(l, " bus")
 }
 
 // nicBootGuard says why the boot unit must not change the queue count now:

@@ -182,6 +182,10 @@ func TestReadNICPresets(t *testing.T) {
 	if n.IRQs[0].Hint.List() != "0-1" || n.IRQs[0].Affinity.List() != "0-1" || n.Indir != nil || len(n.Hash) != 0 || n.Queues() != 1 || len(n.XPS) != 0 {
 		t.Errorf("virtio: hint %v indir %v hash %v xps %v", n.IRQs[0].Hint, n.Indir, n.Hash, n.XPS)
 	}
+	// Without RSS it answers that it hashes on nothing.
+	if !slices.Equal(n.HashNone, []string{"tcp4", "udp4", "tcp6", "udp6"}) {
+		t.Errorf("virtio hash none: %v", n.HashNone)
+	}
 
 	// mlx5: names with @pci, one CPU per vector near the card.
 	b = hwtest.EPYC(4).Build(t)
@@ -189,8 +193,8 @@ func TestReadNICPresets(t *testing.T) {
 	if len(n.IRQs) != 63 || len(n.OtherIRQs) != 1 || n.IRQs[32].Affinity.List() != "256" || n.IRQs[32].Effective.List() != "256" || n.Node != 0 || n.SpeedMbps != 100000 {
 		t.Errorf("mlx5: %d irqs, q32 %+v", len(n.IRQs), n.IRQs[32])
 	}
-	if len(n.RSSUse()) != 63 || n.Hash["udp4"] != hw.HashIPsPorts {
-		t.Errorf("mlx5 rss %d", len(n.RSSUse()))
+	if len(n.RSSUse()) != 63 || n.Hash["udp4"] != hw.HashIPsPorts || n.HashNone != nil {
+		t.Errorf("mlx5 rss %d, hash none %v", len(n.RSSUse()), n.HashNone)
 	}
 
 	// Separate RX and TX vectors, sorted by queue then kind; channels

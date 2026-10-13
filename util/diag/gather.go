@@ -103,7 +103,7 @@ type NICReport struct {
 	Channels  *hw.Channels      `json:"channels"`
 	Queues    int               `json:"queues"`
 	RSS       *RSSReport        `json:"rss"`
-	Hash      map[string]string `json:"hash"` // flow -> "sd", "sdfn"
+	Hash      map[string]string `json:"hash"` // flow -> "sd", "sdfn"; "" hashed on nothing
 	Offloads  map[string]bool   `json:"offloads"`
 	IRQs      []IRQReport       `json:"irqs"`
 	OtherIRQs []int             `json:"other_irqs,omitempty"`
@@ -363,9 +363,16 @@ func (c *ctx) instances() {
 	}
 	var insts []*InstanceReport
 	var file *hw.Instances
+	// Only the cores of this network namespace: their NICs and sockets are
+	// the ones diag reads (another panel in a namespace of its own, such as
+	// a test's, is not this one's).
+	netns := e.fs.LinkBase("/proc/self/ns/net")
 	for _, d := range e.fs.Glob("/proc/[0-9]*") {
 		pid, err := strconv.Atoi(path.Base(d))
 		if err != nil {
+			continue
+		}
+		if ns := e.fs.LinkBase(d + "/ns/net"); netns != "" && ns != "" && ns != netns {
 			continue
 		}
 		data, err := e.fs.Read(d + "/cmdline")
@@ -693,6 +700,9 @@ func (c *ctx) nicReport(n *hw.NIC, policy string) *NICReport {
 	nr.Managed = c.tuned[n.Key()] && !c.disable
 	for k, bits := range n.Hash {
 		nr.Hash[k] = hw.HashLetters(bits)
+	}
+	for _, k := range n.HashNone {
+		nr.Hash[k] = ""
 	}
 
 	// The hashed queues: those in the RSS table, else all of them.

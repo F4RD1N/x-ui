@@ -76,11 +76,12 @@ type NIC struct {
 	TxQueues  int      `json:"tx_queues"`     // sysfs queues/tx-*
 	TCs       bool     `json:"tcs,omitempty"` // traffic classes split the TX queues: no XPS
 
-	Channels *Channels         `json:"channels,omitempty"` // nil: not supported
-	RxRings  int               `json:"rx_rings,omitempty"` // ETHTOOL_GRXRINGS; 0 unknown
-	Indir    []uint32          `json:"indir,omitempty"`    // RSS indirection table; nil: unreadable
-	Hash     map[string]uint64 `json:"hash"`               // "tcp4", "udp4", "tcp6", "udp6" -> RXH bits; missing when unsupported or 0
-	Features map[string]bool   `json:"features,omitempty"` // offloads, by their "ethtool -K" names (report only)
+	Channels *Channels         `json:"channels,omitempty"`  // nil: not supported
+	RxRings  int               `json:"rx_rings,omitempty"`  // ETHTOOL_GRXRINGS; 0 unknown
+	Indir    []uint32          `json:"indir,omitempty"`     // RSS indirection table; nil: unreadable
+	Hash     map[string]uint64 `json:"hash"`                // "tcp4", "udp4", "tcp6", "udp6" -> RXH bits; missing when unsupported or 0
+	HashNone []string          `json:"hash_none,omitempty"` // flows the driver answered with no fields (virtio_net without RSS)
+	Features map[string]bool   `json:"features,omitempty"`  // offloads, by their "ethtool -K" names (report only)
 
 	IRQs        []QueueIRQ `json:"irqs,omitempty"` // queue interrupts, by Queue then Kind
 	OtherIRQs   []int      `json:"other_irqs,omitempty"`
@@ -227,8 +228,13 @@ func ReadNIC(fs FS, et Ethtool, name string) *NIC {
 		note("RSS table", err)
 	}
 	for _, f := range HashFlows {
-		if b, err := et.FlowHash(name, f); err == nil && b != 0 {
+		b, err := et.FlowHash(name, f)
+		switch {
+		case err != nil:
+		case b != 0:
 			n.Hash[f.String()] = b
+		default:
+			n.HashNone = append(n.HashNone, f.String())
 		}
 	}
 	if f, err := et.Features(name); err == nil {

@@ -5,6 +5,7 @@ package diag
 import (
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -190,13 +191,20 @@ func (c *ctx) renderNIC(p pr, nr *NICReport) {
 		p.kv("RSS table", "not readable")
 	}
 	var hash []string
+	none := 0
 	for _, f := range hw.HashFlows {
 		if b, ok := nr.nic.Hash[f.String()]; ok {
 			hash = append(hash, f.String()+" "+hw.HashText(b))
+		} else if slices.Contains(nr.nic.HashNone, f.String()) {
+			hash = append(hash, f.String()+" "+hw.HashText(0))
+			none++
 		}
 	}
-	if len(hash) == 0 {
+	switch {
+	case len(hash) == 0:
 		hash = []string{"not readable"}
+	case none == len(hash):
+		hash = []string{hw.HashText(0)}
 	}
 	p.kv("hashing", strings.Join(hash, ", "))
 	if len(nr.Offloads) > 0 {

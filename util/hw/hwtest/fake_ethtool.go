@@ -21,6 +21,7 @@ type FakeDev struct {
 	Table      []uint32
 	Configured bool // the table was set explicitly (not the default)
 	Hash       map[string]uint64
+	HashNone   bool // FlowHash answers 0 (no fields) for a flow not in Hash: virtio_net without RSS
 	Features   map[string]bool
 	Stats      map[string]uint64
 	Resets     int  // link resets of this device
@@ -247,7 +248,7 @@ func (f *FakeEthtool) FlowHash(dev string, fl hw.Flow) (uint64, error) {
 		return 0, err
 	}
 	bits := d.Hash[fl.String()]
-	if bits == 0 {
+	if bits == 0 && !d.HashNone {
 		return 0, notSupported("FlowHash", dev)
 	}
 	return bits, nil

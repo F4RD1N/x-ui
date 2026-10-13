@@ -23,7 +23,8 @@
 #     bad arguments and an unsupported CPU are refused before anything changes;
 #   - the install ends with the "Detected:/Configured:" summary, which says
 #     the container's NIC is left to the host; "x-ui diag" and its --json run
-#     (the JSON parses), and no NIC unit or irqbalance drop-in is written;
+#     (the JSON parses), no NIC unit or irqbalance drop-in is written, and
+#     "x-ui tune queues --now" says so too and exits 0;
 #   - a restart takes well under TimeoutStopSec and logs no core crash;
 #   - uninstall leaves no tuning files behind.
 #
@@ -163,6 +164,7 @@ run_distro() {
     check "install prints Detected: and Configured:" in_c 'grep -q "^  Detected:" /root/install1.log && grep -q "^  Configured:" /root/install1.log'
     check "summary leaves the NIC to the host" in_c 'grep -q "NIC: left to the host (container)" /root/install1.log'
     check "no NIC unit, no irqbalance drop-in" in_c '[[ ! -e /etc/systemd/system/x-ui-nic.service && ! -e /etc/systemd/system/irqbalance.service.d/90-x-ui.conf ]]'
+    check "'tune queues --now' leaves the NIC to the host, exit 0" in_c 'x-ui tune queues --now >/root/q 2>&1 && grep -q "skipped: NIC: left to the host (container)" /root/q && ! grep -q "bus" /root/q'
     check "deps installed by install.sh" in_c 'command -v curl >/dev/null && [[ -e /usr/share/zoneinfo/UTC ]]'
 
     local props
