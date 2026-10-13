@@ -99,23 +99,60 @@ func productionAuto(t *testing.T) []hw.Unit {
 	return us
 }
 
-// Production with ten instances of 5 CPUs and 6 free CPUs: the free CPUs
-// take 6 of the 16 RSS queues, every instance exactly one, and the other 40
-// queues put one interrupt on every other CPU; XPS is one to one.
+// rssCoreRule: no core carries two RSS queue interrupts while an eligible
+// core has none.
+func rssCoreRule(t *testing.T, topo *hw.Topology, eligible hw.CPUSet, pl *hw.Placement, rss map[string]int) {
+	t.Helper()
+	perCore := map[int]int{}
+	for nic, n := range rss {
+		for q := 0; q < n; q++ {
+			if cpu, ok := pl.CPU[nic][q]; ok {
+				perCore[topo.CoreOf(cpu).ID]++
+			}
+		}
+	}
+	var idle, double []int
+	for _, c := range topo.Cores {
+		if len(c.Threads.And(eligible)) == 0 {
+			continue
+		}
+		switch n := perCore[c.ID]; {
+		case n == 0:
+			idle = append(idle, c.ID)
+		case n > 1:
+			double = append(double, c.ID)
+		}
+	}
+	if len(idle) > 0 && len(double) > 0 {
+		t.Errorf("cores %v carry two RSS queues while cores %v have none", double, idle)
+	}
+}
+
+// Production with ten instances of 5 CPUs and 6 free CPUs (two free cores,
+// two free threads beside instances): the RSS queues go one per core, the
+// four free cores' first threads first, then one per instance, then a
+// second for the first two instances (on cores of their own: a free core's
+// second thread would put two on one core while others have none). The
+// other 40 queues put one interrupt on every other CPU; XPS is one to one.
 func TestPlaceProductionFixed(t *testing.T) {
 	topo, n, pl := placeOn(t, hwtest.Production(), productionFixed(t))
-	want := []int{27, 26, 55, 54, 53, 52, 1, 7, 11, 17, 21, 0, 6, 10, 16, 20}
+	want := []int{27, 26, 53, 52, 1, 7, 11, 17, 21, 0, 6, 10, 16, 20, 3, 9}
 	if got := rssCPUs(pl, "eno1", 16); !slices.Equal(got, want) {
 		t.Errorf("RSS queues on %v\n          want %v", got, want)
 	}
 	onePerCPU(t, topo, pl, "eno1")
+	rssCoreRule(t, topo, topo.Online, pl, map[string]int{"eno1": 16})
 	per := pl.Units["eno1"]
 	for i := 1; i <= 10; i++ {
-		if c := per[fmt.Sprintf("xray-%d", i)]; c != [2]int{1, 5} {
+		want := [2]int{1, 5}
+		if i <= 2 {
+			want[0] = 2
+		}
+		if c := per[fmt.Sprintf("xray-%d", i)]; c != want {
 			t.Errorf("xray-%d: RSS %d, all %d", i, c[0], c[1])
 		}
 	}
-	if per[""] != [2]int{6, 6} {
+	if per[""] != [2]int{4, 6} {
 		t.Errorf("free CPUs: %v", per[""])
 	}
 	for q, cpus := range pl.XPS["eno1"] {
@@ -126,7 +163,7 @@ func TestPlaceProductionFixed(t *testing.T) {
 	if len(pl.XPS["eno1"]) != n.TxQueues {
 		t.Errorf("XPS for %d queues", len(pl.XPS["eno1"]))
 	}
-	if pl.Owner["eno1"][0] != "" || pl.Owner["eno1"][6] != "xray-1" || pl.Owner["eno1"][11] != "xray-6" {
+	if pl.Owner["eno1"][0] != "" || pl.Owner["eno1"][4] != "xray-1" || pl.Owner["eno1"][9] != "xray-6" {
 		t.Errorf("owners %v", pl.Owner["eno1"])
 	}
 }
@@ -270,10 +307,11 @@ func TestPlaceTwoNICs(t *testing.T) {
 		pn = append(pn, hw.PlaceNIC{NIC: n, RSS: rssOrder(n)})
 	}
 	pl := hw.PlaceQueues(topo, topo.Online, productionFixed(t), pn)
-	// Free CPUs first, alternating: eno1 q0 27, eno2 q0 26, eno1 q1 55, ...
-	if pl.CPU["eno1"][0] != 27 || pl.CPU["eno2"][0] != 26 || pl.CPU["eno1"][1] != 55 || pl.CPU["eno2"][1] != 54 {
+	// Free CPUs first, alternating: eno1 q0 27, eno2 q0 26, eno1 q1 53, ...
+	if pl.CPU["eno1"][0] != 27 || pl.CPU["eno2"][0] != 26 || pl.CPU["eno1"][1] != 53 || pl.CPU["eno2"][1] != 52 {
 		t.Errorf("eno1 %v\neno2 %v", pl.CPU["eno1"], pl.CPU["eno2"])
 	}
+	rssCoreRule(t, topo, topo.Online, pl, map[string]int{"eno1": 16, "eno2": 16})
 	per := map[int]int{}
 	for _, n := range []string{"eno1", "eno2"} {
 		for _, c := range pl.CPU[n] {
@@ -338,4 +376,35 @@ func TestPlaceXPSWithoutIRQs(t *testing.T) {
 			t.Errorf("tx-%d %s, want %s", q, pl.XPS["eno1"][q].List(), w)
 		}
 	}
+}
+
+// The rule on more machines: the split the panel makes now on production
+// (its free CPUs are threads beside instances), 16 and 28 hashed queues, and
+// a desktop whose 4 queues meet two instances and one free core.
+func TestPlaceOneRSSPerCore(t *testing.T) {
+	prod := hwtest.Production()
+	topo := hwtest.Topo(t, prod)
+	var rq []hw.CPURequest
+	for i := 1; i <= 10; i++ {
+		rq = append(rq, hw.CPURequest{Name: fmt.Sprintf("xray-%d", i), CPUs: 5})
+	}
+	var split []hw.Unit
+	for name, l := range hw.SplitCPUs(topo, topo.Online, 1, rq, natLess) {
+		split = append(split, hw.Unit{Name: name, CPUs: hw.NewCPUSet(l...)})
+	}
+	slices.SortFunc(split, func(a, b hw.Unit) int { return a.CPUs[0] - b.CPUs[0] })
+	for _, queues := range []uint32{16, 28} {
+		m := hwtest.Production()
+		m.NICs[0].Channels.Combined = queues
+		if queues == 28 {
+			m.NICs[0].RSSCap = 0
+		}
+		for _, units := range [][]hw.Unit{split, productionFixed(t), productionAuto(t), nil} {
+			topo, n, pl := placeOn(t, m, units)
+			rssCoreRule(t, topo, topo.Online, pl, map[string]int{"eno1": len(rssOrder(n))})
+		}
+	}
+	m := hwtest.Desktop()
+	topo, n, pl := placeOn(t, m, []hw.Unit{{Name: "xray-1", CPUs: list(t, "0-6")}, {Name: "xray-2", CPUs: list(t, "7-13")}})
+	rssCoreRule(t, topo, topo.Online, pl, map[string]int{"eno1": len(rssOrder(n))})
 }

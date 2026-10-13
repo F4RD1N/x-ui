@@ -81,15 +81,21 @@ func TestSplitCPUsProduction(t *testing.T) {
 	}
 
 	// Ten instances of 5: five on node 1 (the NIC's), five on node 0, each
-	// on two whole cores and half a third; 26,52,54 and 27,53,55 stay free.
+	// on two whole cores and half a third. A node's 14 cores cannot give
+	// five instances three each: the first two share one (5/33, 4/32), the
+	// other three have a core of their own, whose other threads (42,43,
+	// 48,49,54,55) stay free.
 	got := hw.SplitCPUs(topo, cpus, 1, reqs(repeat(10, 5)...), natLess)
 	checkSplit(t, "10x5", got, map[string]string{
 		"xray-1": "1,3,5,29,31", "xray-6": "0,2,4,28,30",
 		"xray-2": "7,9,33,35,37", "xray-7": "6,8,32,34,36",
 		"xray-3": "11,13,15,39,41", "xray-8": "10,12,14,38,40",
-		"xray-4": "17,19,43,45,47", "xray-9": "16,18,42,44,46",
-		"xray-5": "21,23,25,49,51", "xray-10": "20,22,24,48,50",
+		"xray-4": "17,19,21,45,47", "xray-9": "16,18,20,44,46",
+		"xray-5": "23,25,27,51,53", "xray-10": "22,24,26,50,52",
 	})
+	if sh := sharedCores(topo, got); len(sh) != 4 || sh["xray-1"] != 1 || sh["xray-2"] != 1 || sh["xray-6"] != 1 || sh["xray-7"] != 1 {
+		t.Errorf("10x5: shared cores %v", sh)
+	}
 
 	got, how := hw.SplitHow(topo, cpus, 1, reqs(repeat(10, 0)...), natLess)
 	if how != "node" {
@@ -282,6 +288,177 @@ func TestSplitCPUsPackageFixed(t *testing.T) {
 	checkSplit(t, "tie, NIC on node 1", got, map[string]string{"xray-1": "2", "xray-2": "3", "xray-3": "0,1"})
 }
 
+// sharedCores counts, per instance, the cores where another instance has a
+// thread too (only instances that share one are listed).
+func sharedCores(topo *hw.Topology, got map[string][]int) map[string]int {
+	owner := map[int]string{}
+	for name, l := range got {
+		for _, c := range l {
+			owner[c] = name
+		}
+	}
+	out := map[string]int{}
+	for name, l := range got {
+		seen := map[int]bool{}
+		for _, c := range l {
+			core := topo.CoreOf(c)
+			if core == nil || seen[core.ID] {
+				continue
+			}
+			seen[core.ID] = true
+			for _, th := range core.Threads {
+				if o, ok := owner[th]; ok && o != name {
+					out[name]++
+					break
+				}
+			}
+		}
+	}
+	return out
+}
+
+// An odd-sized instance does not shift the ones after it off whole cores:
+// they keep whole cores, and two instances share a core only when the node
+// is too small for each to have its own.
+func TestSplitCPUsOddSizes(t *testing.T) {
+	topo := hwtest.Topo(t, hwtest.Production())
+	cpus := []int(topo.Online)
+	for _, c := range []struct {
+		reqs   []int
+		want   map[string]string
+		shared int // instances sharing a core
+	}{
+		{[]int{3, 4, 4, 4, 4}, map[string]string{"xray-1": "1,3,29", "xray-2": "5,7,33,35", "xray-3": "9,11,37,39", "xray-4": "13,15,41,43", "xray-5": "17,19,45,47"}, 0},
+		{[]int{1, 1}, map[string]string{"xray-1": "1", "xray-2": "3"}, 0},
+		{[]int{3, 3}, map[string]string{"xray-1": "1,3,29", "xray-2": "5,7,33"}, 0},
+		{[]int{1, 2}, map[string]string{"xray-1": "1", "xray-2": "3,31"}, 0},
+		// One CPU and ten autos fill both nodes: node 1 has four odd sizes
+		// (1, 5, 5, 5), so two pairs share a core; node 0 one pair.
+		{append([]int{1}, repeat(10, 0)...), map[string]string{"xray-1": "1", "xray-2": "3,5,7,31,33,35", "xray-3": "9,11,13,37,39,41",
+			"xray-4": "15,17,29,43,45", "xray-5": "19,21,23,47,49", "xray-6": "25,27,51,53,55", "xray-7": "0,2,4,28,30,32",
+			"xray-8": "6,8,10,34,36,38", "xray-9": "12,14,16,40,42,44", "xray-10": "18,20,22,46,48", "xray-11": "24,26,50,52,54"}, 6},
+	} {
+		name := fmt.Sprint(c.reqs)
+		got := hw.SplitCPUs(topo, cpus, 1, reqs(c.reqs...), natLess)
+		checkSplit(t, name, got, c.want)
+		sh := sharedCores(topo, got)
+		if len(sh) != c.shared {
+			t.Errorf("%s: %d instances share cores (%v), want %d", name, len(sh), sh, c.shared)
+		}
+		for inst, n := range sh {
+			if n > 1 {
+				t.Errorf("%s: %s shares %d cores", name, inst, n)
+			}
+		}
+		for inst, l := range got {
+			if whole, partial := topo.CoresIn(l); len(l)%2 == 0 && sh[inst] == 0 && (partial != 0 || whole != len(l)/2) {
+				t.Errorf("%s: %s = %v: %d whole, %d partial cores", name, inst, l, whole, partial)
+			}
+		}
+	}
+}
+
+// With NUMA off (one node over two sockets) each package is a pool of its
+// own: no instance spans the sockets when one holds it.
+func TestSplitCPUsNoNUMA(t *testing.T) {
+	topo := hwtest.Topo(t, hwtest.Machine{Packages: 2, CoresPerPackage: 4, ThreadsPerCore: 2, NoNUMA: true, Numbering: "interleaved"})
+	if len(topo.Nodes) != 1 {
+		t.Fatalf("nodes %+v", topo.Nodes)
+	}
+	cpus := []int(topo.Online)
+	got := hw.SplitCPUs(topo, cpus, -1, reqs(0, 0), natLess)
+	checkSplit(t, "2 auto", got, map[string]string{"xray-1": "0,2,4,6,8,10,12,14", "xray-2": "1,3,5,7,9,11,13,15"})
+	got = hw.SplitCPUs(topo, cpus, -1, reqs(4, 4), natLess)
+	checkSplit(t, "2 fixed of 4", got, map[string]string{"xray-1": "0,2,8,10", "xray-2": "4,6,12,14"})
+	for _, rq := range [][]int{{0, 0}, {4, 4}, {2, 2, 2, 2}, {0, 0, 0, 0}} {
+		for name, l := range hw.SplitCPUs(topo, cpus, -1, reqs(rq...), natLess) {
+			pkgs := map[int]bool{}
+			for _, c := range l {
+				pkgs[topo.PackageOf(c)] = true
+			}
+			if len(pkgs) != 1 {
+				t.Errorf("%v: %s = %v spans packages", rq, name, l)
+			}
+		}
+	}
+	// The production server with NUMA off: ten autos, none across sockets.
+	prod := hwtest.Production()
+	prod.NoNUMA = true
+	topo = hwtest.Topo(t, prod)
+	for name, l := range hw.SplitCPUs(topo, []int(topo.Online), -1, reqs(repeat(10, 0)...), natLess) {
+		pkgs := map[int]bool{}
+		for _, c := range l {
+			pkgs[topo.PackageOf(c)] = true
+		}
+		if len(pkgs) != 1 {
+			t.Errorf("production, NUMA off: %s = %v spans packages", name, l)
+		}
+	}
+}
+
+// The cut over the nodes (autos that cannot be even one node or one package
+// each) crosses from one package to the other once, whichever node the NIC
+// is on.
+func TestSplitCPUsCutOrder(t *testing.T) {
+	for _, m := range []hwtest.Machine{
+		{Packages: 2, CoresPerPackage: 8, NodesPerPackage: 2, ThreadsPerCore: 2},
+		{Packages: 2, CoresPerPackage: 14, NodesPerPackage: 2, ThreadsPerCore: 2, Numbering: "interleaved"},
+		hwtest.EPYC(4),
+	} {
+		topo := hwtest.Topo(t, m)
+		for _, autos := range []int{3, 5, 7} {
+			for _, prefer := range topo.NodesOf(topo.Online) {
+				got, how := hw.SplitHow(topo, []int(topo.Online), prefer, reqs(repeat(autos, 0)...), natLess)
+				spans := 0
+				for _, l := range got {
+					pkgs := map[int]bool{}
+					for _, c := range l {
+						pkgs[topo.PackageOf(c)] = true
+					}
+					if len(pkgs) > 1 {
+						spans++
+					}
+				}
+				if how == "cut" && spans > 1 {
+					t.Errorf("%d packages x %d nodes, %d autos, NIC on node %d: %d instances span packages", m.Packages, len(topo.Nodes), autos, prefer, spans)
+				}
+			}
+		}
+	}
+}
+
+// On machines with all their CPUs and two threads per core, an instance
+// inside one node and package shares at most one core with the others,
+// whatever the requests (when every instance can have a CPU of its own).
+func TestSplitCPUsShareAtMostOneCore(t *testing.T) {
+	r := rand.New(rand.NewSource(5))
+	for mi := 0; mi < 80; mi++ {
+		m := randMachine(r)
+		m.Offline, m.ThreadsPerCore = nil, 2
+		topo := hwtest.Topo(t, m)
+		for i := 0; i < 80; i++ {
+			rq := randReqs(r, len(topo.Online))
+			need := 0
+			for _, q := range rq {
+				need += max(q.CPUs, 1)
+			}
+			got, how := hw.SplitHow(topo, topo.Online, r.Intn(4)-1, rq, natLess)
+			if how == "shared" || need > len(topo.Online) {
+				continue
+			}
+			for name, n := range sharedCores(topo, got) {
+				pkgs := map[int]bool{}
+				for _, c := range got[name] {
+					pkgs[topo.PackageOf(c)] = true
+				}
+				if n > 1 && len(topo.NodesOf(got[name])) == 1 && len(pkgs) == 1 {
+					t.Fatalf("machine %+v, reqs %v (%s): %s shares %d cores: %v", m, rq, how, name, n, got)
+				}
+			}
+		}
+	}
+}
+
 // oldAllocate is the split before x-ui knew the topology, kept as the oracle
 // for machines of one node and one thread per core.
 func oldAllocate(cpus []int, reqs []hw.CPURequest) map[string][]int {
@@ -371,14 +548,14 @@ func sameSplit(a, b map[string][]int) bool {
 }
 
 func TestSplitCPUsFlatOracle(t *testing.T) {
-	// Single-node machines without SMT, as the readers see them.
+	// Single-node, single-package machines without SMT, as the readers see
+	// them.
 	var tops []*hw.Topology
 	for _, m := range []hwtest.Machine{
 		{Packages: 1, CoresPerPackage: 1},
 		{Packages: 1, CoresPerPackage: 3},
 		{Packages: 1, CoresPerPackage: 8},
 		{Packages: 1, CoresPerPackage: 13, NoNUMA: true},
-		{Packages: 2, CoresPerPackage: 6, NoNUMA: true, Numbering: "interleaved"},
 		hwtest.VPS(4),
 	} {
 		tops = append(tops, hwtest.Topo(t, m))

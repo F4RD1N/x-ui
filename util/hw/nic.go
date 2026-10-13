@@ -285,13 +285,63 @@ func (n *NIC) readIRQs(fs FS, fn string) {
 		if n.IRQs[i].Queue != n.IRQs[j].Queue {
 			return n.IRQs[i].Queue < n.IRQs[j].Queue
 		}
-		return n.IRQs[i].Kind < n.IRQs[j].Kind
+		if n.IRQs[i].Kind != n.IRQs[j].Kind {
+			return n.IRQs[i].Kind < n.IRQs[j].Kind
+		}
+		return n.IRQs[i].IRQ < n.IRQs[j].IRQ
 	})
+	n.dedupIRQs()
 	sort.Ints(n.OtherIRQs)
-	if len(n.IRQs) == 0 && !n.SharedIRQ && n.Queues() >= 2 {
+	if len(n.IRQs) == 0 && !n.SharedIRQ && !n.UnknownIRQs && n.Queues() >= 2 {
 		n.UnknownIRQs = true
 		n.Notes = append(n.Notes, "interrupt names not recognised: their queues are unknown")
 	}
+}
+
+// dedupIRQs keeps one interrupt per queue and kind (n.IRQs sorted): when
+// several claim one, the one named after the device is the queue's and the
+// others are not queue interrupts; when that does not tell them apart, the
+// queues are unknown (nothing is placed).
+func (n *NIC) dedupIRQs() {
+	named := func(q QueueIRQ) bool {
+		return strings.HasPrefix(q.Name, n.Name+"-") || strings.Contains(q.Name, "-"+n.Name+"-")
+	}
+	var out []QueueIRQ
+	for i := 0; i < len(n.IRQs); {
+		j := i + 1
+		for j < len(n.IRQs) && n.IRQs[j].Queue == n.IRQs[i].Queue && n.IRQs[j].Kind == n.IRQs[i].Kind {
+			j++
+		}
+		group := n.IRQs[i:j]
+		i = j
+		if len(group) == 1 {
+			out = append(out, group[0])
+			continue
+		}
+		keep := -1
+		for k, q := range group {
+			if named(q) {
+				if keep >= 0 {
+					keep = -2
+					break
+				}
+				keep = k
+			}
+		}
+		if keep < 0 {
+			n.UnknownIRQs = true
+			n.Notes = append(n.Notes, fmt.Sprintf("%d interrupts claim queue %d: its queues are unknown", len(group), group[0].Queue))
+			n.IRQs = nil
+			return
+		}
+		out = append(out, group[keep])
+		for k, q := range group {
+			if k != keep {
+				n.OtherIRQs = append(n.OtherIRQs, q.IRQ)
+			}
+		}
+	}
+	n.IRQs = out
 }
 
 // UplinkNICs reads the NICs under the default routes (see Uplinks), one per

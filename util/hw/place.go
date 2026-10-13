@@ -136,12 +136,12 @@ func (p *placer) pickIn(u *punit, node int, onlyFree bool) int {
 	return best
 }
 
-// pickFree takes an RSS queue for the free CPUs: the first thread of a free
-// core that has no queue yet, then another thread of such a core, then a
-// free thread beside an instance on a core with no queue. -1 when none is
-// left.
-func (p *placer) pickFree(free *punit, node int) int {
-	for class := 0; class < 3; class++ {
+// pickFree takes an RSS queue for the free CPUs, from the classes given: 0
+// the first thread of a free core that has no queue yet, 1 another thread of
+// a free core, 2 a free thread beside an instance on a core with no queue.
+// -1 when none is left.
+func (p *placer) pickFree(free *punit, node int, classes ...int) int {
+	for _, class := range classes {
 		best, bestKey := -1, []int(nil)
 		for _, c := range free.cpus {
 			th := p.threads(c)
@@ -168,6 +168,28 @@ func (p *placer) pickFree(free *punit, node int) int {
 		}
 	}
 	return -1
+}
+
+// pickInstance takes an RSS queue for the instance with the lowest share
+// (Sainte-Laguë), on its core with the fewest queues; with emptyCore, only
+// among instances that have a core with no queue yet. -1 when none is left.
+func (p *placer) pickInstance(us []*punit, node int, emptyCore bool) int {
+	var best *punit
+	for _, u := range us {
+		if u.free {
+			continue
+		}
+		if emptyCore && !slices.ContainsFunc(u.cpus, func(c int) bool { return p.coreQ[p.coreKey(c)] == 0 }) {
+			continue
+		}
+		if best == nil || p.lowerShare(u, best, u.rss, best.rss, node) {
+			best = u
+		}
+	}
+	if best == nil {
+		return -1
+	}
+	return p.pickIn(best, node, false)
 }
 
 // lowerShare says whether unit a's (n+0.5)/cpus is below b's, with ties to
@@ -201,11 +223,13 @@ type pqueue struct {
 // and works out XPS. It is pure.
 //
 // With instances, the RSS queues (whose packets are spread by hash, whoever
-// they belong to) go first to free CPUs (one per free core, then their other
-// threads, then free threads beside an instance), then to the instances by
-// Sainte-Laguë on their CPU counts, so no instance carries more than its
-// share of the hashed work; inside an instance, one per core of its own
-// first and nearer the NIC first. The other queues (steered traffic, XPS)
+// they belong to) go one per physical core while any core has none: first
+// to free CPUs (a free core, then a free thread beside an instance), then to
+// the instances by Sainte-Laguë on their CPU counts, so no instance carries
+// more than its share of the hashed work; inside an instance, one per core
+// of its own first and nearer the NIC first. Only when every core has one
+// does a second thread take one (a free core's first, then the instances'
+// by share). The other queues (steered traffic, XPS)
 // then fill one per CPU the same way. Without a usable split (no instances,
 // or instances sharing CPUs) all eligible CPUs are one unit, which puts one
 // queue per physical core, NIC-local cores first.
@@ -337,20 +361,20 @@ func PlaceQueues(t *Topology, eligible CPUSet, units []Unit, nics []PlaceNIC) *P
 		node := nic.Node
 		cpu := -1
 		if pq.rss {
+			// A core without a queue first, wherever there is one: free
+			// CPUs, then an instance's (by share, among those that have
+			// one); only then a second thread of a core.
 			if free != nil {
-				cpu = p.pickFree(free, node)
+				cpu = p.pickFree(free, node, 0, 2)
 			}
 			if cpu < 0 {
-				var best *punit
-				for _, u := range us {
-					if u.free {
-						continue
-					}
-					if best == nil || p.lowerShare(u, best, u.rss, best.rss, node) {
-						best = u
-					}
-				}
-				cpu = p.pickIn(best, node, false)
+				cpu = p.pickInstance(us, node, true)
+			}
+			if cpu < 0 && free != nil {
+				cpu = p.pickFree(free, node, 1)
+			}
+			if cpu < 0 {
+				cpu = p.pickInstance(us, node, false)
 			}
 		} else {
 			var best *punit

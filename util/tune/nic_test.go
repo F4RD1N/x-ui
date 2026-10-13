@@ -89,8 +89,10 @@ func instances(t *testing.T, b *hwtest.Built, allowed string, sets ...string) {
 	b.WriteFile("/usr/local/x-ui/bin/"+hw.InstancesFile, string(in.Marshal()))
 }
 
-var prodFixed = []string{"1,3,5,29,31", "7,9,33,35,37", "11,13,15,39,41", "17,19,43,45,47", "21,23,25,49,51",
-	"0,2,4,28,30", "6,8,32,34,36", "10,12,14,38,40", "16,18,42,44,46", "20,22,24,48,50"}
+// prodFixed is the panel's split of ten instances of 5 CPUs on production;
+// 42,43,48,49,54,55 stay free (threads beside instances).
+var prodFixed = []string{"1,3,5,29,31", "7,9,33,35,37", "11,13,15,39,41", "17,19,21,45,47", "23,25,27,51,53",
+	"0,2,4,28,30", "6,8,32,34,36", "10,12,14,38,40", "16,18,20,44,46", "22,24,26,50,52"}
 
 var prodAuto = []string{"1,3,5,29,31,33", "7,9,11,35,37,39", "13,15,17,41,43,45", "19,21,23,47,49", "25,27,51,53,55",
 	"0,2,4,28,30,32", "6,8,10,34,36,38", "12,14,16,40,42,44", "18,20,22,46,48", "24,26,50,52,54"}
@@ -292,7 +294,7 @@ func TestNICProductionSplit(t *testing.T) {
 	instances(t, b, "0-55", prodFixed...)
 	mustApply(t, e, ApplyOptions{})
 	b.Settle()
-	want := strs(27, 26, 55, 54, 53, 52, 1, 7, 11, 17, 21, 0, 6, 10, 16, 20)
+	want := strs(43, 49, 55, 42, 48, 54, 1, 7, 11, 17, 23, 0, 6, 10, 16, 22)
 	if got := cpusOfQueues(t, e, "eno1", 16); !slices.Equal(got, want) {
 		t.Errorf("RSS queues on %v\n          want %v", got, want)
 	}
@@ -317,7 +319,7 @@ func TestNICProductionSplit(t *testing.T) {
 		"queues      56 of 56: kept (RSS uses 16: the card's limit)",
 		"RSS table   128 entries, even over queues 0-15: kept",
 		"udp4/udp6   IPs and ports (was IPs only)",
-		"interrupts  56 placed by the instance split: RSS 1 per instance, 6 on free CPUs 26-27,52-55",
+		"interrupts  56 placed by the instance split: RSS 1 per instance, 6 on free CPUs 42-43,48-49,54-55",
 		"XPS         every CPU sends on its own queue",
 		"RPS/RFS     off (multi-queue)",
 		"irqbalance  installed, not running; eno1 banned for it (90-x-ui.conf)",
@@ -605,6 +607,40 @@ func TestNICOwnership(t *testing.T) {
 		np := nicPlanOf(t, e)
 		if np.NICs[0].keep != "" {
 			t.Errorf("%s: kept as %s", c.name, np.NICs[0].keep)
+		}
+	}
+}
+
+// An X710's flow director vector ("i40e-<pci>:fdir-TxRx-0") is not queue
+// 0's: after x-ui's apply the NIC stays x-ui's, a new split moves its
+// interrupts, and revert puts every one back; the vector is never touched.
+func TestNICSideVector(t *testing.T) {
+	for _, driver := range []string{"i40e", "ice"} {
+		m := hwtest.ProxmoxBridge()
+		m.NICs[0].Driver = driver
+		m.NICs[0].Extra = []string{"i40e-0000:01:00.0:fdir-TxRx-0"}
+		if driver == "ice" {
+			m.NICs[0].Extra = []string{"ice-0000:01:00.0:ctrl-TxRx-0"}
+		}
+		e, b := onHW(t, m)
+		before := irqSnapshot(t, b)
+		instances(t, b, "0-31", "8-15,24-31", "0-7,16-23")
+		mustApply(t, e, ApplyOptions{})
+		b.Settle()
+		if np := nicPlanOf(t, e); np.NICs[0].keep != "" {
+			t.Fatalf("%s: kept as %q after x-ui's own apply (%s)", driver, np.NICs[0].keep, np.NICs[0].IRQNote)
+		}
+		instances(t, b, "0-31", "0-7,16-23", "8-15,24-31")
+		r, err := e.RunNIC(NICOptions{})
+		if err != nil || len(r.Changed) == 0 {
+			t.Errorf("%s: a new split moved nothing: %v %v", driver, r.Changed, err)
+		}
+		if _, err := e.Revert(false, false); err != nil {
+			t.Fatal(err)
+		}
+		b.Settle()
+		if d := diffMaps(before, irqSnapshot(t, b)); len(d) > 0 {
+			t.Errorf("%s: revert left %d differences: %v", driver, len(d), d[:min(3, len(d))])
 		}
 	}
 }

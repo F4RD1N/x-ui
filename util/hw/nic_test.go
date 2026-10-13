@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/mhsanaei/3x-ui/v2/util/hw"
@@ -22,29 +23,31 @@ func TestParseQueueIRQName(t *testing.T) {
 		ok   bool
 	}
 	for name, want := range map[string]res{
-		"eno1-TxRx-0":                  {0, "txrx", true},
-		"i40e-eno1-TxRx-3":             {3, "txrx", true},
-		"ice-0000:01:00.0-TxRx-12":     {12, "txrx", true},
-		"ena-0000:00:05.0-Tx-Rx-2":     {2, "txrx", true},
-		"eth0-rxtx-1":                  {1, "txrx", true},
-		"eth0-fp-4":                    {4, "txrx", true},
-		"eth0-rx-5":                    {5, "rx", true},
-		"eth0-tx-6":                    {6, "tx", true},
-		"mlx5_comp7@pci:0000:41:00.0":  {7, "txrx", true},
-		"mlx5_comp62":                  {62, "txrx", true},
-		"virtio1-input.0":              {0, "rx", true},
-		"virtio12-output.3":            {3, "tx", true},
-		"eno1":                         {},
-		"mlx5_async0@pci:0000:41:00.0": {},
-		"virtio1-config":               {},
-		"virtio1-virtqueues":           {},
-		"virtio1-control":              {},
-		"i40e-0000:01:00.0:misc":       {},
-		"eth0-err":                     {},
-		"eth0-notify":                  {},
-		"eno1-TxRx-":                   {},
-		"nvme0q1":                      {},
-		"":                             {},
+		"eno1-TxRx-0":                   {0, "txrx", true},
+		"i40e-eno1-TxRx-3":              {3, "txrx", true},
+		"ice-0000:01:00.0-TxRx-12":      {12, "txrx", true},
+		"ena-0000:00:05.0-Tx-Rx-2":      {2, "txrx", true},
+		"eth0-rxtx-1":                   {1, "txrx", true},
+		"eth0-fp-4":                     {4, "txrx", true},
+		"eth0-rx-5":                     {5, "rx", true},
+		"eth0-tx-6":                     {6, "tx", true},
+		"mlx5_comp7@pci:0000:41:00.0":   {7, "txrx", true},
+		"mlx5_comp62":                   {62, "txrx", true},
+		"virtio1-input.0":               {0, "rx", true},
+		"virtio12-output.3":             {3, "tx", true},
+		"eno1":                          {},
+		"mlx5_async0@pci:0000:41:00.0":  {},
+		"virtio1-config":                {},
+		"virtio1-virtqueues":            {},
+		"virtio1-control":               {},
+		"i40e-0000:01:00.0:misc":        {},
+		"i40e-0000:01:00.0:fdir-TxRx-0": {},
+		"ice-0000:01:00.0:ctrl-TxRx-0":  {},
+		"eth0-err":                      {},
+		"eth0-notify":                   {},
+		"eno1-TxRx-":                    {},
+		"nvme0q1":                       {},
+		"":                              {},
 	} {
 		q, kind, ok := hw.ParseQueueIRQName(name)
 		if (res{q, kind, ok}) != want {
@@ -97,6 +100,45 @@ func TestReadNICProduction(t *testing.T) {
 	}
 	if n := hw.ReadNIC(b.FS(), nil, "nope"); n.Driver != "" || n.Node != -1 || !slices.Equal(n.Notes, []string{"not found"}) {
 		t.Errorf("missing device: %+v", n)
+	}
+}
+
+// i40e's flow director and ice's control VSI have a "TxRx-0" vector on the
+// same function: not queue 0's. Two vectors that still claim one queue go to
+// the one named after the device, and when none is, the queues are unknown.
+func TestReadNICSideVectors(t *testing.T) {
+	for _, c := range []struct {
+		driver, extra string
+		other         int
+	}{
+		{"i40e", "i40e-0000:01:00.0:fdir-TxRx-0", 2},
+		{"ice", "ice-0000:01:00.0:ctrl-TxRx-0", 2},
+		{"i40e", "vf0-TxRx-0", 2}, // not named after eno1: not its queue
+	} {
+		m := hwtest.ProxmoxBridge()
+		m.NICs[0].Driver = c.driver
+		m.NICs[0].Extra = []string{c.extra}
+		b := m.Build(t)
+		n := hw.ReadNIC(b.FS(), b.Eth, "eno1")
+		q0 := 0
+		for _, q := range n.IRQs {
+			if q.Queue == 0 {
+				q0++
+				if strings.Contains(q.Name, c.extra) {
+					t.Errorf("%s: %s taken for queue 0", c.driver, q.Name)
+				}
+			}
+		}
+		if q0 != 1 || len(n.IRQs) != n.Queues() || len(n.OtherIRQs) != c.other || n.UnknownIRQs {
+			t.Errorf("%s %s: %d vectors for queue 0, %d queue vectors for %d queues, other %v, unknown %v", c.driver, c.extra, q0, len(n.IRQs), n.Queues(), n.OtherIRQs, n.UnknownIRQs)
+		}
+	}
+	m := hwtest.Desktop()
+	m.NICs[0].IRQNames = "unknown"
+	m.NICs[0].Extra = []string{"a-TxRx-1", "b-TxRx-1"}
+	b := m.Build(t)
+	if n := hw.ReadNIC(b.FS(), b.Eth, "eno1"); !n.UnknownIRQs || len(n.IRQs) != 0 || !slices.ContainsFunc(n.Notes, func(s string) bool { return strings.Contains(s, "2 interrupts claim queue 1") }) {
+		t.Errorf("two unnamed vectors of a queue: %+v %v", n.IRQs, n.Notes)
 	}
 }
 

@@ -53,6 +53,10 @@ type NICSpec struct {
 	// XPS: "hint" (each TX queue on its hint, as ixgbe, mlx5, i40e and
 	// virtio_net set it) or "" (none).
 	XPS string
+	// Extra are more vectors of the function, by name, after the queue
+	// vectors: i40e's flow director ("i40e-<pci>:fdir-TxRx-0"), ice's
+	// control VSI ("ice-<pci>:ctrl-TxRx-0").
+	Extra []string
 }
 
 // BondSpec is a bond over NICs.
@@ -593,6 +597,9 @@ func (b *Built) makeVectors(n *fakeNIC, fresh bool) {
 			vecs = append(vecs, vec{fmt.Sprintf("%s-TxRx-%d", s.Name, q), q})
 		}
 		other(s.Name)
+	}
+	for _, name := range s.Extra {
+		other(name)
 	}
 	n.vecs = nil
 	for hwirq, v := range vecs {

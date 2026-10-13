@@ -192,7 +192,9 @@ instance**, and every instance is its own xray process:
   instances split the rest evenly (one CPU apart at most), each on one NUMA node
   when that keeps the split even. On 28 CPUs, two auto instances get 14 each;
   with one fixed at 10, the auto one gets 18. On servers with 2 threads per
-  core, an even number keeps whole cores. The form shows the server's total
+  core, an even number keeps whole cores, and two instances share a core only
+  when the node has too few for each to have its own (NUMA off on two
+  sockets: each socket counts as a node). The form shows the server's total
   cores and how many this instance can have, and more than that is refused. The
   value belongs to the instance, so it applies to all of its inbounds.
 

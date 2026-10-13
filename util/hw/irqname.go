@@ -24,13 +24,22 @@ var queueIRQNames = []struct {
 
 var sharedIRQName = regexp.MustCompile(`^virtio\d+-virtqueues$`)
 
+// sidebandIRQName is the queue vector of a driver's own side VSI on the
+// same PCI function, which carries no traffic of the device: i40e's flow
+// director ("i40e-0000:01:00.0:fdir-TxRx-0"), ice's control VSI
+// ("ice-0000:01:00.0:ctrl-TxRx-0").
+var sidebandIRQName = regexp.MustCompile(`:(fdir|ctrl)-TxRx-\d+$`)
+
 // ParseQueueIRQName reads a queue interrupt's name: its queue and whether it
 // serves receive ("rx"), transmit ("tx") or both ("txrx"). Anything else (a
-// link or misc vector, mlx5_async, virtio's config vector) is not a queue
-// interrupt.
+// link or misc vector, mlx5_async, virtio's config vector, a side VSI's
+// vector) is not a queue interrupt.
 func ParseQueueIRQName(name string) (queue int, kind string, ok bool) {
 	if i := strings.IndexByte(name, '@'); i >= 0 {
 		name = name[:i]
+	}
+	if sidebandIRQName.MatchString(name) {
+		return 0, "", false
 	}
 	for _, p := range queueIRQNames {
 		m := p.re.FindStringSubmatch(name)
