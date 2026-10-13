@@ -2164,9 +2164,10 @@ SSH_port_forwarding() {
     esac
 }
 
-# import_db replaces the panel database with one downloaded from a URL, then
-# restarts the panel so it opens the new file. The binary does the download,
-# validation and the swap; this only handles the restart.
+# import_db replaces the panel database with one downloaded from a URL. The
+# binary does the download, the checks and the swap, which it refuses while the
+# panel has the database open; so the panel is stopped around it and started
+# again whether or not the import worked.
 import_db() {
     local url="$1"
     if [[ -z "$url" ]]; then
@@ -2174,17 +2175,35 @@ import_db() {
         return 1
     fi
 
-    /usr/local/x-ui/x-ui "db=${url}" || return 1
+    echo -e "${yellow}Stopping the panel for the import...${plain}"
+    if [[ $release == "alpine" ]]; then
+        rc-service x-ui stop >/dev/null 2>&1
+    else
+        systemctl stop x-ui
+    fi
 
-    echo -e "${green}Restarting the panel so the new database takes effect...${plain}"
-    systemctl restart x-ui
+    local ok=0
+    /usr/local/x-ui/x-ui "db=${url}" || ok=1
+
+    if [[ $ok == 0 ]]; then
+        echo -e "${green}Starting the panel on the new database...${plain}"
+    else
+        echo -e "${red}The import failed; starting the panel on its old database...${plain}"
+    fi
+    if [[ $release == "alpine" ]]; then
+        rc-service x-ui start >/dev/null 2>&1
+    else
+        systemctl start x-ui
+    fi
     sleep 2
-    if systemctl is-active --quiet x-ui; then
-        echo -e "${green}Panel restarted.${plain}"
+    check_status
+    if [[ $? == 0 ]]; then
+        echo -e "${green}Panel started.${plain}"
     else
         echo -e "${red}The panel did not come back up. Check: x-ui log${plain}"
         return 1
     fi
+    return $ok
 }
 
 show_usage() {

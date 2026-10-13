@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/mhsanaei/3x-ui/v2/logger"
@@ -25,6 +28,7 @@ type FetchXrayConfigJob struct {
 	xrayService        service.XrayService
 
 	lastFetch time.Time
+	running   atomic.Bool // a run is under way; a slow one is not overlapped
 }
 
 // NewFetchXrayConfigJob creates a new remote Xray config fetch job.
@@ -35,6 +39,10 @@ func NewFetchXrayConfigJob() *FetchXrayConfigJob {
 // Run fetches the template if the configured interval has elapsed. It is a
 // no-op when no URL is set or the interval is zero, which is the default.
 func (j *FetchXrayConfigJob) Run() {
+	if !j.running.CompareAndSwap(false, true) {
+		return
+	}
+	defer j.running.Store(false)
 	url, err := j.settingService.GetXrayConfigUrl()
 	if err != nil || url == "" {
 		return
@@ -43,7 +51,10 @@ func (j *FetchXrayConfigJob) Run() {
 	if err != nil || minutes <= 0 {
 		return
 	}
-	if time.Since(j.lastFetch) < time.Duration(minutes)*time.Minute {
+	// Half a tick of slack: the tick that is due finds a hair less than the
+	// interval gone whenever it fires a little sooner after its second than
+	// the last one did, and an N-minute interval would often take N+1.
+	if time.Since(j.lastFetch) < time.Duration(minutes)*time.Minute-30*time.Second {
 		return
 	}
 	j.lastFetch = time.Now()
@@ -57,6 +68,14 @@ func (j *FetchXrayConfigJob) Run() {
 	body, err := fetchConfig(url)
 	if err != nil {
 		logger.Warning("Fetching Xray config from ", url, " failed: ", err)
+		return
+	}
+
+	// Nothing changed, so nothing is built, tested, stored or restarted.
+	// Compared as JSON rather than as text: the Xray page stores the
+	// template re-indented, and a difference in layout alone must not
+	// restart every core and drop every connection.
+	if current, err := j.xraySettingService.GetXrayConfigTemplate(); err == nil && sameJSON(current, body) {
 		return
 	}
 
@@ -90,13 +109,6 @@ func (j *FetchXrayConfigJob) Run() {
 		return
 	}
 
-	current, err := j.xraySettingService.GetXrayConfigTemplate()
-	if err == nil && current == body {
-		// Nothing changed, so nothing is restarted. Without this the core would
-		// be bounced on every interval and drop every connection with it.
-		return
-	}
-
 	if err := j.xraySettingService.SaveXraySetting(body); err != nil {
 		logger.Warning("Saving the fetched Xray config failed: ", err)
 		return
@@ -108,6 +120,30 @@ func (j *FetchXrayConfigJob) Run() {
 
 	logger.Info("Xray config template updated from ", url)
 	j.xrayService.SetToNeedRestart()
+}
+
+// sameJSON reports whether a and b hold the same JSON value, whatever their
+// layout and key order. Numbers are compared as written, so large integers
+// are not rounded into looking equal.
+func sameJSON(a, b string) bool {
+	if a == b {
+		return true
+	}
+	decode := func(s string) (any, bool) {
+		d := json.NewDecoder(strings.NewReader(s))
+		d.UseNumber()
+		var v any
+		if d.Decode(&v) != nil || d.More() {
+			return nil, false
+		}
+		return v, true
+	}
+	va, ok := decode(a)
+	if !ok {
+		return false
+	}
+	vb, ok := decode(b)
+	return ok && reflect.DeepEqual(va, vb)
 }
 
 // fetchConfig downloads the config template, refusing a response too large to

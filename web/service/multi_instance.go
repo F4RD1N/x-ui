@@ -47,6 +47,10 @@ type SubPlan struct {
 // subPlanMax caps one request.
 const subPlanMax = 1024
 
+// errSocketSubs is why an inbound on a unix socket gets no sub-inbounds:
+// they would have no port, and would fight it for the socket.
+const errSocketSubs = "an inbound on a unix socket cannot have sub-inbounds"
+
 // othersExpanded returns every inbound but id, with their sub-inbounds.
 func othersExpanded(id int) ([]*model.Inbound, error) {
 	var all []*model.Inbound
@@ -126,6 +130,8 @@ func (s *InboundService) PlanSubInbounds(id int, current []model.SubInbound, cou
 	}
 	plan.Count = count
 	switch {
+	case model.SocketListen(src.Listen):
+		plan.Error = errSocketSubs
 	case count < 1 && useMax:
 		plan.Error = fmt.Sprintf("no CPU cores are left for new instances (%d in total, %d reserved)", total, reserved)
 	case count < 1:
@@ -251,6 +257,9 @@ func (s *InboundService) SaveSubInbounds(id int, subs []model.SubInbound) (*mode
 	src, err := s.GetInbound(id)
 	if err != nil {
 		return nil, false, err
+	}
+	if len(subs) > 0 && model.SocketListen(src.Listen) {
+		return nil, false, common.NewError(errSocketSubs)
 	}
 	others, err := othersExpanded(id)
 	if err != nil {

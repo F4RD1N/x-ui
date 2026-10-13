@@ -24,6 +24,9 @@ var (
 	logger  *logging.Logger
 	logFile *os.File
 
+	fallback     *logging.Logger // see get
+	fallbackOnce sync.Once
+
 	// logBuffer maintains recent log entries in memory for web UI retrieval.
 	// Every xray core logs from its own goroutine, so it is locked.
 	bufMu     sync.Mutex
@@ -57,6 +60,23 @@ func InitLogger(level logging.Level) {
 	multiBackend := logging.MultiLogger(backends...)
 	newLogger.SetBackend(multiBackend)
 	logger = newLogger
+}
+
+// get returns the logger. Before InitLogger -- in the command line tools,
+// which must not truncate the running panel's log file -- it is a logger to
+// stderr, so a log call there no longer dereferences a nil logger.
+func get() *logging.Logger {
+	if l := logger; l != nil {
+		return l
+	}
+	fallbackOnce.Do(func() {
+		l := logging.MustGetLogger("x-ui-cli")
+		backend := logging.AddModuleLevel(logging.NewBackendFormatter(logging.NewLogBackend(os.Stderr, "", 0), newFormatter(false)))
+		backend.SetLevel(logging.INFO, "")
+		l.SetBackend(backend)
+		fallback = l
+	})
+	return fallback
 }
 
 // initDefaultBackend creates the console/syslog logging backend.
@@ -130,61 +150,61 @@ func CloseLogger() {
 
 // Debug logs a debug message and adds it to the log buffer.
 func Debug(args ...any) {
-	logger.Debug(args...)
+	get().Debug(args...)
 	addToBuffer("DEBUG", fmt.Sprint(args...))
 }
 
 // Debugf logs a formatted debug message and adds it to the log buffer.
 func Debugf(format string, args ...any) {
-	logger.Debugf(format, args...)
+	get().Debugf(format, args...)
 	addToBuffer("DEBUG", fmt.Sprintf(format, args...))
 }
 
 // Info logs an info message and adds it to the log buffer.
 func Info(args ...any) {
-	logger.Info(args...)
+	get().Info(args...)
 	addToBuffer("INFO", fmt.Sprint(args...))
 }
 
 // Infof logs a formatted info message and adds it to the log buffer.
 func Infof(format string, args ...any) {
-	logger.Infof(format, args...)
+	get().Infof(format, args...)
 	addToBuffer("INFO", fmt.Sprintf(format, args...))
 }
 
 // Notice logs a notice message and adds it to the log buffer.
 func Notice(args ...any) {
-	logger.Notice(args...)
+	get().Notice(args...)
 	addToBuffer("NOTICE", fmt.Sprint(args...))
 }
 
 // Noticef logs a formatted notice message and adds it to the log buffer.
 func Noticef(format string, args ...any) {
-	logger.Noticef(format, args...)
+	get().Noticef(format, args...)
 	addToBuffer("NOTICE", fmt.Sprintf(format, args...))
 }
 
 // Warning logs a warning message and adds it to the log buffer.
 func Warning(args ...any) {
-	logger.Warning(args...)
+	get().Warning(args...)
 	addToBuffer("WARNING", fmt.Sprint(args...))
 }
 
 // Warningf logs a formatted warning message and adds it to the log buffer.
 func Warningf(format string, args ...any) {
-	logger.Warningf(format, args...)
+	get().Warningf(format, args...)
 	addToBuffer("WARNING", fmt.Sprintf(format, args...))
 }
 
 // Error logs an error message and adds it to the log buffer.
 func Error(args ...any) {
-	logger.Error(args...)
+	get().Error(args...)
 	addToBuffer("ERROR", fmt.Sprint(args...))
 }
 
 // Errorf logs a formatted error message and adds it to the log buffer.
 func Errorf(format string, args ...any) {
-	logger.Errorf(format, args...)
+	get().Errorf(format, args...)
 	addToBuffer("ERROR", fmt.Sprintf(format, args...))
 }
 

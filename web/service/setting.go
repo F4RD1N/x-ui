@@ -764,18 +764,19 @@ func (s *SettingService) GetLdapDefaultLimitIP() (int, error) {
 }
 
 func (s *SettingService) UpdateAllSetting(allSetting *entity.AllSetting) error {
-	if err := allSetting.CheckValid(); err != nil {
-		return err
-	}
-
 	// A certificate field may hold a link instead of a path. Fetch it now and
-	// store where it landed, so the panel only ever reads local files.
+	// store where it landed, so the panel only ever reads local files. It
+	// comes before the check, which loads the pair from those files.
 	for _, field := range []*string{&allSetting.WebCertFile, &allSetting.WebKeyFile} {
 		local, err := DownloadCert(*field)
 		if err != nil {
 			return err
 		}
 		*field = local
+	}
+
+	if err := allSetting.CheckValid(); err != nil {
+		return err
 	}
 
 	v := reflect.ValueOf(allSetting).Elem()

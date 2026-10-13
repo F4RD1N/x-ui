@@ -340,11 +340,11 @@ func (a *InboundController) resetAllClientTraffics(c *gin.Context) {
 		return
 	}
 
-	err = a.inboundService.ResetAllClientTraffics(id)
+	needRestart, err := a.inboundService.ResetAllClientTraffics(id)
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
 		return
-	} else {
+	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
 	jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.resetAllClientTrafficSuccess"), nil)
@@ -467,11 +467,13 @@ func (a *InboundController) delDepletedClients(c *gin.Context) {
 		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.inboundUpdateSuccess"), err)
 		return
 	}
-	err = a.inboundService.DelDepletedClients(id)
+	needRestart, err := a.inboundService.DelDepletedClients(id)
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
 		return
 	}
+	// Deleted inbounds may empty an instance, which then stops.
+	a.applyToCores(needRestart)
 	jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.delDepletedClientsSuccess"), nil)
 }
 

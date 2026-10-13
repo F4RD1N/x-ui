@@ -287,6 +287,7 @@
 "subInboundEnabled" = "روشن"
 "subInboundsSaved" = "ساب‌اینباندها ذخیره شدند"
 "subInboundBadPort" = "هر ساب‌اینباند باید پورتی بین ۱ و ۶۵۵۳۵ داشته باشد"
+"subInboundSocket" = "اینباندی که روی سوکت یونیکس گوش می‌دهد نمی‌تواند ساب‌اینباند داشته باشد"
 "subInboundsInForm" = "با چند اینستنس ویرایش کنید"
 "subInboundsFree" = "آزاد"
 "xrayCoresUnit" = "هسته"

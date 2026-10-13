@@ -2,6 +2,10 @@ module github.com/xtls/xray-core
 
 go 1.26
 
+// Release builds use this Go: go1.27.0 has stdlib vulnerabilities fixed in
+// go1.27.2, among them an HTTP/2 server crash reachable through XHTTP.
+toolchain go1.27.2
+
 require (
 	github.com/apernet/quic-go v0.59.1-0.20260217092621-db4786c77a22
 	github.com/cloudflare/circl v1.6.3

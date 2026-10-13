@@ -11,6 +11,7 @@ type Period string
 // PeriodicTrafficResetJob resets traffic statistics for inbounds based on their configured reset period.
 type PeriodicTrafficResetJob struct {
 	inboundService service.InboundService
+	xrayService    service.XrayService
 	period         Period
 }
 
@@ -42,9 +43,12 @@ func (j *PeriodicTrafficResetJob) Run() {
 			logger.Warning("Failed to reset traffic for inbound", inbound.Id, ":", resetInboundErr)
 		}
 
-		resetClientErr := j.inboundService.ResetAllClientTraffics(inbound.Id)
+		needRestart, resetClientErr := j.inboundService.ResetAllClientTraffics(inbound.Id)
 		if resetClientErr != nil {
 			logger.Warning("Failed to reset traffic for all users of inbound", inbound.Id, ":", resetClientErr)
+		}
+		if needRestart {
+			j.xrayService.SetToNeedRestart()
 		}
 
 		if resetInboundErr == nil && resetClientErr == nil {

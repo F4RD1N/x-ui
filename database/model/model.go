@@ -101,9 +101,16 @@ func ParentTag(tag string) string {
 	return tag
 }
 
-// Subs returns the inbound's sub-inbounds.
+// SocketListen reports whether listen is a unix socket (a path or an
+// abstract "@name") rather than an address.
+func SocketListen(listen string) bool {
+	return strings.HasPrefix(listen, "/") || strings.HasPrefix(listen, "@")
+}
+
+// Subs returns the inbound's sub-inbounds. An inbound on a unix socket has
+// none: a socket has no port, and a copy would fight it for the socket.
 func (i *Inbound) Subs() []SubInbound {
-	if strings.TrimSpace(i.SubInbounds) == "" {
+	if strings.TrimSpace(i.SubInbounds) == "" || SocketListen(i.Listen) {
 		return nil
 	}
 	var out []SubInbound

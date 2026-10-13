@@ -287,6 +287,7 @@
 "subInboundEnabled" = "On"
 "subInboundsSaved" = "Sub-inbounds saved"
 "subInboundBadPort" = "Every sub-inbound needs a port between 1 and 65535"
+"subInboundSocket" = "An inbound on a unix socket cannot have sub-inbounds"
 "subInboundsInForm" = "edit them with Multi Instance"
 "subInboundsFree" = "free"
 "xrayCoresUnit" = "cores"

@@ -16,6 +16,7 @@ package service
 // config changed in a way the API could not apply.
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -133,6 +134,18 @@ func markDirtyTag(tag string) {
 	}
 }
 
+// markDirtyFamily records that the cores running tag and its sub-inbounds
+// no longer match the database, for a change none of their APIs was given.
+func markDirtyFamily(tag string) {
+	for _, t := range tagsOf(tag) {
+		markDirtyTag(t)
+	}
+}
+
+// MarkCoreDirty records that the core running tag no longer matches the
+// database, so the next apply restarts it.
+func MarkCoreDirty(tag string) { markDirtyTag(tag) }
+
 // markDirtyInstance records that instance's core no longer matches the
 // database, so the next apply restarts it.
 func markDirtyInstance(instance string) {
@@ -221,6 +234,9 @@ func (c *coreAPI) delOne(tag string) error {
 	}
 	markTouched(owner, tag)
 	if err := a.DelInbound(tag); err != nil {
+		// Only a restart takes it out of this core now. The caller only
+		// knows the inbound's own tag, which may live in another core.
+		markDirtyInstance(owner)
 		return err
 	}
 	instMu.Lock()
@@ -244,10 +260,16 @@ func (c *coreAPI) AddUser(protocol, tag string, user map[string]any) error {
 
 // RemoveUser removes a client from the cores running tag and its
 // sub-inbounds. "User not found" is left to the caller, which treats it as
-// already done.
+// already done; any other failure marks the core that failed, which may be a
+// sub-inbound's rather than the inbound's own, for a restart.
 func (c *coreAPI) RemoveUser(tag, email string) error {
+	notFound := fmt.Sprintf("User %s not found.", email)
 	return c.eachTag(tag, func(a *xray.XrayAPI, t string) error {
-		return a.RemoveUser(t, email)
+		err := a.RemoveUser(t, email)
+		if err != nil && !strings.Contains(err.Error(), notFound) {
+			markDirtyTag(t)
+		}
+		return err
 	})
 }
 
@@ -566,12 +588,83 @@ func buildPlan(full *xray.Config, inbounds []*model.Inbound, ports map[string]ru
 		}
 		ics = append(ics, groups[name]...)
 		cfg.InboundConfigs = ics
+		cfg.RouterConfig = withSubInboundTags(full.RouterConfig, groups[name])
 		if metricsBase > 0 && p.metrics > 0 {
 			cfg.Metrics = withMetricsListen(full.Metrics, net.JoinHostPort(metricsHost, strconv.Itoa(p.metrics)))
 		}
 		plan.configs[name] = &cfg
 	}
 	return plan, nil
+}
+
+// withSubInboundTags returns the routing of a core that runs inbounds: every
+// rule naming an inbound by tag also names that inbound's sub-inbounds among
+// them, so a rule for an inbound covers it on every port. It is done per
+// core, so adding or removing a sub-inbound changes no other core's routing.
+// The routing comes back as it was when no rule names such an inbound.
+func withSubInboundTags(routing json_util.RawMessage, inbounds []xray.InboundConfig) json_util.RawMessage {
+	subs := map[string][]string{}
+	for _, ic := range inbounds {
+		if p := model.ParentTag(ic.Tag); p != ic.Tag {
+			subs[p] = append(subs[p], ic.Tag)
+		}
+	}
+	if len(subs) == 0 || len(routing) == 0 {
+		return routing
+	}
+	var r map[string]any
+	d := json.NewDecoder(bytes.NewReader(routing))
+	d.UseNumber() // keep numbers exactly as written
+	if d.Decode(&r) != nil {
+		return routing
+	}
+	rules, _ := r["rules"].([]any)
+	changed := false
+	for _, rule := range rules {
+		m, ok := rule.(map[string]any)
+		if !ok {
+			continue
+		}
+		var list []any
+		switch v := m["inboundTag"].(type) {
+		case string:
+			list = []any{v}
+		case []any:
+			list = v
+		default:
+			continue
+		}
+		have := map[string]bool{}
+		for _, t := range list {
+			if s, ok := t.(string); ok {
+				have[s] = true
+			}
+		}
+		n := len(list)
+		for _, t := range list[:n] {
+			s, _ := t.(string)
+			for _, sub := range subs[s] {
+				if !have[sub] {
+					have[sub] = true
+					list = append(list, sub)
+				}
+			}
+		}
+		if len(list) != n {
+			m["inboundTag"] = list
+			changed = true
+		}
+	}
+	if !changed {
+		return routing
+	}
+	var buf bytes.Buffer
+	e := json.NewEncoder(&buf)
+	e.SetEscapeHTML(false)
+	if e.Encode(r) != nil {
+		return routing
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n")
 }
 
 // metricsListen returns the host and port of the template's metrics
@@ -630,7 +723,7 @@ func pickFreePort(start int, used map[int]bool) int {
 func sameRunning(have, want *xray.Config, skip map[string]uint64) bool {
 	h, w := *have, *want
 	h.InboundConfigs, w.InboundConfigs = nil, nil
-	if !h.Equals(&w) || string(h.Observatory) != string(w.Observatory) || string(h.BurstObservatory) != string(w.BurstObservatory) {
+	if !h.Equals(&w) || !xray.SameJSON(h.Observatory, w.Observatory) || !xray.SameJSON(h.BurstObservatory, w.BurstObservatory) {
 		return false
 	}
 	hm := map[string]*xray.InboundConfig{}
@@ -1106,7 +1199,7 @@ func (s *XrayService) StartInstance(name string) error {
 // enabledInstanceNames returns the instances that have an enabled inbound.
 func enabledInstanceNames() (map[string]bool, error) {
 	var inbounds []*model.Inbound
-	if err := database.GetDB().Model(model.Inbound{}).Select("id", "tag", "port", "enable", "xray_instance", "xray_cores", "sub_inbounds").
+	if err := database.GetDB().Model(model.Inbound{}).Select("id", "tag", "port", "listen", "enable", "xray_instance", "xray_cores", "sub_inbounds").
 		Find(&inbounds).Error; err != nil {
 		return nil, err
 	}
@@ -1234,7 +1327,7 @@ type XrayInstancesInfo struct {
 func (s *InboundService) GetXrayInstancesInfo() (*XrayInstancesInfo, error) {
 	var inbounds []*model.Inbound
 	err := database.GetDB().Model(model.Inbound{}).
-		Select("id", "remark", "port", "protocol", "enable", "tag", "xray_instance", "xray_cores", "sub_inbounds").
+		Select("id", "remark", "port", "listen", "protocol", "enable", "tag", "xray_instance", "xray_cores", "sub_inbounds").
 		Order("id").Find(&inbounds).Error
 	if err != nil {
 		return nil, err

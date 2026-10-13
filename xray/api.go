@@ -114,20 +114,40 @@ func (x *XrayAPI) DelInbound(tag string) error {
 }
 
 // AddUser adds a user to an inbound in the Xray core using the specified protocol and user data.
+// An optional field the map lacks counts as empty; a user without the key its
+// protocol needs (id, password or auth) is refused rather than panicking.
 func (x *XrayAPI) AddUser(Protocol string, inboundTag string, user map[string]any) error {
 	if x.HandlerServiceClient == nil {
 		return errAPINotConnected
 	}
+	field := func(k string) string {
+		v, _ := user[k].(string)
+		return v
+	}
+	need := func(k string) (string, error) {
+		if v, ok := user[k].(string); ok {
+			return v, nil
+		}
+		return "", fmt.Errorf("%s user %q has no %s", Protocol, field("email"), k)
+	}
 	var account *serial.TypedMessage
 	switch Protocol {
 	case "vmess":
+		id, err := need("id")
+		if err != nil {
+			return err
+		}
 		account = serial.ToTypedMessage(&vmess.Account{
-			Id: user["id"].(string),
+			Id: id,
 		})
 	case "vless":
+		id, err := need("id")
+		if err != nil {
+			return err
+		}
 		vlessAccount := &vless.Account{
-			Id:   user["id"].(string),
-			Flow: user["flow"].(string),
+			Id:   id,
+			Flow: field("flow"),
 		}
 		// Add testseed if provided
 		if testseedVal, ok := user["testseed"]; ok {
@@ -153,12 +173,20 @@ func (x *XrayAPI) AddUser(Protocol string, inboundTag string, user map[string]an
 		}
 		account = serial.ToTypedMessage(vlessAccount)
 	case "trojan":
+		password, err := need("password")
+		if err != nil {
+			return err
+		}
 		account = serial.ToTypedMessage(&trojan.Account{
-			Password: user["password"].(string),
+			Password: password,
 		})
 	case "shadowsocks":
+		password, err := need("password")
+		if err != nil {
+			return err
+		}
 		var ssCipherType shadowsocks.CipherType
-		switch user["cipher"].(string) {
+		switch field("cipher") {
 		case "aes-128-gcm":
 			ssCipherType = shadowsocks.CipherType_AES_128_GCM
 		case "aes-256-gcm":
@@ -173,18 +201,22 @@ func (x *XrayAPI) AddUser(Protocol string, inboundTag string, user map[string]an
 
 		if ssCipherType != shadowsocks.CipherType_NONE {
 			account = serial.ToTypedMessage(&shadowsocks.Account{
-				Password:   user["password"].(string),
+				Password:   password,
 				CipherType: ssCipherType,
 			})
 		} else {
 			account = serial.ToTypedMessage(&shadowsocks_2022.ServerConfig{
-				Key:   user["password"].(string),
-				Email: user["email"].(string),
+				Key:   password,
+				Email: field("email"),
 			})
 		}
 	case "hysteria":
+		auth, err := need("auth")
+		if err != nil {
+			return err
+		}
 		account = serial.ToTypedMessage(&hysteriaAccount.Account{
-			Auth: user["auth"].(string),
+			Auth: auth,
 		})
 	default:
 		return nil
@@ -196,7 +228,7 @@ func (x *XrayAPI) AddUser(Protocol string, inboundTag string, user map[string]an
 		Tag: inboundTag,
 		Operation: serial.ToTypedMessage(&command.AddUserOperation{
 			User: &protocol.User{
-				Email:   user["email"].(string),
+				Email:   field("email"),
 				Account: account,
 			},
 		}),

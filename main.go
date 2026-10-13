@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -136,21 +137,26 @@ func runWebServer() {
 	}
 }
 
+// errReported is returned by a command that has already printed why it
+// failed: main only has to exit with an error status.
+var errReported = errors.New("failed")
+
 // resetSetting resets all panel settings to their default values.
-func resetSetting() {
+func resetSetting() error {
 	err := database.InitDB(config.GetDBPath())
 	if err != nil {
 		fmt.Println("Failed to initialize database:", err)
-		return
+		return errReported
 	}
 
 	settingService := service.SettingService{}
 	err = settingService.ResetSettings()
 	if err != nil {
 		fmt.Println("Failed to reset settings:", err)
-	} else {
-		fmt.Println("Settings successfully reset.")
+		return errReported
 	}
+	fmt.Println("Settings successfully reset.")
+	return nil
 }
 
 // showSetting displays the current panel settings if show is true.
@@ -204,52 +210,53 @@ func showSetting(show bool) {
 }
 
 // updateTgbotEnableSts enables or disables the Telegram bot notifications based on the status parameter.
-func updateTgbotEnableSts(status bool) {
+func updateTgbotEnableSts(status bool) error {
 	settingService := service.SettingService{}
 	currentTgSts, err := settingService.GetTgbotEnabled()
 	if err != nil {
 		fmt.Println(err)
-		return
+		return errReported
 	}
 	logger.Infof("current enabletgbot status[%v],need update to status[%v]", currentTgSts, status)
 	if currentTgSts != status {
 		err := settingService.SetTgbotEnabled(status)
 		if err != nil {
 			fmt.Println(err)
-			return
+			return errReported
 		} else {
 			logger.Infof("SetTgbotEnabled[%v] success", status)
 		}
 	}
+	return nil
 }
 
 // updateTgbotSetting updates Telegram bot settings including token, chat ID, and runtime schedule.
 // updateXrayEgress sets instances' outgoing IPs from "name=ip,name=ip". An
 // empty ip sends that instance from the server's default address again. A
 // running panel applies it when it restarts.
-func updateXrayEgress(spec string) {
+func updateXrayEgress(spec string) error {
 	err := database.InitDB(config.GetDBPath())
 	if err != nil {
 		fmt.Println("Error initializing database:", err)
-		return
+		return errReported
 	}
 	settingService := service.SettingService{}
 	m, err := settingService.GetInstanceEgress()
 	if err != nil {
 		fmt.Println("Error reading the outgoing IPs:", err)
-		return
+		return errReported
 	}
 	names, err := service.XrayInstanceNames()
 	if err != nil {
 		fmt.Println("Error reading the inbounds:", err)
-		return
+		return errReported
 	}
 	for _, part := range strings.Split(spec, ",") {
 		name, ip, ok := strings.Cut(strings.TrimSpace(part), "=")
 		name, ip = strings.TrimSpace(name), strings.TrimSpace(ip)
 		if !ok || name == "" {
 			fmt.Printf("Expected name=ip, got %q\n", part)
-			return
+			return errReported
 		}
 		if !names[name] {
 			fmt.Printf("Warning: no inbound runs in %s yet\n", name)
@@ -261,13 +268,13 @@ func updateXrayEgress(spec string) {
 		norm, err := service.CheckEgressIP(ip)
 		if err != nil {
 			fmt.Printf("%s: %v\n", name, err)
-			return
+			return errReported
 		}
 		m[name] = norm
 	}
 	if err := settingService.SetInstanceEgress(m); err != nil {
 		fmt.Println("Error saving the outgoing IPs:", err)
-		return
+		return errReported
 	}
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -278,13 +285,14 @@ func updateXrayEgress(spec string) {
 		fmt.Printf("%s -> %s\n", k, m[k])
 	}
 	fmt.Println("Saved. Restart the panel (x-ui restart) to apply.")
+	return nil
 }
 
-func updateTgbotSetting(tgBotToken string, tgBotChatid string, tgBotRuntime string) {
+func updateTgbotSetting(tgBotToken string, tgBotChatid string, tgBotRuntime string) error {
 	err := database.InitDB(config.GetDBPath())
 	if err != nil {
 		fmt.Println("Error initializing database:", err)
-		return
+		return errReported
 	}
 
 	settingService := service.SettingService{}
@@ -293,7 +301,7 @@ func updateTgbotSetting(tgBotToken string, tgBotChatid string, tgBotRuntime stri
 		err := settingService.SetTgBotToken(tgBotToken)
 		if err != nil {
 			fmt.Printf("Error setting Telegram bot token: %v\n", err)
-			return
+			return errReported
 		}
 		logger.Info("Successfully updated Telegram bot token.")
 	}
@@ -302,7 +310,7 @@ func updateTgbotSetting(tgBotToken string, tgBotChatid string, tgBotRuntime stri
 		err := settingService.SetTgbotRuntime(tgBotRuntime)
 		if err != nil {
 			fmt.Printf("Error setting Telegram bot runtime: %v\n", err)
-			return
+			return errReported
 		}
 		logger.Infof("Successfully updated Telegram bot runtime to [%s].", tgBotRuntime)
 	}
@@ -311,18 +319,20 @@ func updateTgbotSetting(tgBotToken string, tgBotChatid string, tgBotRuntime stri
 		err := settingService.SetTgBotChatId(tgBotChatid)
 		if err != nil {
 			fmt.Printf("Error setting Telegram bot chat ID: %v\n", err)
-			return
+			return errReported
 		}
 		logger.Info("Successfully updated Telegram bot chat ID.")
 	}
+	return nil
 }
 
 // updateSetting updates various panel settings including port, credentials, base path, listen IP, and two-factor authentication.
-func updateSetting(port int, username string, password string, webBasePath string, listenIP string, resetTwoFactor bool) {
+func updateSetting(port int, username string, password string, webBasePath string, listenIP string, resetTwoFactor bool) error {
+	failed := false
 	err := database.InitDB(config.GetDBPath())
 	if err != nil {
 		fmt.Println("Database initialization failed:", err)
-		return
+		return errReported
 	}
 
 	settingService := service.SettingService{}
@@ -332,6 +342,7 @@ func updateSetting(port int, username string, password string, webBasePath strin
 		err := settingService.SetPort(port)
 		if err != nil {
 			fmt.Println("Failed to set port:", err)
+			failed = true
 		} else {
 			fmt.Printf("Port set successfully: %v\n", port)
 		}
@@ -341,6 +352,7 @@ func updateSetting(port int, username string, password string, webBasePath strin
 		err := userService.UpdateFirstUser(username, password)
 		if err != nil {
 			fmt.Println("Failed to update username and password:", err)
+			failed = true
 		} else {
 			fmt.Println("Username and password updated successfully")
 		}
@@ -350,6 +362,7 @@ func updateSetting(port int, username string, password string, webBasePath strin
 		err := settingService.SetBasePath(webBasePath)
 		if err != nil {
 			fmt.Println("Failed to set base URI path:", err)
+			failed = true
 		} else {
 			fmt.Println("Base URI path set successfully")
 		}
@@ -360,6 +373,7 @@ func updateSetting(port int, username string, password string, webBasePath strin
 
 		if err != nil {
 			fmt.Println("Failed to reset two-factor authentication:", err)
+			failed = true
 		} else {
 			settingService.SetTwoFactorToken("")
 			fmt.Println("Two-factor authentication reset successfully")
@@ -370,18 +384,24 @@ func updateSetting(port int, username string, password string, webBasePath strin
 		err := settingService.SetListen(listenIP)
 		if err != nil {
 			fmt.Println("Failed to set listen IP:", err)
+			failed = true
 		} else {
 			fmt.Printf("listen %v set successfully", listenIP)
 		}
 	}
+	if failed {
+		return errReported
+	}
+	return nil
 }
 
 // updateCert updates the SSL certificate files for the panel.
-func updateCert(publicKey string, privateKey string) {
+func updateCert(publicKey string, privateKey string) error {
+	failed := false
 	err := database.InitDB(config.GetDBPath())
 	if err != nil {
 		fmt.Println(err)
-		return
+		return errReported
 	}
 
 	if (privateKey != "" && publicKey != "") || (privateKey == "" && publicKey == "") {
@@ -389,6 +409,7 @@ func updateCert(publicKey string, privateKey string) {
 		err = settingService.SetCertFile(publicKey)
 		if err != nil {
 			fmt.Println("set certificate public key failed:", err)
+			failed = true
 		} else {
 			fmt.Println("set certificate public key success")
 		}
@@ -396,6 +417,7 @@ func updateCert(publicKey string, privateKey string) {
 		err = settingService.SetKeyFile(privateKey)
 		if err != nil {
 			fmt.Println("set certificate private key failed:", err)
+			failed = true
 		} else {
 			fmt.Println("set certificate private key success")
 		}
@@ -403,6 +425,7 @@ func updateCert(publicKey string, privateKey string) {
 		err = settingService.SetSubCertFile(publicKey)
 		if err != nil {
 			fmt.Println("set certificate for subscription public key failed:", err)
+			failed = true
 		} else {
 			fmt.Println("set certificate for subscription public key success")
 		}
@@ -410,12 +433,18 @@ func updateCert(publicKey string, privateKey string) {
 		err = settingService.SetSubKeyFile(privateKey)
 		if err != nil {
 			fmt.Println("set certificate for subscription private key failed:", err)
+			failed = true
 		} else {
 			fmt.Println("set certificate for subscription private key success")
 		}
 	} else {
 		fmt.Println("both public and private key should be entered.")
+		failed = true
 	}
+	if failed {
+		return errReported
+	}
+	return nil
 }
 
 // GetCertificate displays the current SSL certificate settings if getCert is true.
@@ -466,93 +495,136 @@ func migrateDb() {
 
 // importDbFromURL replaces the panel database with one downloaded from url.
 //
-// The panel is normally running when this is invoked, and it holds the old
-// database open. Nothing here talks to that process: the file is swapped on
-// disk and the caller (the x-ui script) restarts the service, which is what
-// makes the new database take effect.
+// The panel must not be running (the x-ui script stops it first and starts it
+// again after). SQLite finds a database's rollback journal by its path while
+// its locks belong to the open file, so a panel still holding the old file
+// and this import, each on its own file under the same name, could play one
+// another's journal into the wrong database. So it refuses while another
+// process has the database open or a journal lies next to it.
 //
-// The previous database is kept as <path>.backup until the new one has been
-// opened successfully, so a truncated download or a file that is not a
-// database leaves the panel exactly as it was.
-func importDbFromURL(rawURL string) {
+// The download is checked, opened and migrated under a temporary name and
+// put in place only when all of that worked, so a truncated download, a file
+// that is not a panel database or a failed migration leaves the panel's
+// database exactly as it was. The previous one is kept next to it, named
+// after the time of the import.
+func importDbFromURL(rawURL string) error {
 	dbPath := config.GetDBPath()
 	tempPath := dbPath + ".temp"
-	fallbackPath := dbPath + ".backup"
+	if err := checkDBNotInUse(dbPath); err != nil {
+		return err
+	}
 
 	fmt.Printf("Downloading database from %s\n", rawURL)
 
 	client := &http.Client{Timeout: 5 * time.Minute}
 	resp, err := client.Get(rawURL)
 	if err != nil {
-		log.Fatalf("Failed to download database: %v", err)
+		return fmt.Errorf("failed to download database: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		log.Fatalf("Failed to download database: server answered %s", resp.Status)
+		return fmt.Errorf("failed to download database: server answered %s", resp.Status)
 	}
 
 	if err := os.MkdirAll(path.Dir(dbPath), fs.ModePerm); err != nil {
-		log.Fatalf("Failed to create database folder: %v", err)
+		return fmt.Errorf("failed to create database folder: %v", err)
 	}
+	discard := func() {
+		os.Remove(tempPath)
+		os.Remove(tempPath + "-journal")
+	}
+	discard()
 	tempFile, err := os.Create(tempPath)
 	if err != nil {
-		log.Fatalf("Failed to create temporary file: %v", err)
+		return fmt.Errorf("failed to create temporary file: %v", err)
 	}
 	written, err := io.Copy(tempFile, resp.Body)
-	if err != nil {
-		tempFile.Close()
-		os.Remove(tempPath)
-		log.Fatalf("Failed to save download: %v", err)
-	}
 	tempFile.Close()
+	if err != nil {
+		discard()
+		return fmt.Errorf("failed to save download: %v", err)
+	}
 
-	// Check it is a database before touching the live one. A captive portal or
-	// a 404 page saved under the right name would otherwise take the panel
-	// down until someone noticed.
+	// Check it is a panel database before touching the live one. A captive
+	// portal or a 404 page saved under the right name, or the database of
+	// some other program, would otherwise take the panel down -- or bring
+	// it back empty with the default login.
 	check, err := os.Open(tempPath)
 	if err != nil {
-		os.Remove(tempPath)
-		log.Fatalf("Failed to reopen download: %v", err)
+		discard()
+		return fmt.Errorf("failed to reopen download: %v", err)
 	}
 	isDB, err := database.IsSQLiteDB(check)
 	check.Close()
 	if err != nil || !isDB {
-		os.Remove(tempPath)
-		log.Fatalf("Downloaded file is not an SQLite database (%d bytes)", written)
+		discard()
+		return fmt.Errorf("downloaded file is not an SQLite database (%d bytes)", written)
 	}
 	if err := database.ValidateSQLiteDB(tempPath); err != nil {
-		os.Remove(tempPath)
-		log.Fatalf("Downloaded database failed its integrity check: %v", err)
+		discard()
+		return fmt.Errorf("downloaded database failed its integrity check: %v", err)
 	}
-
-	database.CloseDB()
-
-	os.Remove(fallbackPath)
-	if _, err := os.Stat(dbPath); err == nil {
-		if err := os.Rename(dbPath, fallbackPath); err != nil {
-			os.Remove(tempPath)
-			log.Fatalf("Failed to set aside the current database: %v", err)
-		}
-	}
-
-	if err := os.Rename(tempPath, dbPath); err != nil {
-		os.Rename(fallbackPath, dbPath)
-		log.Fatalf("Failed to install the new database: %v", err)
+	if err := database.ValidatePanelDB(tempPath); err != nil {
+		discard()
+		return fmt.Errorf("downloaded database cannot be used: %v", err)
 	}
 
 	// Opening it runs the schema migrations, so a database exported from an
 	// older panel is brought up to date here rather than failing at boot.
-	if err := database.InitDB(dbPath); err != nil {
-		os.Remove(dbPath)
-		os.Rename(fallbackPath, dbPath)
-		log.Fatalf("Failed to open the new database, kept the old one: %v", err)
+	if err := database.InitDB(tempPath); err != nil {
+		database.CloseDB()
+		discard()
+		return fmt.Errorf("failed to open the new database, kept the old one: %v", err)
 	}
 	inboundService := service.InboundService{}
 	inboundService.MigrateDB()
+	database.CloseDB()
+	if err := database.ValidateSQLiteDB(tempPath); err != nil {
+		discard()
+		return fmt.Errorf("the new database failed its integrity check after migrating, kept the old one: %v", err)
+	}
 
-	os.Remove(fallbackPath)
+	// The panel may have been started meanwhile.
+	if err := checkDBNotInUse(dbPath); err != nil {
+		discard()
+		return err
+	}
+	backupPath := ""
+	if _, err := os.Stat(dbPath); err == nil {
+		backupPath = dbPath + ".backup-" + time.Now().Format("20060102-150405")
+		if err := os.Rename(dbPath, backupPath); err != nil {
+			discard()
+			return fmt.Errorf("failed to set aside the current database: %v", err)
+		}
+	}
+	if err := os.Rename(tempPath, dbPath); err != nil {
+		if backupPath != "" {
+			os.Rename(backupPath, dbPath)
+		}
+		discard()
+		return fmt.Errorf("failed to install the new database: %v", err)
+	}
+
 	fmt.Printf("Database replaced from %s (%d bytes).\n", rawURL, written)
-	fmt.Println("Restart the panel for it to take effect: x-ui restart")
+	if backupPath != "" {
+		fmt.Println("The previous database is kept as", backupPath)
+	}
+	return nil
+}
+
+// checkDBNotInUse fails while the database at dbPath may be in use: another
+// process -- the panel -- has it open, or the journal of a write lies next
+// to it.
+func checkDBNotInUse(dbPath string) error {
+	if pid := sys.OpenedBy(dbPath); pid > 0 {
+		return fmt.Errorf("process %d has %s open: stop the panel first (x-ui stop)", pid, dbPath)
+	}
+	for _, suffix := range []string{"-journal", "-wal"} {
+		if _, err := os.Stat(dbPath + suffix); err == nil {
+			return fmt.Errorf("%s%s exists: the panel is running, or stopped in the middle of a write (start and stop it once to finish it)", dbPath, suffix)
+		}
+	}
+	return nil
 }
 
 // main is the entry point of the 3x-ui application.
@@ -622,7 +694,10 @@ func main() {
 	}
 
 	if strings.HasPrefix(os.Args[1], "db=") {
-		importDbFromURL(strings.TrimPrefix(os.Args[1], "db="))
+		if err := importDbFromURL(strings.TrimPrefix(os.Args[1], "db=")); err != nil {
+			fmt.Println("Database import failed:", err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -646,19 +721,25 @@ func main() {
 		dbURL = strings.TrimPrefix(dbURL, "url=")
 		if dbURL == "" {
 			fmt.Println(`Usage: x-ui db="https://example.com/x-ui.db"`)
-			return
+			os.Exit(1)
 		}
-		importDbFromURL(dbURL)
+		if err := importDbFromURL(dbURL); err != nil {
+			fmt.Println("Database import failed:", err)
+			os.Exit(1)
+		}
 	case "setting":
 		err := settingCmd.Parse(os.Args[2:])
 		if err != nil {
 			fmt.Println(err)
-			return
+			os.Exit(1)
 		}
+		// Every step runs, and the command fails if any of them did, so a
+		// script calling it can tell.
+		var errs []error
 		if reset {
-			resetSetting()
+			errs = append(errs, resetSetting())
 		} else {
-			updateSetting(port, username, password, webBasePath, listenIP, resetTwoFactor)
+			errs = append(errs, updateSetting(port, username, password, webBasePath, listenIP, resetTwoFactor))
 		}
 		if show {
 			showSetting(show)
@@ -670,24 +751,30 @@ func main() {
 			GetCertificate(getCert)
 		}
 		if (tgbottoken != "") || (tgbotchatid != "") || (tgbotRuntime != "") {
-			updateTgbotSetting(tgbottoken, tgbotchatid, tgbotRuntime)
+			errs = append(errs, updateTgbotSetting(tgbottoken, tgbotchatid, tgbotRuntime))
 		}
 		if enabletgbot {
-			updateTgbotEnableSts(enabletgbot)
+			errs = append(errs, updateTgbotEnableSts(enabletgbot))
 		}
 		if xrayEgress != "" {
-			updateXrayEgress(xrayEgress)
+			errs = append(errs, updateXrayEgress(xrayEgress))
+		}
+		if errors.Join(errs...) != nil {
+			os.Exit(1)
 		}
 	case "cert":
 		err := settingCmd.Parse(os.Args[2:])
 		if err != nil {
 			fmt.Println(err)
-			return
+			os.Exit(1)
 		}
 		if reset {
-			updateCert("", "")
+			err = updateCert("", "")
 		} else {
-			updateCert(webCertFile, webKeyFile)
+			err = updateCert(webCertFile, webKeyFile)
+		}
+		if err != nil {
+			os.Exit(1)
 		}
 	default:
 		fmt.Println("Invalid subcommands")
@@ -695,5 +782,6 @@ func main() {
 		runCmd.Usage()
 		fmt.Println()
 		settingCmd.Usage()
+		os.Exit(1)
 	}
 }

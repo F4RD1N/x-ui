@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -49,8 +51,36 @@ func (s *ServerService) CheckPanelUpdate() (*PanelUpdateInfo, error) {
 	return &PanelUpdateInfo{
 		Current:   current,
 		Latest:    latest,
-		Available: latest != "" && latest != current,
+		Available: latest != "" && newerVersion(latest, current),
 	}, nil
+}
+
+var versionNumbers = regexp.MustCompile(`\d+`)
+
+// newerVersion reports whether version a is newer than b. Versions are
+// compared by their numbers in order -- 2.9.0-dialect.4 is 2, 9, 0, 4 -- so
+// an older release, or the same one under another suffix, is never offered
+// as an update: installing it would be a downgrade.
+func newerVersion(a, b string) bool {
+	na, nb := versionNumbers.FindAllString(a, -1), versionNumbers.FindAllString(b, -1)
+	for i := 0; i < len(na) && i < len(nb); i++ {
+		x, _ := strconv.Atoi(na[i])
+		y, _ := strconv.Atoi(nb[i])
+		if x != y {
+			return x > y
+		}
+	}
+	return len(na) > len(nb)
+}
+
+// panelUpdateScript downloads the installer and runs it in update mode. The
+// installer goes to a fresh private directory: a fixed name in /tmp could be
+// created first by another local user, and this runs as root.
+func panelUpdateScript() string {
+	return fmt.Sprintf(
+		"set -e; d=$(mktemp -d); trap 'rm -rf \"$d\"' EXIT; "+
+			"curl -4fsSL https://raw.githubusercontent.com/%s/main/install.sh -o \"$d/install.sh\"; "+
+			"XUI_MODE=update bash \"$d/install.sh\"", panelRepo)
 }
 
 // UpdatePanel starts an update in the background and returns immediately.
@@ -61,9 +91,7 @@ func (s *ServerService) CheckPanelUpdate() (*PanelUpdateInfo, error) {
 // panel stops -- halfway through replacing itself. systemd-run puts it in a
 // transient unit of its own instead, which survives.
 func (s *ServerService) UpdatePanel() error {
-	script := fmt.Sprintf(
-		"set -e; curl -4fsSL https://raw.githubusercontent.com/%s/main/install.sh -o /tmp/x-ui-update.sh; "+
-			"XUI_MODE=update bash /tmp/x-ui-update.sh", panelRepo)
+	script := panelUpdateScript()
 
 	logFile := config.GetLogFolder() + "/update.log"
 	shell := fmt.Sprintf("{ date; %s; } >> %s 2>&1", script, logFile)

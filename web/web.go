@@ -427,6 +427,23 @@ func (s *Server) startTask() {
 }
 
 // Start initializes and starts the web server with configured settings, routes, and background jobs.
+// cronLogger passes the cron scheduler's errors, a recovered job panic
+// among them, to the panel log.
+type cronLogger struct{}
+
+func (cronLogger) Info(string, ...any) {}
+
+func (cronLogger) Error(err error, msg string, keysAndValues ...any) {
+	logger.Errorf("cron: %s: %v %v", msg, err, keysAndValues)
+}
+
+// newCron returns the scheduler of the panel's jobs. A job that panics is
+// logged and the others carry on: unrecovered, the panic would end the
+// panel, and every xray core dies with it.
+func newCron(loc *time.Location) *cron.Cron {
+	return cron.New(cron.WithLocation(loc), cron.WithSeconds(), cron.WithChain(cron.Recover(cronLogger{})))
+}
+
 func (s *Server) Start() (err error) {
 	// This is an anonymous function, no function name
 	defer func() {
@@ -439,7 +456,7 @@ func (s *Server) Start() (err error) {
 	if err != nil {
 		return err
 	}
-	s.cron = cron.New(cron.WithLocation(loc), cron.WithSeconds())
+	s.cron = newCron(loc)
 	s.cron.Start()
 
 	s.customGeoService = service.NewCustomGeoService()

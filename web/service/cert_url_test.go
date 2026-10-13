@@ -13,11 +13,15 @@ import (
 	"github.com/op/go-logging"
 )
 
-// The package logs on a successful download; without this the logger is a nil
-// pointer under test.
+// The package logs at ERROR under test, into a folder of its own: InitLogger
+// truncates the log file, which by default is the installed panel's.
 func TestMain(m *testing.M) {
+	dir, _ := os.MkdirTemp("", "xui-service-log-")
+	os.Setenv("XUI_LOG_FOLDER", dir)
 	logger.InitLogger(logging.ERROR)
-	os.Exit(m.Run())
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
 }
 
 func TestIsCertURL(t *testing.T) {
@@ -144,13 +148,34 @@ func TestMaterializeStreamCertsLeavesPlainSettings(t *testing.T) {
 
 // A template that parses but names no outbound would start the core and then
 // route nothing, which is the failure the plain unmarshal check cannot see.
+// One without the API and stats the panel runs every core through would leave
+// one core up, the rest failing on its API port, and no traffic counted.
 func TestCheckXrayTemplateUsable(t *testing.T) {
 	s := &XraySettingService{}
+
+	const (
+		api      = `"api":{"tag":"api","services":["HandlerService","LoggerService","StatsService"]}`
+		inbound  = `"inbounds":[{"tag":"api","listen":"127.0.0.1","port":62789,"protocol":"tunnel","settings":{"address":"127.0.0.1"}}]`
+		out      = `"outbounds":[{"protocol":"freedom","tag":"direct"}]`
+		routing  = `"routing":{"rules":[{"type":"field","inboundTag":["api"],"outboundTag":"api"}]}`
+		stats    = `"stats":{}`
+		policy   = `"policy":{"levels":{"0":{"statsUserDownlink":true,"statsUserUplink":true}}}`
+		template = `{"log":{"loglevel":"warning"},` + api + `,` + inbound + `,` + out + `,` + routing + `,` + stats + `,` + policy + `}`
+	)
+	without := func(part string) string { return strings.Replace(template, part+`,`, ``, 1) }
 
 	refused := map[string]string{
 		"an error page that happens to be JSON": `{"hello":"world"}`,
 		"an empty object":                       `{}`,
 		"outbounds present but empty":           `{"outbounds":[]}`,
+		"only outbounds":                        `{"log":{"loglevel":"warning"},"outbounds":[{"protocol":"freedom","tag":"direct"}]}`,
+		"no api section":                        without(api),
+		"no api inbound":                        without(inbound),
+		"no api route":                          without(routing),
+		"no stats":                              without(stats),
+		"no user stats":                         strings.Replace(template, policy, `"policy":{}`, 1),
+		"api.listen":                            strings.Replace(template, `"tag":"api","services"`, `"tag":"api","listen":"127.0.0.1:10085","services"`, 1),
+		"no StatsService":                       strings.Replace(template, `"LoggerService","StatsService"`, `"LoggerService"`, 1),
 	}
 	for name, cfg := range refused {
 		if err := s.CheckXrayTemplateUsable(cfg); err == nil {
@@ -158,9 +183,11 @@ func TestCheckXrayTemplateUsable(t *testing.T) {
 		}
 	}
 
-	accepted := `{"log":{"loglevel":"warning"},"outbounds":[{"protocol":"freedom","tag":"direct"}]}`
-	if err := s.CheckXrayTemplateUsable(accepted); err != nil {
+	if err := s.CheckXrayTemplateUsable(template); err != nil {
 		t.Errorf("a usable template was refused: %v", err)
+	}
+	if err := s.CheckXrayTemplateUsable(xrayTemplateConfig); err != nil {
+		t.Errorf("the default template was refused: %v", err)
 	}
 
 	if err := s.CheckXrayTemplateUsable(`{not json`); err == nil {

@@ -53,12 +53,13 @@ func initModels() error {
 // xray-1, xray-2, ... in creation order, so an upgraded panel runs each
 // inbound in its own core process. Inbounds that already have one keep it.
 func assignXrayInstances() error {
-	var inbounds []model.Inbound
-	if err := db.Model(&model.Inbound{}).Select("id", "xray_instance").Order("id").Find(&inbounds).Error; err != nil {
+	var inbounds []*model.Inbound
+	if err := db.Model(&model.Inbound{}).Select("id", "listen", "xray_instance", "sub_inbounds").Order("id").Find(&inbounds).Error; err != nil {
 		return err
 	}
+	// Instances named by sub-inbounds are taken too.
 	used := map[string]bool{}
-	for _, in := range inbounds {
+	for _, in := range model.ExpandSubInbounds(inbounds) {
 		if in.XrayInstance != "" {
 			used[in.XrayInstance] = true
 		}
@@ -227,6 +228,41 @@ func Checkpoint() error {
 	err := db.Exec("PRAGMA wal_checkpoint;").Error
 	if err != nil {
 		return err
+	}
+	return nil
+}
+
+// ValidatePanelDB checks that the SQLite database at dbPath is a panel
+// database: it has the users, settings and inbounds tables and at least one
+// user. It opens the file read-only and changes nothing.
+func ValidatePanelDB(dbPath string) error {
+	if _, err := os.Stat(dbPath); err != nil {
+		return err
+	}
+	gdb, err := gorm.Open(sqlite.Open("file:"+dbPath+"?mode=ro"), &gorm.Config{Logger: logger.Discard})
+	if err != nil {
+		return err
+	}
+	sqlDB, err := gdb.DB()
+	if err != nil {
+		return err
+	}
+	defer sqlDB.Close()
+	for _, table := range []string{"users", "settings", "inbounds"} {
+		var n int64
+		if err := gdb.Raw("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?", table).Scan(&n).Error; err != nil {
+			return err
+		}
+		if n == 0 {
+			return errors.New("not an x-ui database: it has no " + table + " table")
+		}
+	}
+	var users int64
+	if err := gdb.Raw("SELECT count(*) FROM users").Scan(&users).Error; err != nil {
+		return err
+	}
+	if users == 0 {
+		return errors.New("not an x-ui database: it has no user")
 	}
 	return nil
 }
