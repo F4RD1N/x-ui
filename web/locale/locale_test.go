@@ -49,7 +49,7 @@ func TestRequestsKeepTheirLanguage(t *testing.T) {
 		c.String(http.StatusOK, f(Web, "pages.login.title"))
 	})
 
-	want := map[string]string{"en-US": "Welcome", "fa-IR": "خوش‌آمدید"}
+	want := map[string]string{"en-US": "Welcome", "fa-IR": "خوش\u200cآمدید"}
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	wrong, total := 0, 0
@@ -83,7 +83,7 @@ func TestRequestsKeepTheirLanguage(t *testing.T) {
 	}
 
 	// No cookie: the browser's language; an unknown one: English.
-	for header, w := range map[string]string{"fa-IR,fa;q=0.9": "خوش‌آمدید", "xx-YY": "Welcome", "": "Welcome"} {
+	for header, w := range map[string]string{"fa-IR,fa;q=0.9": "خوش\u200cآمدید", "xx-YY": "Welcome", "": "Welcome"} {
 		r := httptest.NewRequest("GET", "/page", nil)
 		r.Header.Set("Accept-Language", header)
 		rec := httptest.NewRecorder()

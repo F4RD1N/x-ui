@@ -177,7 +177,7 @@ func TestFailedLoginLogsNoPassword(t *testing.T) {
 // Real pages come in each request's language.
 func TestPagesInRequestLanguage(t *testing.T) {
 	engine := testEngine(t)
-	for lang, want := range map[string]string{"fa-IR": "خوش‌آمدید", "en-US": "Welcome", "ru-RU": "Добро пожаловать!"} {
+	for lang, want := range map[string]string{"fa-IR": "خوش\u200cآمدید", "en-US": "Welcome", "ru-RU": "Добро пожаловать!"} {
 		for i := 0; i < 2; i++ {
 			r := httptest.NewRequest("GET", "/hetzner/", nil)
 			r.AddCookie(&http.Cookie{Name: "lang", Value: lang})
@@ -263,7 +263,7 @@ func TestMultiInstancePlanTranslated(t *testing.T) {
 		}
 	}
 	for lang, want := range map[string][2]string{
-		"fa-IR": {"1 پورت از این پورت‌ها گرفته شده است", "در اختیار اینباند other است"},
+		"fa-IR": {"1 پورت از این پورت\u200cها گرفته شده است", "در اختیار اینباند other است"},
 		"en-US": {"1 of the ports are taken", "used by inbound other"},
 	} {
 		form := url.Values{"count": {"1"}, "cores": {"0"}, "max": {"false"}, "subs": {"[]"}}
