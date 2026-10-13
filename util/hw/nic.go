@@ -21,6 +21,20 @@ type Channels struct {
 	Combined    uint32 `json:"combined"`
 }
 
+// Count is the receive queue count the channels give, and its maximum:
+// the combined channels, plus the RX-only ones on a NIC set to dedicated
+// channels (ethtool counts the two apart: "ethtool -L rx 16 tx 16" leaves
+// combined at 0); else the RX channels.
+func (c Channels) Count() (cur, maxN uint32) {
+	if c.MaxCombined > 0 && c.Rx == 0 && c.Tx == 0 {
+		return c.Combined, c.MaxCombined
+	}
+	if c.MaxRx == 0 {
+		return c.Combined + c.Rx, c.MaxCombined
+	}
+	return c.Combined + c.Rx, c.MaxRx
+}
+
 // QueueIRQ is the interrupt of one queue (or of its receive or transmit half).
 type QueueIRQ struct {
 	IRQ       int    `json:"irq"`
@@ -375,15 +389,12 @@ func UplinkNICs(fs FS, et Ethtool) (nics []*NIC, notes []string) {
 	return nics, notes
 }
 
-// Queues is the NIC's queue count: the combined channels, else the RX
-// channels, else the RX queues in sysfs.
+// Queues is the NIC's queue count: the receive queues its channels give
+// (Channels.Count), else the RX queues in sysfs.
 func (n *NIC) Queues() int {
 	if c := n.Channels; c != nil {
-		if c.Combined > 0 {
-			return int(c.Combined)
-		}
-		if c.Rx > 0 {
-			return int(c.Rx)
+		if cur, _ := c.Count(); cur > 0 {
+			return int(cur)
 		}
 	}
 	return n.RxQueues

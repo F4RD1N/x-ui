@@ -369,3 +369,20 @@ func TestManagedNonPCI(t *testing.T) {
 		t.Fatalf("NICs %+v", c.r.NICs)
 	}
 }
+
+// A NIC on dedicated RX and TX channels (bnxt_en's "-L rx 16 tx 16") has
+// combined 0: its queues are its RX channels.
+func TestDedicatedChannels(t *testing.T) {
+	m := hwtest.VPS(16)
+	m.NICs[0].Driver = "bnxt_en"
+	m.NICs[0].Channels = hw.Channels{MaxRx: 63, MaxTx: 63, MaxCombined: 63, Rx: 16, Tx: 16}
+	f := newFixture(t, m)
+	f.addInstances("0-15", fakeInst{name: "xray-1", cpus: "0-15"})
+	out := f.run("--seconds", "0")
+	if !strings.Contains(out, "16 of 63") || strings.Contains(out, "0 of 63") {
+		t.Errorf("queues:\n%s", out)
+	}
+	if c := f.gather(0); c.r.NICs[0].Queues != 16 {
+		t.Errorf("queues %d", c.r.NICs[0].Queues)
+	}
+}

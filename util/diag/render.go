@@ -173,10 +173,7 @@ func (c *ctx) renderNIC(p pr, nr *NICReport) {
 
 	q := plural(nr.Queues, "queue", "queues")
 	if ch := nr.Channels; ch != nil {
-		cur, mx := ch.Combined, ch.MaxCombined
-		if mx == 0 {
-			cur, mx = ch.Rx, ch.MaxRx
-		}
+		cur, mx := ch.Count()
 		q = fmt.Sprintf("%d of %d", cur, mx)
 	}
 	if nr.RSS != nil && nr.RSS.Queues < nr.Queues {

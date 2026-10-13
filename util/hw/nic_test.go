@@ -142,6 +142,32 @@ func TestReadNICSideVectors(t *testing.T) {
 	}
 }
 
+// The receive queues channels give: ethtool counts combined and dedicated
+// channels apart, so a NIC on dedicated ones (bnxt_en's "-L rx 16 tx 16")
+// has combined 0, and ice's "-L combined 8 rx 2" has 10.
+func TestChannelsCount(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		ch       hw.Channels
+		cur, max uint32
+	}{
+		{"combined", hw.Channels{MaxOther: 1, MaxCombined: 56, Other: 1, Combined: 56}, 56, 56},
+		{"dedicated", hw.Channels{MaxRx: 63, MaxTx: 63, MaxCombined: 63, Rx: 16, Tx: 16}, 16, 63},
+		{"combined and RX", hw.Channels{MaxRx: 64, MaxTx: 64, MaxCombined: 64, Combined: 8, Rx: 2}, 10, 64},
+		{"combined and TX", hw.Channels{MaxRx: 64, MaxTx: 64, MaxCombined: 64, Combined: 8, Tx: 2}, 8, 64},
+		{"RX and TX only", hw.Channels{MaxRx: 4, MaxTx: 4, Rx: 4, Tx: 1}, 4, 4},
+		{"none", hw.Channels{}, 0, 0},
+	} {
+		if cur, mx := c.ch.Count(); cur != c.cur || mx != c.max {
+			t.Errorf("%s: %d of %d, want %d of %d", c.name, cur, mx, c.cur, c.max)
+		}
+		n := &hw.NIC{Channels: &c.ch, RxQueues: 1}
+		if want := max(int(c.cur), 1); n.Queues() != want {
+			t.Errorf("%s: Queues %d, want %d", c.name, n.Queues(), want)
+		}
+	}
+}
+
 func TestReadNICPresets(t *testing.T) {
 	// virtio: the PCI device is virtioN's parent; input and output vectors
 	// per queue, the config vector among the others.

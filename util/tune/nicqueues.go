@@ -209,7 +209,7 @@ func (e *Env) setQueues(st *State, it *nicItem, old hw.Channels, to uint32, r *R
 		ns.Channels = &ChanState{}
 	}
 	cs := ns.Channels
-	from, _ := chanCount(old)
+	from, _ := old.Count()
 	clk := e.clock()
 	probe := e.prober().Pick(n.Routes, clk.Now().Add(pickWait))
 	if probe == "" {
@@ -272,7 +272,7 @@ func (e *Env) setQueues(st *State, it *nicItem, old hw.Channels, to uint32, r *R
 func (e *Env) raise(st *State, it *nicItem, to uint32, r *Result) raiseResult {
 	n := it.NIC
 	old := *n.Channels
-	from, _ := chanCount(old)
+	from, _ := old.Count()
 	res, _ := e.setQueues(st, it, old, to, r)
 	if res != raised {
 		return res
@@ -337,7 +337,7 @@ func (e *Env) raisePending(st *State, np *nicPlan, boot bool, deadline time.Time
 		if ns == nil || it.NIC.Channels == nil || it.Queues.State != "raise" {
 			continue
 		}
-		cur, _ := chanCount(*it.NIC.Channels)
+		cur, _ := it.NIC.Channels.Count()
 		to := it.Queues.Want
 		if boot {
 			to = 0

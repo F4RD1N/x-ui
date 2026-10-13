@@ -681,8 +681,8 @@ func (e *Env) revertNICs(f *Facts, st *State, dry bool, r *Result) {
 			r.change("%s: %d %s", name, counted[g], g)
 		}
 		if cs := ns.Channels; cs != nil && cs.Orig != nil && n.Channels != nil {
-			cur, _ := chanCount(*n.Channels)
-			orig, _ := chanCount(*cs.Orig)
+			cur, _ := n.Channels.Count()
+			orig, _ := cs.Orig.Count()
 			if cur != orig {
 				r.change("%s keeps %d queues until the next reboot (%d after it)", name, cur, orig)
 			}

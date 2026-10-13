@@ -1517,28 +1517,39 @@ func TestNICQueueSkips(t *testing.T) {
 
 // A NIC set to separate RX and TX channels (ethtool -L rx 16 tx 16): its
 // RX count is its queue count, and it is kept as it is (bnxt_en refuses a
-// combined count beside them).
+// combined count beside them). ice's "-L combined 8 rx 2" has 10 queues.
 func TestNICSeparateChannels(t *testing.T) {
-	m := raiseMachine("bnxt_en", 0)
-	m.NICs[0].Vendor, m.NICs[0].Device = "14e4", "16d7"
-	m.NICs[0].Channels = hw.Channels{MaxRx: 63, MaxTx: 63, MaxCombined: 63, Rx: 16, Tx: 16}
-	e, b := onHW(t, m)
-	b.Eth.Fail["SetChannels eth1"] = fmt.Errorf("ethtool: %w", syscall.EINVAL)
-	if q := nicPlanOf(t, e).NICs[0].Queues; q.State != "kept" || q.Current != 16 || q.Max != 63 || q.Want != 0 || q.Note != "separate RX and TX channels" {
-		t.Errorf("plan %+v", q)
-	}
-	r := mustApply(t, e, ApplyOptions{Auto: true})
-	if e.exists(NICUnitFile) || strings.Contains(strings.Join(r.Changed, "\n"), "at the next boot") {
-		t.Errorf("a raise planned: %v", r.Changed)
-	}
-	if got := statusText(t, e); !strings.Contains(got, "queues      16 of 63: kept (separate RX and TX channels)") {
-		t.Errorf("status:\n%s", got)
-	}
-	if _, err := e.Queues(QueuesOptions{Now: true}); err != nil || len(calls(b, "SetChannels")) != 0 {
-		t.Errorf("queues --now: %v %v", err, b.Eth.Calls)
-	}
-	if cs := chanState(t, e, "0000:3b:00.0"); cs != nil {
-		t.Errorf("state %+v", cs)
+	for _, c := range []struct {
+		driver string
+		ch     hw.Channels
+		status string
+	}{
+		{"bnxt_en", hw.Channels{MaxRx: 63, MaxTx: 63, MaxCombined: 63, Rx: 16, Tx: 16}, "16 of 63"},
+		{"ice", hw.Channels{MaxRx: 63, MaxTx: 63, MaxCombined: 63, Combined: 8, Rx: 2}, "10 of 63"},
+	} {
+		m := raiseMachine(c.driver, 0)
+		if c.driver == "bnxt_en" {
+			m.NICs[0].Vendor, m.NICs[0].Device = "14e4", "16d7"
+		}
+		m.NICs[0].Channels = c.ch
+		e, b := onHW(t, m)
+		b.Eth.Fail["SetChannels eth1"] = fmt.Errorf("ethtool: %w", syscall.EINVAL)
+		if q := nicPlanOf(t, e).NICs[0].Queues; q.State != "kept" || fmt.Sprintf("%d of %d", q.Current, q.Max) != c.status || q.Want != 0 || q.Note != "separate RX and TX channels" {
+			t.Errorf("%s: plan %+v", c.driver, q)
+		}
+		r := mustApply(t, e, ApplyOptions{Auto: true})
+		if e.exists(NICUnitFile) || strings.Contains(strings.Join(r.Changed, "\n"), "at the next boot") {
+			t.Errorf("%s: a raise planned: %v", c.driver, r.Changed)
+		}
+		if got := statusText(t, e); !strings.Contains(got, "queues      "+c.status+": kept (separate RX and TX channels)") {
+			t.Errorf("%s: status:\n%s", c.driver, got)
+		}
+		if _, err := e.Queues(QueuesOptions{Now: true}); err != nil || len(calls(b, "SetChannels")) != 0 {
+			t.Errorf("%s: queues --now: %v %v", c.driver, err, b.Eth.Calls)
+		}
+		if cs := chanState(t, e, "0000:3b:00.0"); cs != nil {
+			t.Errorf("%s: state %+v", c.driver, cs)
+		}
 	}
 }
 

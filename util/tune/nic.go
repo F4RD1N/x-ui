@@ -424,21 +424,9 @@ func sortedKeys(m map[int]int) []int {
 	return out
 }
 
-// chanCount is the queue count channels give: combined, else RX (also on a
-// NIC set to separate RX and TX channels).
-func chanCount(c hw.Channels) (cur, maxN uint32) {
-	if c.MaxCombined > 0 && !separateChannels(c) {
-		return c.Combined, c.MaxCombined
-	}
-	if c.MaxRx == 0 {
-		return c.Rx, c.MaxCombined
-	}
-	return c.Rx, c.MaxRx
-}
-
 // separateChannels says whether a NIC that has combined channels runs on
 // dedicated RX or TX ones (ethtool -L rx N tx N): x-ui keeps that as it is
-// (bnxt_en and ice refuse combined and dedicated ones together).
+// (bnxt_en refuses combined and dedicated ones together).
 func separateChannels(c hw.Channels) bool {
 	return c.MaxCombined > 0 && (c.Rx > 0 || c.Tx > 0)
 }
@@ -468,7 +456,7 @@ func (e *Env) planQueues(f *Facts, t *hw.Topology, eligible hw.CPUSet, n *hw.NIC
 		q.State, q.Note = "unsupported", "queue counts not readable"
 		return q
 	}
-	q.Current, q.Max = chanCount(*n.Channels)
+	q.Current, q.Max = n.Channels.Count()
 	if q.Max == 0 {
 		q.State, q.Note = "unsupported", "queue counts not readable"
 		return q
@@ -503,7 +491,7 @@ func (e *Env) planQueues(f *Facts, t *hw.Topology, eligible hw.CPUSet, n *hw.NIC
 	q.Target = uint32(max(target, 0))
 	base := q.Current
 	if cs != nil && cs.Orig != nil {
-		base, _ = chanCount(*cs.Orig)
+		base, _ = cs.Orig.Count()
 	}
 	rssNote := ""
 	if q.RSSUse > 0 && q.RSSUse < int(q.Current) {
