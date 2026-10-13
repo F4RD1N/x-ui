@@ -29,6 +29,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/web/middleware"
 	"github.com/mhsanaei/3x-ui/v2/web/network"
 	"github.com/mhsanaei/3x-ui/v2/web/service"
+	"github.com/mhsanaei/3x-ui/v2/web/session"
 	"github.com/mhsanaei/3x-ui/v2/web/websocket"
 
 	"github.com/gin-contrib/gzip"
@@ -243,7 +244,15 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 		sessionOptions.MaxAge = sessionMaxAge * 60 // minutes -> seconds
 	}
 	store.Options(sessionOptions)
+	// Options only sets the cookie's Max-Age, which the browser honours and
+	// a captured cookie does not; the signed timestamp inside it is checked
+	// against the codecs' own age, 30 days unless set here. 0 would turn that
+	// check off, so only a real limit is passed on.
+	if sessionOptions.MaxAge > 0 {
+		store.(interface{ MaxAge(int) }).MaxAge(sessionOptions.MaxAge)
+	}
 	engine.Use(sessions.Sessions("3x-ui", store))
+	engine.Use(limitRequestBody)
 	engine.Use(func(c *gin.Context) {
 		c.Set("base_path", basePath)
 	})
@@ -264,7 +273,8 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 	i18nWebFunc := func(key string, params ...string) string {
 		return locale.I18n(locale.Web, key, params...)
 	}
-	// Register template functions before loading templates
+	// Register template functions before loading templates. Pages rendered
+	// for a request get an i18n speaking its language instead.
 	funcMap := template.FuncMap{
 		"i18n": i18nWebFunc,
 	}
@@ -272,14 +282,16 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 	engine.Use(locale.LocalizerMiddleware())
 
 	// set static files and template
+	var pages *locale.Pages
 	if config.IsDebug() {
 		// for development
 		files, err := s.getHtmlFiles()
 		if err != nil {
 			return nil, err
 		}
-		// Use the registered func map with the loaded templates
-		engine.LoadHTMLFiles(files...)
+		pages = locale.NewDiskPages(func() (*template.Template, error) {
+			return template.New("").Funcs(funcMap).ParseFiles(files...)
+		})
 		engine.StaticFS(basePath+"assets", http.FS(os.DirFS("web/assets")))
 	} else {
 		// for production
@@ -287,9 +299,10 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 		if err != nil {
 			return nil, err
 		}
-		engine.SetHTMLTemplate(template)
+		pages = locale.NewPages(template)
 		engine.StaticFS(basePath+"assets", http.FS(&wrapAssetsFS{FS: assetsFS}))
 	}
+	engine.Use(pages.Middleware())
 
 	// Apply the redirect middleware (`/xui` to `/panel`)
 	engine.Use(middleware.RedirectMiddleware(basePath))
@@ -320,6 +333,31 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 	})
 
 	return engine, nil
+}
+
+// Request body caps. Before login only the login form is read, which is
+// tiny; a logged-in panel posts inbounds that run to megabytes with many
+// clients; the database import is the one upload and is left alone.
+const (
+	maxBodyAnonymous = 64 << 10
+	maxBodyLoggedIn  = 32 << 20
+)
+
+// limitRequestBody caps the request body, so a large body sent before
+// login cannot run the panel -- and with it every xray core -- out of
+// memory.
+func limitRequestBody(c *gin.Context) {
+	if c.Request.Body == nil {
+		return
+	}
+	limit := int64(maxBodyAnonymous)
+	if session.IsLogin(c) {
+		if strings.HasSuffix(c.FullPath(), "/server/importDB") {
+			return
+		}
+		limit = maxBodyLoggedIn
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
 }
 
 // normalizeExistingGeositeFiles normalizes country codes in all geosite .dat
@@ -488,8 +526,11 @@ func (s *Server) Start() (err error) {
 	}
 	s.listener = listener
 
+	// No ReadTimeout: it would also cut the websocket and a slow database
+	// import; the header timeout stops connections that never send a request.
 	s.httpServer = &http.Server{
-		Handler: engine,
+		Handler:           engine,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	go func() {

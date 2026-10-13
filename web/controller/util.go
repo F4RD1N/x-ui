@@ -8,20 +8,23 @@ import (
 
 	"github.com/mhsanaei/3x-ui/v2/logger"
 	"github.com/mhsanaei/3x-ui/v2/web/entity"
+	"github.com/mhsanaei/3x-ui/v2/web/locale"
 
 	"github.com/gin-gonic/gin"
 )
 
 // getRemoteIp extracts the real IP address from the request headers or remote address.
+// Anyone can send the headers, so a value that is not an IP address is
+// ignored rather than logged or shown in the panel.
 func getRemoteIp(c *gin.Context) string {
-	value := c.GetHeader("X-Real-IP")
-	if value != "" {
-		return value
+	if ip := net.ParseIP(strings.TrimSpace(c.GetHeader("X-Real-IP"))); ip != nil {
+		return ip.String()
 	}
-	value = c.GetHeader("X-Forwarded-For")
-	if value != "" {
+	if value := c.GetHeader("X-Forwarded-For"); value != "" {
 		ips := strings.Split(value, ",")
-		return ips[0]
+		if ip := net.ParseIP(strings.TrimSpace(ips[0])); ip != nil {
+			return ip.String()
+		}
 	}
 	addr := c.Request.RemoteAddr
 	ip, _, _ := net.SplitHostPort(addr)
@@ -79,10 +82,8 @@ func html(c *gin.Context, name string, title string, data gin.H) {
 		data = gin.H{}
 	}
 	data["title"] = title
+	// X-Real-IP is the client's address, not the panel's host.
 	host := c.GetHeader("X-Forwarded-Host")
-	if host == "" {
-		host = c.GetHeader("X-Real-IP")
-	}
 	if host == "" {
 		var err error
 		host, _, err = net.SplitHostPort(c.Request.Host)
@@ -93,7 +94,7 @@ func html(c *gin.Context, name string, title string, data gin.H) {
 	data["host"] = host
 	data["request_uri"] = c.Request.RequestURI
 	data["base_path"] = c.GetString("base_path")
-	c.HTML(http.StatusOK, name, getContext(data))
+	locale.HTML(c, http.StatusOK, name, getContext(data))
 }
 
 // getContext adds version and other context data to the provided gin.H.

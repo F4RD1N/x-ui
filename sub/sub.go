@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mhsanaei/3x-ui/v2/logger"
 	"github.com/mhsanaei/3x-ui/v2/util/common"
@@ -27,19 +28,14 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// setEmbeddedTemplates parses and sets embedded templates on the engine
-func setEmbeddedTemplates(engine *gin.Engine) error {
-	t, err := template.New("").Funcs(engine.FuncMap).ParseFS(
+// embeddedTemplates parses the embedded templates of the subscription page.
+func embeddedTemplates(funcMap template.FuncMap) (*template.Template, error) {
+	return template.New("").Funcs(funcMap).ParseFS(
 		webpkg.EmbeddedHTML(),
 		"html/common/page.html",
 		"html/component/aThemeSwitch.html",
 		"html/settings/panel/subscription/subpage.html",
 	)
-	if err != nil {
-		return err
-	}
-	engine.SetHTMLTemplate(t)
-	return nil
 }
 
 // Server represents the subscription server that serves subscription links and JSON configurations.
@@ -197,17 +193,25 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 	// set per-request localizer from headers/cookies
 	engine.Use(locale.LocalizerMiddleware())
 
-	// register i18n function similar to web server
+	// register i18n function similar to web server; the page rendered for a
+	// request gets one speaking its language
 	i18nWebFunc := func(key string, params ...string) string {
 		return locale.I18n(locale.Web, key, params...)
 	}
-	engine.SetFuncMap(map[string]any{"i18n": i18nWebFunc})
+	funcMap := template.FuncMap{"i18n": i18nWebFunc}
+	engine.SetFuncMap(funcMap)
 
 	// Templates: prefer embedded; fallback to disk if necessary
-	if err := setEmbeddedTemplates(engine); err != nil {
+	if t, err := embeddedTemplates(funcMap); err == nil {
+		engine.Use(locale.NewPages(t).Middleware())
+	} else {
 		logger.Warning("sub: failed to parse embedded templates:", err)
-		if files, derr := s.getHtmlFiles(); derr == nil {
-			engine.LoadHTMLFiles(files...)
+		files, derr := s.getHtmlFiles()
+		if derr == nil {
+			t, derr = template.New("").Funcs(funcMap).ParseFiles(files...)
+		}
+		if derr == nil {
+			engine.Use(locale.NewPages(t).Middleware())
 		} else {
 			logger.Error("sub: no templates available (embedded parse and disk load failed)", err, derr)
 		}
@@ -378,8 +382,11 @@ func (s *Server) Start() (err error) {
 	}
 	s.listener = listener
 
+	// Its routes never read a body; the header timeout stops connections
+	// that never send a request.
 	s.httpServer = &http.Server{
-		Handler: engine,
+		Handler:           engine,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	go func() {

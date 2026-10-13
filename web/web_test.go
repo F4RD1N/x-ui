@@ -1,0 +1,189 @@
+package web
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/op/go-logging"
+	"github.com/robfig/cron/v3"
+	"github.com/xlzd/gotp"
+
+	"github.com/mhsanaei/3x-ui/v2/database"
+	"github.com/mhsanaei/3x-ui/v2/logger"
+	"github.com/mhsanaei/3x-ui/v2/web/global"
+	"github.com/mhsanaei/3x-ui/v2/web/service"
+)
+
+// The logger is a nil pointer until initialised. Its file goes to a
+// temporary folder, and nothing below CRITICAL reaches syslog.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "web-test-log")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("XUI_LOG_FOLDER", dir)
+	logger.InitLogger(logging.CRITICAL)
+	code := m.Run()
+	logger.CloseLogger()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
+
+// testEngine builds the panel's router on a fresh database whose admin is
+// admin/admin, under /hetzner/.
+func testEngine(t *testing.T) *gin.Engine {
+	t.Helper()
+	if err := database.InitDB(filepath.Join(t.TempDir(), "x-ui.db")); err != nil {
+		t.Fatal(err)
+	}
+	var ss service.SettingService
+	if err := ss.SetBasePath("/hetzner/"); err != nil {
+		t.Fatal(err)
+	}
+	// Controllers schedule their jobs on the server's cron, which is never
+	// started here.
+	s := NewServer()
+	s.cron = cron.New(cron.WithSeconds())
+	global.SetWebServer(s)
+	engine, err := s.initRouter()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		s.wsHub.Stop()
+		database.CloseDB()
+	})
+	return engine
+}
+
+func login(engine *gin.Engine, body string, contentType string) (*httptest.ResponseRecorder, string) {
+	r := httptest.NewRequest("POST", "/hetzner/login", strings.NewReader(body))
+	r.Header.Set("Content-Type", contentType)
+	r.RemoteAddr = "192.0.2.1:40000"
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, r)
+	var msg struct {
+		Success bool   `json:"success"`
+		Msg     string `json:"msg"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &msg)
+	if !msg.Success {
+		return w, "failed: " + msg.Msg
+	}
+	return w, "ok"
+}
+
+// The session lasts as long as the panel says, also for a cookie kept past
+// its Max-Age (a captured one), not the 30 days the cookie codec defaults to.
+func TestSessionEndsAtMaxAge(t *testing.T) {
+	engine := testEngine(t)
+	var ss service.SettingService
+	// sessionMaxAge is read when the router is built; 360 minutes is the
+	// default.
+	if n, _ := ss.GetSessionMaxAge(); n != 360 {
+		t.Fatalf("sessionMaxAge %d", n)
+	}
+	synctest.Test(t, func(t *testing.T) {
+		w, res := login(engine, "username=admin&password=admin", "application/x-www-form-urlencoded")
+		if res != "ok" {
+			t.Fatal(res)
+		}
+		cookie := w.Header().Get("Set-Cookie")
+		cookie = cookie[:strings.Index(cookie, ";")]
+		loggedIn := func() bool {
+			r := httptest.NewRequest("GET", "/hetzner/", nil)
+			r.Header.Set("Cookie", cookie)
+			w := httptest.NewRecorder()
+			engine.ServeHTTP(w, r)
+			return w.Code == http.StatusTemporaryRedirect
+		}
+		if !loggedIn() {
+			t.Fatal("not logged in after login")
+		}
+		time.Sleep(5 * time.Hour)
+		if !loggedIn() {
+			t.Fatal("logged out after 5 hours of 6")
+		}
+		time.Sleep(2 * time.Hour)
+		if loggedIn() {
+			t.Fatal("still logged in after 7 hours of 6")
+		}
+	})
+}
+
+// A large body sent before login is not read whole.
+func TestLoginBodyIsCapped(t *testing.T) {
+	engine := testEngine(t)
+	big := `{"username":"` + strings.Repeat("a", 2<<20) + `"}`
+	_, res := login(engine, big, "application/json")
+	if res != "failed: The Input data format is invalid." {
+		t.Fatalf("2 MiB login body: %s", res)
+	}
+	if _, res := login(engine, `{"username":"admin","password":"admin"}`, "application/json"); res != "ok" {
+		t.Fatalf("normal login: %s", res)
+	}
+}
+
+// After a wrong 2FA code the typed password is the right one; no failed
+// login logs the password, and a header that is not an IP is not logged.
+func TestFailedLoginLogsNoPassword(t *testing.T) {
+	engine := testEngine(t)
+	var us service.UserService
+	if err := us.UpdateFirstUser("fardin", "right-pass-1"); err != nil {
+		t.Fatal(err)
+	}
+	var ss service.SettingService
+	if err := ss.SetTwoFactorToken(gotp.RandomSecret(16)); err != nil {
+		t.Fatal(err)
+	}
+	if err := ss.SetTwoFactorEnable(true); err != nil {
+		t.Fatal(err)
+	}
+	for _, form := range []url.Values{
+		{"username": {"fardin"}, "password": {"right-pass-1"}, "twoFactorCode": {"000000"}},
+		{"username": {"fardin"}, "password": {"right-pass-2"}},
+	} {
+		r := httptest.NewRequest("POST", "/hetzner/login", strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.Header.Set("X-Real-IP", "<img src=x onerror=alert(1)>")
+		r.RemoteAddr = "192.0.2.1:40000"
+		engine.ServeHTTP(httptest.NewRecorder(), r)
+	}
+	logs := strings.Join(logger.GetLogs(100, "DEBUG"), "\n")
+	if strings.Count(logs, "failed login") != 2 {
+		t.Fatalf("failed logins not logged:\n%s", logs)
+	}
+	for _, bad := range []string{"right-pass", "<img"} {
+		if strings.Contains(logs, bad) {
+			t.Errorf("log carries %q:\n%s", bad, logs)
+		}
+	}
+	if !strings.Contains(logs, `IP "192.0.2.1"`) {
+		t.Errorf("the address is not the connection's:\n%s", logs)
+	}
+}
+
+// Real pages come in each request's language.
+func TestPagesInRequestLanguage(t *testing.T) {
+	engine := testEngine(t)
+	for lang, want := range map[string]string{"fa-IR": "خوش‌آمدید", "en-US": "Welcome", "ru-RU": "Добро пожаловать!"} {
+		for i := 0; i < 2; i++ {
+			r := httptest.NewRequest("GET", "/hetzner/", nil)
+			r.AddCookie(&http.Cookie{Name: "lang", Value: lang})
+			w := httptest.NewRecorder()
+			engine.ServeHTTP(w, r)
+			if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "– "+want+"</title>") {
+				t.Fatalf("%s: %d, no %q title", lang, w.Code, want)
+			}
+		}
+	}
+}

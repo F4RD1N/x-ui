@@ -17,6 +17,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/database"
 	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/logger"
+	"github.com/mhsanaei/3x-ui/v2/web/locale"
 
 	xconf "github.com/xtls/xray-core/infra/conf"
 )
@@ -35,6 +36,10 @@ func TestMain(m *testing.M) {
 	os.RemoveAll(dir)
 	os.Exit(code)
 }
+
+type tgLang string
+
+func (l tgLang) GetTgLang() (string, error) { return string(l), nil }
 
 const testUUID = "b831381d-6324-4d53-ad4f-8cda48b30811"
 
@@ -316,5 +321,33 @@ func TestBuildRouterReportsClashingPaths(t *testing.T) {
 	}
 	if _, err := NewServer().buildRouter(); err == nil {
 		t.Fatal("no error for the JSON path equal to the subscription path")
+	}
+}
+
+// The subscription page renders, in the language of the request.
+func TestSubPageInRequestLanguage(t *testing.T) {
+	initTestDB(t)
+	in := &model.Inbound{UserId: 1, Protocol: model.VLESS, Port: 30443, Enable: true, Tag: "inbound-30443",
+		Settings: vlessSettings(`,"encryption":"none"`), StreamSettings: plainStream}
+	if err := database.GetDB().Create(in).Error; err != nil {
+		t.Fatal(err)
+	}
+	// The panel loads the translations before the subscription server starts.
+	if err := locale.InitLocalizer(os.DirFS("../web"), tgLang("en-US")); err != nil {
+		t.Fatal(err)
+	}
+	engine, err := NewServer().buildRouter()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for lang, want := range map[string]string{"fa-IR": "اطلاعات سابسکریپشن", "en-US": "Subscription info"} {
+		r := httptest.NewRequest("GET", "/sub/s1", nil)
+		r.Header.Set("Accept", "text/html")
+		r.Header.Set("Accept-Language", lang)
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, r)
+		if w.Code != 200 || !strings.Contains(w.Body.String(), want) {
+			t.Errorf("%s: %d, no %q", lang, w.Code, want)
+		}
 	}
 }
