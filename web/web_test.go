@@ -187,3 +187,60 @@ func TestPagesInRequestLanguage(t *testing.T) {
 		}
 	}
 }
+
+// loginCookie logs admin in and returns the session cookie.
+func loginCookie(t *testing.T, engine *gin.Engine) string {
+	t.Helper()
+	w, res := login(engine, "username=admin&password=admin", "application/x-www-form-urlencoded")
+	if res != "ok" {
+		t.Fatal(res)
+	}
+	cookie := w.Header().Get("Set-Cookie")
+	return cookie[:strings.Index(cookie, ";")]
+}
+
+// Saving the xray template alone keeps the remote config; an interval that
+// is not a whole number of minutes is refused, not stored as 0.
+func TestXraySettingKeepsRemoteConfig(t *testing.T) {
+	engine := testEngine(t)
+	cookie := loginCookie(t, engine)
+	var ss service.SettingService
+	ss.SetXrayConfigUrl("https://example.com/x.json")
+	ss.SetXrayConfigInterval(5)
+	template, err := ss.GetXrayConfigTemplate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	post := func(form url.Values) bool {
+		r := httptest.NewRequest("POST", "/hetzner/panel/xray/update", strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.Header.Set("Cookie", cookie)
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, r)
+		var msg struct {
+			Success bool `json:"success"`
+		}
+		json.Unmarshal(w.Body.Bytes(), &msg)
+		return msg.Success
+	}
+	check := func(when, wantURL string, wantInterval int) {
+		t.Helper()
+		u, _ := ss.GetXrayConfigUrl()
+		n, _ := ss.GetXrayConfigInterval()
+		if u != wantURL || n != wantInterval {
+			t.Errorf("%s: url %q interval %d, want %q %d", when, u, n, wantURL, wantInterval)
+		}
+	}
+	if !post(url.Values{"xraySetting": {template}}) {
+		t.Fatal("template alone refused")
+	}
+	check("template alone", "https://example.com/x.json", 5)
+	if post(url.Values{"xraySetting": {template}, "xrayConfigUrl": {"https://example.com/y.json"}, "xrayConfigInterval": {"1.5"}}) {
+		t.Error("interval 1.5 accepted")
+	}
+	check("interval 1.5", "https://example.com/x.json", 5)
+	if !post(url.Values{"xraySetting": {template}, "xrayConfigUrl": {""}, "xrayConfigInterval": {"7"}}) {
+		t.Fatal("full form refused")
+	}
+	check("full form", "", 7)
+}

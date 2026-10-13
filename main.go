@@ -225,7 +225,6 @@ func updateTgbotEnableSts(status bool) {
 	}
 }
 
-// updateTgbotSetting updates Telegram bot settings including token, chat ID, and runtime schedule.
 // updateXrayEgress sets instances' outgoing IPs from "name=ip,name=ip". An
 // empty ip sends that instance from the server's default address again. A
 // running panel applies it when it restarts.
@@ -282,6 +281,7 @@ func updateXrayEgress(spec string) {
 	fmt.Println("Saved. Restart the panel (x-ui restart) to apply.")
 }
 
+// updateTgbotSetting updates Telegram bot settings including token, chat ID, and runtime schedule.
 func updateTgbotSetting(tgBotToken string, tgBotChatid string, tgBotRuntime string) {
 	err := database.InitDB(config.GetDBPath())
 	if err != nil {

@@ -404,11 +404,12 @@ func (s *Server) startTask() {
 		s.cron.AddJob("@every 10s", job.NewXrayTrafficJob())
 	}()
 
-	// check client ips from log file every 10 sec
-	// Ticks every minute; the job itself honours the configured interval, so
-	// changing it in the panel takes effect without restarting the panel.
+	// Fetch the remote xray config. Ticks every minute; the job itself
+	// honours the configured interval, so changing it in the panel takes
+	// effect without restarting the panel.
 	s.cron.AddJob("@every 1m", job.NewFetchXrayConfigJob())
 
+	// check client ips from log file every 10 sec
 	s.cron.AddJob("@every 10s", job.NewCheckClientIpJob())
 
 	// check client ips from log file every day
