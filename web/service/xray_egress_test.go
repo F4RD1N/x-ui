@@ -34,6 +34,97 @@ func stubHostAddresses(t *testing.T, ips ...string) {
 	t.Cleanup(func() { hostAddressList = old })
 }
 
+// stubLinkDown makes every stubbed address sit on eth0, up but without its
+// carrier, and eth0 the interface of the default route: the uplink drops.
+func stubLinkDown(t *testing.T, ips ...string) {
+	t.Helper()
+	stubHostAddresses(t, ips...)
+	up := hostAddressList
+	hostAddressList = func() ([]hostIP, error) {
+		list, err := up()
+		for i := range list {
+			list[i].NoCarrier = true
+		}
+		return list, err
+	}
+	stubDefaultRoute(t, "eth0")
+}
+
+func stubDefaultRoute(t *testing.T, ifaces ...string) {
+	t.Helper()
+	old := defaultRouteIfaces
+	defaultRouteIfaces = func() map[string]bool {
+		m := map[string]bool{}
+		for _, n := range ifaces {
+			m[n] = true
+		}
+		return m
+	}
+	t.Cleanup(func() { defaultRouteIfaces = old })
+}
+
+func TestHostAddressesOf(t *testing.T) {
+	cidr := func(s string) net.Addr {
+		ip, n, err := net.ParseCIDR(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n.IP = ip
+		return n
+	}
+	got := hostAddressesOf([]hostIface{
+		{Name: "lo", Flags: net.FlagUp | net.FlagRunning | net.FlagLoopback, Addrs: []net.Addr{cidr("127.0.0.1/8")}},
+		{Name: "eth0", Flags: net.FlagUp | net.FlagRunning, Addrs: []net.Addr{cidr("192.0.2.7/31"), cidr("fe80::1/64"), cidr("2001:db8::7/64")}},
+		// Up, but the link is down: its addresses are listed, marked.
+		{Name: "eth1", Flags: net.FlagUp, Addrs: []net.Addr{cidr("198.51.100.2/25"), cidr("198.51.100.3/25")}},
+		// Down: nothing.
+		{Name: "eth2", Flags: 0, Addrs: []net.Addr{cidr("203.0.113.9/24")}},
+		{Name: "mc", Flags: net.FlagUp | net.FlagRunning, Addrs: []net.Addr{cidr("224.0.0.1/32"), cidr("0.0.0.0/0")}},
+	})
+	want := []string{"192.0.2.7 eth0 false", "2001:db8::7 eth0 false", "198.51.100.2 eth1 true", "198.51.100.3 eth1 true"}
+	var have []string
+	for _, a := range got {
+		if a.IP.To4() != nil && len(a.IP) != net.IPv4len {
+			t.Errorf("%s is not in its 4-byte form", a.IP)
+		}
+		have = append(have, a.IP.String()+" "+a.Iface+" "+map[bool]string{true: "true", false: "false"}[a.NoCarrier])
+	}
+	if strings.Join(have, "; ") != strings.Join(want, "; ") {
+		t.Errorf("got %q\nwant %q", have, want)
+	}
+}
+
+func TestParseDefaultRoutes(t *testing.T) {
+	route := "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n" +
+		"ens1f1np1\t00000000\t92B4292E\t0003\t0\t0\t0\t00000000\t0\t0\t0\n" +
+		"ens1f1np1\t92B4292E\t00000000\t0001\t0\t0\t0\tFEFFFFFF\t0\t0\t0\n" +
+		"docker0\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n" +
+		"wg0\t00000000\t00000000\t0001\t0\t0\t0\t00000080\t0\t0\t0\n"
+	got := parseDefaultRoutes([]byte(route))
+	if len(got) != 1 || !got["ens1f1np1"] {
+		t.Errorf("default route interfaces %v", got)
+	}
+}
+
+// stubClock gives EgressOutOfLine a clock the test moves, and clears what an
+// earlier check left behind.
+func stubClock(t *testing.T) *time.Time {
+	t.Helper()
+	now := time.Date(2026, 10, 14, 19, 0, 0, 0, time.UTC)
+	old := egressNow
+	egressNow = func() time.Time { return now }
+	egressDriftMu.Lock()
+	egressDriftSince = time.Time{}
+	egressDriftMu.Unlock()
+	t.Cleanup(func() {
+		egressNow = old
+		egressDriftMu.Lock()
+		egressDriftSince = time.Time{}
+		egressDriftMu.Unlock()
+	})
+	return &now
+}
+
 func stubProbe(t *testing.T, err error) {
 	t.Helper()
 	old := egressProbe
@@ -193,16 +284,15 @@ func TestEgressPrunedWithInstance(t *testing.T) {
 	}
 }
 
-// A core started before its outgoing IP was on the host, or still sending
-// from one that left it, is out of line.
-func TestEgressOutOfLine(t *testing.T) {
+// runningInstance makes xray-1 a running core that was started sending from
+// applied ("" for the default address), with its database in a temp folder.
+func runningInstance(t *testing.T, applied string) {
+	t.Helper()
 	dir := t.TempDir()
 	if err := database.InitDB(filepath.Join(dir, "x-ui.db")); err != nil {
 		t.Fatal(err)
 	}
-	defer database.CloseDB()
-	var xs XrayService
-	var ss SettingService
+	t.Cleanup(func() { database.CloseDB() })
 	p := xray.NewInstanceProcess("xray-1", &xray.Config{}, filepath.Join(dir, "c.json"), nil)
 	// A process that runs is all it takes.
 	if err := startSleeper(t, p); err != nil {
@@ -211,34 +301,188 @@ func TestEgressOutOfLine(t *testing.T) {
 	instMu.Lock()
 	oldProcs, oldApplied := procs, egressApplied
 	procs, egressApplied = map[string]*xray.Process{"xray-1": p}, map[string]string{}
+	if applied != "" {
+		egressApplied["xray-1"] = applied
+	}
 	instMu.Unlock()
 	t.Cleanup(func() {
 		instMu.Lock()
 		procs, egressApplied = oldProcs, oldApplied
 		instMu.Unlock()
 	})
+}
 
-	if xs.EgressOutOfLine() {
+// A core started before its outgoing IP was on the host, or still sending
+// from one that left it, is out of line -- once that has lasted.
+func TestEgressOutOfLine(t *testing.T) {
+	runningInstance(t, "")
+	now := stubClock(t)
+	var xs XrayService
+	var ss SettingService
+	// lasting reports whether the cores are applied again when the host
+	// stays as it is for a minute of the panel's 30-second checks.
+	lasting := func() bool {
+		t.Helper()
+		for i := 0; i < 3; i++ {
+			if xs.EgressOutOfLine() {
+				return true
+			}
+			*now = now.Add(30 * time.Second)
+		}
+		return false
+	}
+
+	if lasting() {
 		t.Fatal("no outgoing IP, none applied")
 	}
 	ss.SetInstanceEgress(map[string]string{"xray-1": "192.0.2.7"})
 	stubHostAddresses(t)
-	if xs.EgressOutOfLine() {
+	if lasting() {
 		t.Fatal("the address is not on the host yet: the default is right")
 	}
+	// A core goes onto its IP at the first check that finds it on the host.
 	stubHostAddresses(t, "192.0.2.7")
 	if !xs.EgressOutOfLine() {
-		t.Fatal("the address came onto the host")
+		t.Fatal("the address came onto the host, and the core stays on the default address")
 	}
 	instMu.Lock()
 	egressApplied = map[string]string{"xray-1": "192.0.2.7"}
 	instMu.Unlock()
-	if xs.EgressOutOfLine() {
+	if lasting() {
 		t.Fatal("in line")
 	}
 	stubHostAddresses(t)
-	if !xs.EgressOutOfLine() {
+	if !lasting() {
 		t.Fatal("the address left the host")
+	}
+}
+
+// The panel checks every 30 seconds: a change is acted on at the third check
+// that sees it, not before, and a check that finds the cores in line again
+// starts the wait over.
+func TestEgressOutOfLineWaits(t *testing.T) {
+	runningInstance(t, "192.0.2.7")
+	now := stubClock(t)
+	var xs XrayService
+	var ss SettingService
+	ss.SetInstanceEgress(map[string]string{"xray-1": "192.0.2.7"})
+	check := func(after time.Duration) bool {
+		*now = now.Add(after)
+		return xs.EgressOutOfLine()
+	}
+
+	// The address goes for one check and is back at the next.
+	stubHostAddresses(t)
+	if check(0) {
+		t.Fatal("acted on the first check that saw the address gone")
+	}
+	stubHostAddresses(t, "192.0.2.7")
+	if check(30 * time.Second) {
+		t.Fatal("in line again")
+	}
+	stubHostAddresses(t)
+	if check(30*time.Second) || check(30*time.Second) {
+		t.Fatal("the wait did not start over when the address came back")
+	}
+	if !check(30 * time.Second) {
+		t.Fatal("the address stayed gone for a minute, and the cores were left as they were")
+	}
+	// Acting on it starts the wait over.
+	if check(30 * time.Second) {
+		t.Fatal("acted twice on one change")
+	}
+}
+
+// A link that drops for a few seconds -- the interface stays up, its
+// addresses stay on it, only the carrier goes -- restarts no core: it keeps
+// sending from its IP. The address cannot be chosen while the link is down.
+func TestEgressKeptThroughLinkDrop(t *testing.T) {
+	runningInstance(t, "192.0.2.7")
+	now := stubClock(t)
+	var xs XrayService
+	var ss SettingService
+	ss.SetInstanceEgress(map[string]string{"xray-1": "192.0.2.7"})
+	stubLinkDown(t, "192.0.2.7")
+	for i := 0; i < 6; i++ {
+		if xs.EgressOutOfLine() {
+			t.Fatalf("check %d during the link drop restarts the cores", i+1)
+		}
+		*now = now.Add(30 * time.Second)
+	}
+
+	outbounds := json_util.RawMessage(`[{"tag":"direct","protocol":"freedom"}]`)
+	plan := &instancePlan{configs: map[string]*xray.Config{"xray-1": {OutboundConfigs: outbounds}}}
+	if applied := applyEgress(plan, map[string]string{"xray-1": "192.0.2.7"}); applied["xray-1"] != "192.0.2.7" {
+		t.Errorf("a core started during the link drop sends from the default address: %v", applied)
+	}
+
+	if isHostAddress(net.ParseIP("192.0.2.7")) {
+		t.Error("an address without a link can be chosen as an outgoing IP")
+	}
+	if addrs, err := xs.HostAddresses(); err != nil || len(addrs) != 0 {
+		t.Errorf("addresses offered without a link: %+v %v", addrs, err)
+	}
+}
+
+// An address on another interface without a carrier -- a Docker bridge
+// without containers -- is not kept: the default route has a link, so the
+// core moves to the default address, after the wait.
+func TestEgressNoCarrierOffTheUplink(t *testing.T) {
+	runningInstance(t, "172.17.0.1")
+	now := stubClock(t)
+	var xs XrayService
+	var ss SettingService
+	ss.SetInstanceEgress(map[string]string{"xray-1": "172.17.0.1"})
+	old := hostAddressList
+	hostAddressList = func() ([]hostIP, error) {
+		return []hostIP{
+			{IP: net.ParseIP("192.0.2.7").To4(), Iface: "eth0"},
+			{IP: net.ParseIP("172.17.0.1").To4(), Iface: "docker0", NoCarrier: true},
+		}, nil
+	}
+	t.Cleanup(func() { hostAddressList = old })
+	stubDefaultRoute(t, "eth0")
+
+	outbounds := json_util.RawMessage(`[{"tag":"direct","protocol":"freedom"}]`)
+	plan := &instancePlan{configs: map[string]*xray.Config{"xray-1": {OutboundConfigs: outbounds}}}
+	if applied := applyEgress(plan, map[string]string{"xray-1": "172.17.0.1"}); len(applied) != 0 {
+		t.Errorf("a core sends from a bridge without a link: %v", applied)
+	}
+	moved := false
+	for i := 0; i < 3 && !moved; i++ {
+		moved = xs.EgressOutOfLine()
+		*now = now.Add(30 * time.Second)
+	}
+	if !moved {
+		t.Error("the core stays on an address without a link off the default route")
+	}
+}
+
+// Cores applied by another path -- an inbound saved, a crash restart -- start
+// the wait over: an older sighting does not cut it short.
+func TestEgressWaitStartsOverAfterApply(t *testing.T) {
+	runningInstance(t, "192.0.2.7")
+	now := stubClock(t)
+	var xs XrayService
+	var ss SettingService
+	ss.SetInstanceEgress(map[string]string{"xray-1": "192.0.2.7"})
+	stubHostAddresses(t)
+	if xs.EgressOutOfLine() {
+		t.Fatal("acted on the first sighting")
+	}
+	// Another path applied the cores to the addresses there are now.
+	resetEgressDrift()
+	*now = now.Add(60 * time.Second)
+	if xs.EgressOutOfLine() {
+		t.Fatal("a sighting from before the apply cut the wait short")
+	}
+	*now = now.Add(30 * time.Second)
+	if xs.EgressOutOfLine() {
+		t.Fatal("acted 30 s into the new wait")
+	}
+	*now = now.Add(30 * time.Second)
+	if !xs.EgressOutOfLine() {
+		t.Fatal("the address stayed gone a minute after the apply")
 	}
 }
 

@@ -393,7 +393,9 @@ func (s *Server) startTask() {
 	// Check if xray needs to be restarted every 30 seconds, or a core's
 	// outgoing IP came onto the host, or left it, since the core started
 	s.cron.AddFunc("@every 30s", func() {
-		if s.xrayService.IsNeedRestartAndSetFalse() || s.xrayService.EgressOutOfLine() {
+		// Checked on every tick: its wait for a lasting change counts ticks.
+		egressOutOfLine := s.xrayService.EgressOutOfLine()
+		if s.xrayService.IsNeedRestartAndSetFalse() || egressOutOfLine {
 			err := s.xrayService.RestartXray(false)
 			if err != nil {
 				logger.Error("restart xray failed:", err)

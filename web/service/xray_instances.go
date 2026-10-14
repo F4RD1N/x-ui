@@ -1009,6 +1009,7 @@ func (s *XrayService) applyInstances(force bool) error {
 	instMu.Lock()
 	egressApplied = appliedEgress
 	instMu.Unlock()
+	resetEgressDrift()
 
 	// Re-pin the cores that kept running.
 	instMu.RLock()

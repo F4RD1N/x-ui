@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -65,27 +66,47 @@ func (s *SettingService) SetInstanceEgress(m map[string]string) error {
 type hostIP struct {
 	IP    net.IP
 	Iface string
+	// NoCarrier: the interface is up but has no link at the moment -- a
+	// cable or switch port that drops for a few seconds, or a Docker bridge
+	// without containers.
+	NoCarrier bool
 }
 
-// hostAddressList returns the addresses on the host's interfaces that
-// traffic can leave from: no loopback, link-local or multicast ones, and
-// none on an interface that is down or has no carrier, such as a Docker
-// bridge without containers.
+// hostIface is an interface with its flags and addresses.
+type hostIface struct {
+	Name  string
+	Flags net.Flags
+	Addrs []net.Addr
+}
+
+// hostAddressList returns the addresses on the host's interfaces that are
+// up: no loopback, link-local or multicast ones. Those on an interface
+// without a carrier are marked.
 var hostAddressList = func() ([]hostIP, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return nil, err
 	}
-	var out []hostIP
+	list := make([]hostIface, 0, len(ifaces))
 	for _, ifc := range ifaces {
-		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagRunning == 0 {
-			continue
-		}
 		addrs, err := ifc.Addrs()
 		if err != nil {
 			continue
 		}
-		for _, a := range addrs {
+		list = append(list, hostIface{Name: ifc.Name, Flags: ifc.Flags, Addrs: addrs})
+	}
+	return hostAddressesOf(list), nil
+}
+
+// hostAddressesOf picks the addresses hostAddressList returns.
+func hostAddressesOf(ifaces []hostIface) []hostIP {
+	var out []hostIP
+	for _, ifc := range ifaces {
+		if ifc.Flags&net.FlagUp == 0 {
+			continue
+		}
+		noCarrier := ifc.Flags&net.FlagRunning == 0
+		for _, a := range ifc.Addrs {
 			ipn, ok := a.(*net.IPNet)
 			if !ok {
 				continue
@@ -97,29 +118,70 @@ var hostAddressList = func() ([]hostIP, error) {
 			if v4 := ip.To4(); v4 != nil {
 				ip = v4
 			}
-			out = append(out, hostIP{IP: ip, Iface: ifc.Name})
+			out = append(out, hostIP{IP: ip, Iface: ifc.Name, NoCarrier: noCarrier})
 		}
 	}
-	return out, nil
+	return out
 }
 
-// hostAddressSet returns the host's addresses in their usual form.
+// defaultRouteIfaces returns the interfaces the host's IPv4 default routes
+// leave through.
+var defaultRouteIfaces = func() map[string]bool {
+	b, err := os.ReadFile("/proc/net/route")
+	if err != nil {
+		return map[string]bool{}
+	}
+	return parseDefaultRoutes(b)
+}
+
+// parseDefaultRoutes reads the interfaces of the default routes from the
+// contents of /proc/net/route.
+func parseDefaultRoutes(b []byte) map[string]bool {
+	out := map[string]bool{}
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Fields(line)
+		// Iface Destination Gateway Flags RefCnt Use Metric Mask ...
+		if len(f) >= 8 && f[1] == "00000000" && f[7] == "00000000" {
+			out[f[0]] = true
+		}
+	}
+	return out
+}
+
+// hostAddressSet returns, in their usual form, the addresses a running core
+// keeps sending from. An address on the interface of the default route
+// stays one while its link is down: a cable or switch port that drops for a
+// few seconds takes nothing from the host, the default address is on the
+// same dead link, and moving every core there and back would cut all their
+// connections twice. One on another interface without a carrier -- a Docker
+// bridge without containers, an unplugged second port -- is not one.
 func hostAddressSet() map[string]bool {
 	list, _ := hostAddressList()
 	out := make(map[string]bool, len(list))
+	var uplinks map[string]bool
 	for _, a := range list {
+		if a.NoCarrier {
+			if uplinks == nil {
+				uplinks = defaultRouteIfaces()
+			}
+			if !uplinks[a.Iface] {
+				continue
+			}
+		}
 		out[a.IP.String()] = true
 	}
 	return out
 }
 
+// isHostAddress reports whether ip can be chosen as an outgoing IP: an
+// address on an interface that is up and has a carrier.
 func isHostAddress(ip net.IP) bool {
 	list, err := hostAddressList()
 	if err != nil {
 		return false
 	}
 	for _, a := range list {
-		if a.IP.Equal(ip) {
+		if a.IP.Equal(ip) && !a.NoCarrier {
 			return true
 		}
 	}
@@ -270,11 +332,57 @@ func applyEgress(plan *instancePlan, egress map[string]string) map[string]string
 	return applied
 }
 
+// egressSettle is how long a core's outgoing IP must stay gone before the
+// core is moved to the default address: an address that goes for a moment
+// and comes back -- a network service reconfiguring the interface --
+// restarts nothing.
+const egressSettle = 50 * time.Second
+
+var (
+	egressDriftMu    sync.Mutex
+	egressDriftSince time.Time // when a core's outgoing IP was first seen gone; zero otherwise
+	egressNow        = time.Now
+)
+
+// resetEgressDrift starts the wait over: the cores were just applied to the
+// addresses the host has now.
+func resetEgressDrift() {
+	egressDriftMu.Lock()
+	egressDriftSince = time.Time{}
+	egressDriftMu.Unlock()
+}
+
 // EgressOutOfLine reports whether a running core sends from another address
-// than it should now: its outgoing IP came onto the host after the core
-// started -- an address added late at boot -- or left it. Applying the cores
-// again puts it right.
+// than it should: its outgoing IP came onto the host after the core started
+// -- an address added late at boot -- or left it. Applying the cores again
+// puts it right. A core that can send from its IP is moved onto it at once;
+// one whose IP left is moved to the default address only when it has been
+// gone for egressSettle -- the panel checks every 30 seconds, so at the
+// third check that sees it gone.
 func (s *XrayService) EgressOutOfLine() bool {
+	out, leaving := s.egressOutOfLineNow()
+	egressDriftMu.Lock()
+	defer egressDriftMu.Unlock()
+	if !out || !leaving {
+		egressDriftSince = time.Time{}
+		return out
+	}
+	now := egressNow()
+	if egressDriftSince.IsZero() {
+		egressDriftSince = now
+		return false
+	}
+	if now.Sub(egressDriftSince) < egressSettle {
+		return false
+	}
+	egressDriftSince = time.Time{}
+	return true
+}
+
+// egressOutOfLineNow reports whether a running core sends from another
+// address than it should at this moment, and whether one of them sends from
+// an outgoing IP that is no longer on the host.
+func (s *XrayService) egressOutOfLineNow() (out, leaving bool) {
 	stored, _ := s.settingService.GetInstanceEgress()
 	instMu.RLock()
 	applied := make(map[string]string, len(egressApplied))
@@ -283,18 +391,23 @@ func (s *XrayService) EgressOutOfLine() bool {
 	}
 	instMu.RUnlock()
 	if len(stored) == 0 && len(applied) == 0 {
-		return false
+		return false, false
 	}
 	host := hostAddressSet()
 	for _, p := range snapshotProcs() {
 		if !p.IsRunning() {
 			continue
 		}
-		if usableEgress(stored[p.Name()], host) != applied[p.Name()] {
-			return true
+		want := usableEgress(stored[p.Name()], host)
+		if want == applied[p.Name()] {
+			continue
+		}
+		out = true
+		if want == "" {
+			leaving = true
 		}
 	}
-	return false
+	return out, leaving
 }
 
 // pruneEgress forgets the outgoing IPs of instances no inbound names any
@@ -390,7 +503,7 @@ func (s *XrayService) HostAddresses() ([]HostAddress, error) {
 	}
 	var list []hostIP
 	for _, a := range all {
-		if a.IP.To4() != nil {
+		if a.IP.To4() != nil && !a.NoCarrier {
 			list = append(list, a)
 		}
 	}
