@@ -31,6 +31,8 @@ const (
 	bcSGE            = 2
 	bcSLE            = 3
 	tcpEstablished   = 1
+	tcpClose         = 7  // an unconnected UDP socket
+	tcpListen        = 10 // a listening TCP socket
 	maxPortRanges    = 32
 )
 
@@ -149,6 +151,63 @@ func UDPSockets(fn func(LocalEndpoint)) error {
 		}
 	}
 	return nil
+}
+
+// ListeningPorts lists the local ports of listening TCP sockets and of
+// unconnected UDP sockets (bound, waiting for any peer), IPv4 and IPv6. Read
+// through sock_diag, it takes milliseconds where /proc/net/udp, on a server
+// with tens of thousands of UDP sockets, takes many seconds.
+func ListeningPorts() ([]int, error) {
+	set := map[int]bool{}
+	add := func(ep LocalEndpoint) {
+		if ep.Port != 0 {
+			set[ep.Port] = true
+		}
+	}
+	for _, family := range []uint8{unix.AF_INET, unix.AF_INET6} {
+		for _, q := range []struct {
+			proto  uint8
+			states uint32
+		}{{unix.IPPROTO_TCP, 1 << tcpListen}, {unix.IPPROTO_UDP, 1 << tcpClose}} {
+			if err := dumpSockets(family, q.proto, q.states, nil, add); err != nil && family == unix.AF_INET {
+				return nil, err
+			}
+		}
+	}
+	out := make([]int, 0, len(set))
+	for p := range set {
+		out = append(out, p)
+	}
+	sort.Ints(out)
+	return out, nil
+}
+
+// PortListeners returns the local addresses that listen on a port: TCP
+// listeners and unconnected UDP sockets, IPv4 and IPv6, filtered by the
+// kernel. A socket bound to all addresses shows as "0.0.0.0" or "::".
+func PortListeners(port int) ([]LocalEndpoint, error) {
+	var out []LocalEndpoint
+	bc := portFilter([]int{port})
+	add := func(ep LocalEndpoint) {
+		if ep.Port == port {
+			out = append(out, ep)
+		}
+	}
+	for _, family := range []uint8{unix.AF_INET, unix.AF_INET6} {
+		for _, q := range []struct {
+			proto  uint8
+			states uint32
+		}{{unix.IPPROTO_TCP, 1 << tcpListen}, {unix.IPPROTO_UDP, 1 << tcpClose}} {
+			err := dumpSockets(family, q.proto, q.states, bc, add)
+			if errors.Is(err, unix.EINVAL) {
+				err = dumpSockets(family, q.proto, q.states, nil, add) // no filter support
+			}
+			if err != nil && family == unix.AF_INET {
+				return nil, err
+			}
+		}
+	}
+	return out, nil
 }
 
 func dumpTCP(family uint8, bytecode []byte, fn func(LocalEndpoint)) error {

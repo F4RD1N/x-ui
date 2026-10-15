@@ -12,6 +12,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/mhsanaei/3x-ui/v2/util/sys"
 )
 
 // A local DNS cache. Xray resolves every domain a user asks for, and REALITY
@@ -80,8 +82,20 @@ func nameservers(text string) []string {
 	return out
 }
 
-// port53Taken reports whether something listens on 127.0.0.1:53 or *:53.
+// port53Taken reports whether something listens on 127.0.0.1:53 or *:53
+// (systemd-resolved's 127.0.0.53 and .54 do not count).
 func (e *Env) port53Taken() bool {
+	if e.Root == "" {
+		if eps, err := sys.PortListeners(53); err == nil {
+			for _, ep := range eps {
+				switch ep.IP {
+				case "127.0.0.1", "0.0.0.0", "::", "::1", "":
+					return true
+				}
+			}
+			return false
+		}
+	}
 	for _, file := range []string{"/proc/net/udp", "/proc/net/tcp"} {
 		for _, l := range strings.Split(e.readTrim(file), "\n") {
 			f := strings.Fields(l)

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/mhsanaei/3x-ui/v2/util/hw"
+	"github.com/mhsanaei/3x-ui/v2/util/sys"
 )
 
 const (
@@ -413,6 +414,12 @@ func (e *Env) nics() []NIC {
 // listeners lists local ports with a listening TCP socket or an unconnected
 // UDP socket.
 func (e *Env) listeners() []int {
+	if e.Root == "" {
+		// sock_diag: /proc/net/udp alone takes many seconds on a busy server.
+		if ports, err := sys.ListeningPorts(); err == nil {
+			return ports
+		}
+	}
 	set := map[int]bool{}
 	for _, f := range []string{"/proc/net/tcp", "/proc/net/tcp6", "/proc/net/udp", "/proc/net/udp6"} {
 		tcp := strings.Contains(f, "tcp")
