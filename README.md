@@ -77,8 +77,20 @@ Every install and update also tunes the server for x-ui (`x-ui tune`):
   queues, TIME_WAIT and orphan limits, socket buffers, conntrack (when it is
   loaded; up to 32M entries from 512 GiB of RAM), BBR with fq;
 - the NICs under the default routes are tuned (see below);
+- where the OS sets the CPU clock, the `performance` governor, and idle states
+  that take more than 10 µs to wake from are turned off (again at every
+  boot). A box whose BIOS or hypervisor sets the clock, and one where tuned,
+  cpupower, the kernel command line or an admin decided, is left alone;
 - on a fresh install (and with `x-ui tune apply`), but never on an update:
-  chrony when no time-sync client is installed (VMess and Shadowsocks 2022
+  a local DNS cache (unbound, many threads, forwarding to the resolvers the
+  server used before) that `/etc/resolv.conf` names first, the old resolver
+  second: systemd-resolved, on one thread, drops lookups on a busy server, and
+  each drop is a 5 s wait for a user's connection. It is only switched to once
+  it answers, and a server with a DNS server of its own, or whose
+  `resolv.conf` NetworkManager or resolvconf writes, is left alone. The
+  uplink's addresses are kept through a link drop (a systemd-networkd drop-in,
+  like netplan's `ignore-carrier`), so the per-core outgoing IPs and their
+  connections live through it. Also chrony when no time-sync client is installed (VMess and Shadowsocks 2022
   reject clients whose clock is off), and a 1 GiB swapfile on VMs with less
   than 1.75 GiB of RAM. A time-sync client that is turned off stays off, and
   a package you removed is not installed again. x-ui no longer installs

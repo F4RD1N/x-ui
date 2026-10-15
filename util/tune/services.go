@@ -92,6 +92,8 @@ func (e *Env) services(f *Facts, st *State, r *Result) {
 	}
 	e.timeSync(f, st, r)
 	e.swap(f, st, r)
+	e.applyCarrier(f, st, r)
+	e.applyDNS(f, st, r)
 }
 
 func (e *Env) timeSync(f *Facts, st *State, r *Result) {
@@ -246,6 +248,9 @@ func (e *Env) makeSwapFile() error {
 }
 
 func (e *Env) revertServices(f *Facts, st *State, r *Result) {
+	// resolv.conf goes back before unbound stops.
+	e.revertDNS(st, r)
+	e.revertCarrier(st, r)
 	if st.Swap != "" && e.exists(SwapFile) {
 		avail := meminfo(e.readTrim("/proc/meminfo"), "MemAvailable")
 		used := swapUsed(e.readTrim("/proc/swaps"), SwapFile)

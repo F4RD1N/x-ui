@@ -76,6 +76,14 @@ func (e *Env) Status(asJSON bool) ([]string, error) {
 	p := e.plan(f, st)
 	np := e.planNICs(f, st, nicOpts{})
 	d := append(e.drift(p), e.nicDrift(np, f)...)
+	if cp := e.planCPU(f, st); len(cp.Governor) > 0 || len(cp.Idle) > 0 {
+		if len(cp.Governor) > 0 {
+			d = append(d, "cpu clock")
+		}
+		if len(cp.Idle) > 0 {
+			d = append(d, "cpu idle states")
+		}
+	}
 	if st.Disabled {
 		d = nil
 	}
@@ -90,6 +98,9 @@ func (e *Env) Status(asJSON bool) ([]string, error) {
 			"process":  svc,
 			"health":   health,
 			"timesync": e.timeInfo(f),
+			"cpu":      e.cpuInfo(f, st),
+			"links":    e.carrierInfo(f),
+			"dns":      e.dnsInfo(f, st),
 			"nics":     np,
 			"swap":     strings.Split(strings.TrimSpace(e.readTrim("/proc/swaps")), "\n")[1:],
 		}
@@ -116,6 +127,10 @@ func (e *Env) Status(asJSON bool) ([]string, error) {
 	} else {
 		e.printf("  swap: none\n")
 	}
+	for _, l := range append(e.cpuInfo(f, st), e.carrierInfo(f)...) {
+		e.printf("  %s\n", l)
+	}
+	e.printf("  dns: %s\n", e.dnsInfo(f, st))
 	e.printf("\nHealth:\n")
 	for _, l := range health {
 		e.printf("  %s\n", l)
@@ -124,6 +139,23 @@ func (e *Env) Status(asJSON bool) ([]string, error) {
 		e.printf("\nNot applied yet: %s (run: x-ui tune apply)\n", strings.Join(d, ", "))
 	}
 	return d, nil
+}
+
+// printHost is the host part of a dry run: the CPU always, the link drops
+// and the DNS cache when the apply sets up host services.
+func (e *Env) printHost(f *Facts, st *State, host bool) {
+	e.printf("\nHost:\n")
+	for _, l := range e.cpuInfo(f, st) {
+		e.printf("  %s\n", l)
+	}
+	if !host {
+		e.printf("  link drops and dns: only on a fresh install and 'x-ui tune apply'\n")
+		return
+	}
+	for _, l := range e.carrierInfo(f) {
+		e.printf("  %s\n", l)
+	}
+	e.printf("  dns: %s\n", e.dnsInfo(f, st))
 }
 
 func stateWord(st *State, had bool) string {

@@ -87,6 +87,9 @@ type Env struct {
 	// Clock and Probe drive the queue watchdog (tests replace them).
 	Clock Clock
 	Probe Prober
+	// DNSProbe checks that the new DNS cache answers (tests replace it;
+	// under a fake root it is skipped).
+	DNSProbe func() error
 
 	owned   map[string]bool // package ownership, asked once per file
 	stopped bool            // SIGTERM during a queue change: stop after it

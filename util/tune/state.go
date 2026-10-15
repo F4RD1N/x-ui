@@ -49,6 +49,13 @@ type State struct {
 	NICs map[string]*NICState `json:"nics,omitempty"`
 	// IRQBalancePolicy: x-ui gave irqbalance its policy script.
 	IRQBalancePolicy bool `json:"irqbalance_policy,omitempty"`
+	// CPU: the governor ("cpufreq/policyN") and idle states ("cpuN/stateM")
+	// x-ui set, each with the value before.
+	CPU map[string]*KeyState `json:"cpu,omitempty"`
+	// Carrier: x-ui's networkd drop-ins that keep addresses through link drops.
+	Carrier []string `json:"carrier_dropins,omitempty"`
+	// DNS: x-ui's DNS cache, and /etc/resolv.conf before it.
+	DNS *DNSState `json:"dns,omitempty"`
 }
 
 // NICState is what x-ui did to one NIC.

@@ -104,6 +104,7 @@ func (e *Env) Apply(o ApplyOptions, version string) (*Result, error) {
 				np = e.planNICs(f, st, no)
 			}
 			e.printNICs(np, st, true)
+			e.printHost(f, st, !o.Auto || o.Host)
 		}
 		e.printf("\nDry run: nothing was changed.\n")
 		return r, nil
@@ -181,6 +182,8 @@ func (e *Env) Apply(o ApplyOptions, version string) (*Result, error) {
 			r.change("conntrack hashsize: %s -> %s", h.Live, h.Want)
 		}
 	}
+
+	e.applyCPU(f, st, r)
 
 	if !o.Boot {
 		// fs.nr_open is raised above first; if that did not work, the limit
@@ -354,6 +357,15 @@ func (e *Env) Revert(purge, dry bool) (*Result, error) {
 				r.change("would restore %s to %s if it is still %s", k, ks.Orig, ks.Written)
 			}
 		}
+		if len(st.CPU) > 0 {
+			r.change("would put back %d CPU clock and idle values", len(st.CPU))
+		}
+		if st.DNS != nil {
+			r.change("would put back %s and remove x-ui's unbound config", ResolvConf)
+		}
+		for _, c := range st.Carrier {
+			r.change("would remove %s", c)
+		}
 		return r, nil
 	}
 
@@ -415,6 +427,7 @@ func (e *Env) Revert(purge, dry bool) (*Result, error) {
 			}
 		}
 	}
+	e.revertCPU(f, st, r)
 	e.revertServices(f, st, r)
 	if (unitChanged || irqbalanceChanged) && f.Init == "systemd" {
 		_, _ = e.run("systemctl", "daemon-reload")

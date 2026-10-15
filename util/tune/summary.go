@@ -69,5 +69,13 @@ func (e *Env) summary() []string {
 		}
 		out = append(out, line)
 	}
+	if l := e.cpuInfo(f, st); len(l) > 0 {
+		out = append(out, "CPU clock: "+strings.TrimPrefix(l[0], "cpu clock: "))
+	}
+	if d := e.dnsInfo(f, st); strings.HasPrefix(d, "would") {
+		out = append(out, "DNS: no local cache ('x-ui tune apply' sets up unbound)")
+	} else if d != "" {
+		out = append(out, "DNS: "+d)
+	}
 	return append(out, e.planNICs(f, st, nicOpts{}).summary()...)
 }
