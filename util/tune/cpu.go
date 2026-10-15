@@ -22,7 +22,7 @@ import (
 // whose BIOS or hypervisor sets the clock has no cpufreq and is left alone; so
 // is one where a tool or the admin decided (tuned, cpupower,
 // power-profiles-daemon, the kernel command line, idle states already turned
-// off by someone).
+// off by someone; a state the kernel itself starts with off is not counted).
 
 const (
 	cpuDir = "/sys/devices/system/cpu"
@@ -147,7 +147,9 @@ func (e *Env) planCPU(f *Facts, st *State) *cpuPlan {
 		live := e.readTrim(d)
 		ks := st.CPU[key]
 		if live != "0" {
-			if ks == nil {
+			// Off by the driver's own default (intel_idle ships C3 off on
+			// Broadwell-EP Xeons) is nobody's choice: the others still go.
+			if ks == nil && e.readTrim(dir+"/default_status") != "disabled" {
 				// Turned off by someone else: they decide the idle states.
 				if !containsStr(others, state) {
 					others = append(others, state+" ("+e.readTrim(dir+"/name")+")")

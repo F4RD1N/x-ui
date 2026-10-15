@@ -114,6 +114,35 @@ func TestCPURespectsOthers(t *testing.T) {
 		}
 	}
 
+	// A state the driver starts with off (default_status "disabled", as
+	// intel_idle does for C3 on Broadwell-EP) is not someone else's choice:
+	// the other deep states still go, and that one is left as the kernel has it.
+	kernelOff := map[string]string{}
+	for p := 0; p < 4; p++ {
+		sd := fmt.Sprintf("%s/cpu%d/cpuidle/state3/", cpuDir, p)
+		kernelOff[sd+"name"], kernelOff[sd+"latency"], kernelOff[sd+"disable"] = "C3\n", "40\n", "1\n"
+		kernelOff[sd+"default_status"] = "disabled\n"
+		kernelOff[fmt.Sprintf("%s/cpu%d/cpuidle/state2/default_status", cpuDir, p)] = "enabled\n"
+	}
+	ke := cpuMachine(t, kernelOff)
+	kr := mustApply(t, ke, ApplyOptions{})
+	if _, _, c2 := cpuValues(ke); c2 != "1,1,1,1" {
+		t.Errorf("kernel default off: C2 %s\n%v", c2, kr.Changed)
+	}
+	kst, _, _ := ke.loadState()
+	if kst.CPU["cpu0/state3"] != nil {
+		t.Errorf("x-ui recorded the kernel's own C3: %+v", kst.CPU["cpu0/state3"])
+	}
+	if info := strings.Join(ke.cpuInfo(ke.gatherFacts(), kst), "\n"); strings.Contains(info, "someone else") || !strings.Contains(info, "(x-ui)") {
+		t.Errorf("status: %q", info)
+	}
+	ke.Revert(false, false)
+	for p := 0; p < 4; p++ {
+		if v := ke.readTrim(fmt.Sprintf("%s/cpu%d/cpuidle/state3/disable", cpuDir, p)); v != "1" {
+			t.Errorf("revert changed the kernel's C3 on cpu%d: %s", p, v)
+		}
+	}
+
 	e := machine{mem: 8 * GiB, cpus: 4}.build(t)
 	r := mustApply(t, e, ApplyOptions{})
 	for _, c := range r.Changed {
