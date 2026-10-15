@@ -608,9 +608,9 @@ anti_abuse_udp_ports="137, 138, 161, 1900, 11211"
 # New destinations per second: hosts per outgoing IP and port, and ports
 # per host (TCP). Measured on busy servers, real users peak at about 5 and 2.
 # A scan uses up the allowance for everyone on its IP and port, so it is
-# kept well above what users need.
-anti_abuse_wide="20/second burst 400 packets"
-anti_abuse_deep="10/second burst 100 packets"
+# kept at ten times what users need: only fast scanners reach it.
+anti_abuse_wide="50/second burst 1000 packets"
+anti_abuse_deep="30/second burst 300 packets"
 
 # anti_abuse_uplinks prints the interfaces the default routes leave through.
 anti_abuse_uplinks() {

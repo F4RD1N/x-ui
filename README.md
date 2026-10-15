@@ -130,8 +130,8 @@ you turn it on:
   25, 135, 139, 445, 1433, 2323, 3389, 5900; UDP 137, 138, 161, 1900, 11211);
 - private and reserved addresses are refused through the internet uplink (what
   a hoster reports as a netscan); the uplink's own subnets and routes still work;
-- port and net scans are refused: more than 20 new hosts per second on a port
-  from one outgoing IP, or 10 new ports per second on one host. Web ports
+- port and net scans are refused: more than 50 new hosts per second on a port
+  from one outgoing IP, or 30 new ports per second on one host. Web ports
   (TCP 80/443, UDP 443), loopback and destinations already in use are never
   limited;
 - fail2ban bans an IP after 2 failed SSH logins in 10 minutes, for an hour and

@@ -46,11 +46,11 @@ in_net ip route add local 10.9.9.9/32 dev lo
 in_net ip route add local 192.168.77.7/32 dev lo
 in_net ip route add 11.0.0.2/32 dev up1
 
-# The internet: TCP on 22, 443, 8080 and 2000-2199, UDP on 53 and 443.
+# The internet: TCP on 22, 443, 8080 and 6000-6399, UDP on 53 and 443.
 in_net python3 - >"$work/listener.log" 2>&1 <<'P' &
 import socket, selectors
 sel = selectors.DefaultSelector()
-for p in [22, 443, 8080] + list(range(2000, 2200)):
+for p in [22, 443, 8080] + list(range(6000, 6400)):
     s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.setsockopt(socket.SOL_IP, 19, 1)  # IP_TRANSPARENT: answer for every local address
     s.bind(("0.0.0.0", p)); s.listen(4096); s.setblocking(False); sel.register(s, selectors.EVENT_READ, "tcp")
@@ -77,7 +77,8 @@ echo "ok   allowed4 = the private subnet and route only: $allowed"
 in_srv nft -f "$work/rules.nft"
 in_srv nft -f "$work/rules.nft" # loading twice must work (the unit's reload)
 
-in_srv python3 - "$work" <<'P'
+rc=0
+in_srv python3 - "$work" <<'P' || rc=1
 import socket, subprocess, sys, time
 fails = []
 def check(name, ok):
@@ -107,26 +108,26 @@ check("  ...and counted", counter("private_nets") >= 1)
 check("the uplink's own private subnet stays open", tcp("10.5.0.1", 443) == "open")
 check("a static private route stays open", tcp("10.9.9.9", 443) == "open")
 
-# Horizontal scan: 600 new hosts on port 8080, as fast as possible.
-t = time.time(); res = [tcp("11.0.%d.%d" % (1 + i // 250, 1 + i % 250), 8080) for i in range(600)]
+# Horizontal scan: 1200 new hosts on port 8080, as fast as possible.
+t = time.time(); res = [tcp("11.0.%d.%d" % (1 + i // 250, 1 + i % 250), 8080) for i in range(1200)]
 el = time.time() - t; opened = res.count("open")
-check("wide scan: about 400 + 20/s get through (%d of 600 in %.1fs)" % (opened, el), 400 <= opened <= 400 + 20 * el + 25)
-check("  ...the rest is refused and counted (%d)" % counter("scan_wide"), counter("scan_wide") == 600 - opened)
+check("wide scan: about 1000 + 50/s get through (%d of 1200 in %.1fs)" % (opened, el), 1000 <= opened <= 1000 + 50 * el + 25)
+check("  ...the rest is refused and counted (%d)" % counter("scan_wide"), counter("scan_wide") == 1200 - opened)
 check("a host already seen still opens during the scan", tcp("11.0.1.1", 8080) == "open")
-check("web ports are never limited", all(tcp("11.0.%d.%d" % (5 + i // 250, 1 + i % 250), 443) == "open" for i in range(500)))
+check("web ports are never limited", all(tcp("11.0.%d.%d" % (6 + i // 250, 1 + i % 250), 443) == "open" for i in range(1200)))
 
-# Vertical scan: 200 ports on one host.
-t = time.time(); res = [tcp("11.0.9.9", p) for p in range(2000, 2200)]
+# Vertical scan: 400 ports on one host.
+t = time.time(); res = [tcp("11.0.19.9", p) for p in range(6000, 6400)]
 el = time.time() - t; opened = res.count("open")
-check("deep scan: about 100 + 10/s get through (%d of 200 in %.1fs)" % (opened, el), 100 <= opened <= 100 + 10 * el + 15)
-check("  ...the rest is counted (%d)" % counter("scan_deep"), counter("scan_deep") == 200 - opened)
+check("deep scan: about 300 + 30/s get through (%d of 400 in %.1fs)" % (opened, el), 300 <= opened <= 300 + 30 * el + 15)
+check("  ...the rest is counted (%d)" % counter("scan_deep"), counter("scan_deep") == 400 - opened)
 
-# DNS servers count like any other port: 500 new ones.
-t = time.time(); res = [udp("11.0.%d.%d" % (20 + i // 250, 1 + i % 250), 53) for i in range(500)]
+# DNS servers count like any other port: 1200 new ones.
+t = time.time(); res = [udp("11.0.%d.%d" % (20 + i // 250, 1 + i % 250), 53) for i in range(1200)]
 el = time.time() - t; answered = res.count("answer")
-check("UDP 53: about 400 + 20/s new servers answer (%d of 500 in %.1fs)" % (answered, el), 400 <= answered <= 400 + 20 * el + 25)
+check("UDP 53: about 1000 + 50/s new servers answer (%d of 1200 in %.1fs)" % (answered, el), 1000 <= answered <= 1000 + 50 * el + 25)
 check("  ...a server already used still answers", udp("11.0.20.1", 53) == "answer")
-check("QUIC (udp 443) is never limited", all(udp("11.0.30.%d" % (i + 1), 443) == "answer" for i in range(200)))
+check("QUIC (udp 443) is never limited", all(udp("11.0.%d.%d" % (30 + i // 250, 1 + i % 250), 443) == "answer" for i in range(1200)))
 
 # Loopback: the panel talks to every core's API port.
 ls = []
@@ -136,7 +137,47 @@ before = counter("scan_deep")
 check("300 loopback ports are never limited", all(tcp("127.0.0.1", p) == "open" for p in range(3000, 3300)) and counter("scan_deep") == before)
 sys.exit(1 if fails else 0)
 P
-rc=$?
+
+# What a VPN app does: 100 users each test 30 configs (30 ports) at once.
+# Connections users open to the server are never counted or refused.
+in_srv python3 - >"$work/srv.log" 2>&1 <<'P2' &
+import socket, selectors
+sel = selectors.DefaultSelector()
+for p in range(20821, 20851):
+    s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("0.0.0.0", p)); s.listen(4096); s.setblocking(False); sel.register(s, selectors.EVENT_READ)
+print("ready", flush=True)
+conns = []
+while True:
+    for k, _ in sel.select():
+        try: c, _ = k.fileobj.accept(); conns.append(c)
+        except OSError: pass
+P2
+srv_listener=$!
+for _ in $(seq 1 50); do grep -q ready "$work/srv.log" 2>/dev/null && break; sleep 0.1; done
+counters() { in_srv nft list table inet xui_anti_abuse | grep -oE 'packets [0-9]+' | md5sum; }
+before=$(counters)
+ok=$(in_net python3 - <<'P2' || true
+import socket, selectors, time
+sel = selectors.DefaultSelector(); socks = []
+for u in range(100):
+    for port in range(20821, 20851):
+        s = socket.socket(); s.setsockopt(socket.SOL_IP, 19, 1); s.bind(("11.0.200.%d" % (u + 1), 0)); s.setblocking(False)
+        s.connect_ex(("11.0.0.2", port)); socks.append(s); sel.register(s, selectors.EVENT_WRITE)
+done, end = 0, time.time() + 10
+while done < len(socks) and time.time() < end:
+    for k, _ in sel.select(1):
+        sel.unregister(k.fileobj)
+        if k.fileobj.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR) == 0: done += 1
+print(done)
+P2
+)
+kill "$srv_listener" 2>/dev/null
+if [[ $ok == 3000 && $(counters) == "$before" ]]; then
+    echo "ok   100 users testing 30 configs at once: 3000 of 3000 connect, nothing counted"
+else
+    echo "FAIL 100 users testing 30 configs at once: $ok of 3000 connect, counters $( [[ $(counters) == "$before" ]] && echo unchanged || echo changed)"; rc=1
+fi
 host_after=$(nft list tables 2>/dev/null | sort | sha256sum)
 if [[ $host_before == "$host_after" ]]; then echo "ok   the host's own nftables tables are unchanged"; else echo "FAIL the host's nftables tables changed"; rc=1; fi
 exit $rc
