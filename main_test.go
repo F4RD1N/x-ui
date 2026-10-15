@@ -2,21 +2,47 @@ package main
 
 import (
 	"bytes"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mhsanaei/3x-ui/v2/config"
 	"github.com/mhsanaei/3x-ui/v2/database"
 	"github.com/mhsanaei/3x-ui/v2/database/model"
+	"github.com/mhsanaei/3x-ui/v2/util/netnstest"
+	"github.com/mhsanaei/3x-ui/v2/web/service"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+const ownNetnsEnv = "XUI_MAIN_TEST_NETNS"
+
+// Moving the panel's port reserves it in ip_local_reserved_ports and closes
+// the connections holding it: as root the tests run in a network namespace
+// of their own.
+func TestMain(m *testing.M) {
+	if code, done := netnstest.Reexec(ownNetnsEnv); done {
+		os.Exit(code)
+	}
+	os.Exit(m.Run())
+}
+
+// portMoves skips a test that moves the panel's port where that would
+// reach the host's reservations and connections.
+func portMoves(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() == 0 && !netnstest.Own(ownNetnsEnv) {
+		t.Skip("moves the panel's port: as root, only in a network namespace of its own")
+	}
+}
 
 // panelDB writes a panel database with one inbound named remark to path.
 func panelDB(t *testing.T, path, remark string) []byte {
@@ -137,6 +163,7 @@ func TestImportRefusesDatabaseInUse(t *testing.T) {
 
 // A setting the CLI fails to apply makes it fail, so a script can tell.
 func TestSettingFailuresAreReported(t *testing.T) {
+	portMoves(t)
 	t.Setenv("XUI_DB_FOLDER", t.TempDir())
 	t.Cleanup(func() { database.CloseDB() })
 	if err := updateSetting(60000, "fardin", strings.Repeat("p", 80), "hetzner", "", false); err == nil {
@@ -153,5 +180,87 @@ func TestSettingFailuresAreReported(t *testing.T) {
 	}
 	if err := updateCert("/etc/cert.pem", ""); err == nil {
 		t.Error("a certificate without its key was accepted")
+	}
+}
+
+// "x-ui setting -port" reserves the new port and closes the outgoing
+// connections that hold it, so the restart that applies it can listen; a
+// port another program listens on is refused and the old one kept.
+func TestSettingPortFreesThePort(t *testing.T) {
+	portMoves(t)
+	if !netnstest.Own(ownNetnsEnv) {
+		t.Skip("closes connections: runs only as root, in a network namespace of its own")
+	}
+	dir := t.TempDir()
+	t.Setenv("XUI_DB_FOLDER", dir)
+	t.Cleanup(func() { database.CloseDB() })
+	free := func() int {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer l.Close()
+		return l.Addr().(*net.TCPAddr).Port
+	}
+
+	srv, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	go func() {
+		for {
+			c, err := srv.Accept()
+			if err != nil {
+				return
+			}
+			defer c.Close()
+		}
+	}()
+	port := free()
+	d := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port}}
+	c, err := d.Dial("tcp", srv.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	read := make(chan error, 1)
+	go func() {
+		_, err := c.Read(make([]byte, 1))
+		c.Close()
+		read <- err
+	}()
+
+	if err := updateSetting(port, "", "", "", "", false); err != nil {
+		t.Fatalf("port held by an outgoing connection: %v", err)
+	}
+	select {
+	case err := <-read:
+		if err == nil || !strings.Contains(err.Error(), "abort") {
+			t.Errorf("the connection saw %v, want it aborted", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("the connection on the port is still open")
+	}
+	reserved, _ := os.ReadFile("/proc/sys/net/ipv4/ip_local_reserved_ports")
+	if !strings.Contains(","+strings.TrimSpace(string(reserved))+",", ","+strconv.Itoa(port)+",") {
+		t.Errorf("reserved %q, want %d among them", reserved, port)
+	}
+	if ours, _ := os.ReadFile(filepath.Join(dir, "reserved-ports")); strings.TrimSpace(string(ours)) != strconv.Itoa(port) {
+		t.Errorf("state file %q, want %d", ours, port)
+	}
+
+	taken := free()
+	other, err := net.Listen("tcp", ":"+strconv.Itoa(taken))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if err := updateSetting(taken, "", "", "", "", false); err == nil {
+		t.Error("a port another program listens on was set")
+	}
+	var ss service.SettingService
+	if got, _ := ss.GetPort(); got != port {
+		t.Errorf("port %d after the refused move, want %d", got, port)
 	}
 }

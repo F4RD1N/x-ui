@@ -92,10 +92,22 @@ func runWebServer() {
 		case syscall.SIGHUP:
 			logger.Info("Received SIGHUP signal. Restarting servers...")
 
+			// A server moving to a port it cannot listen on would come back
+			// without it, after the restart stopped every core. The new port
+			// is got ready and checked first; when it cannot be used, nothing
+			// is restarted.
+			if err := service.CheckServerMoves(server.Address(), subServer.Address()); err != nil {
+				logger.Errorf("Not restarting the servers: %v", err)
+				continue
+			}
+
 			// --- FIX FOR TELEGRAM BOT CONFLICT (409): Stop bot before restart ---
 			service.StopBot()
 			// --
 
+			// Should the new address be lost after all, the panel comes back
+			// where it was.
+			webAddr := server.Address()
 			err := server.Stop()
 			if err != nil {
 				logger.Debug("Error stopping web server:", err)
@@ -107,7 +119,7 @@ func runWebServer() {
 
 			server = web.NewServer()
 			global.SetWebServer(server)
-			err = server.Start()
+			err = server.StartWithFallback(webAddr)
 			if err != nil {
 				log.Fatalf("Error restarting web server: %v", err)
 				return
@@ -342,6 +354,29 @@ func updateSetting(port int, username string, password string, webBasePath strin
 
 	settingService := service.SettingService{}
 	userService := service.UserService{}
+
+	// The panel could not listen on a port an inbound or another program
+	// has: it is refused, as the settings page does. A port held only by
+	// outgoing connections is reserved and freed for the restart that
+	// applies it.
+	if port > 0 || listenIP != "" {
+		newListen, newPort := listenIP, port
+		if newListen == "" {
+			newListen, _ = settingService.GetListen()
+		}
+		if newPort == 0 {
+			newPort, _ = settingService.GetPort()
+		}
+		if err := settingService.CheckWebPort(newListen, newPort); err != nil {
+			if port > 0 {
+				fmt.Println("Failed to set port:", err)
+			} else {
+				fmt.Println("Failed to set listen IP:", err)
+			}
+			port, listenIP = 0, ""
+			failed = true
+		}
+	}
 
 	if port > 0 {
 		err := settingService.SetPort(port)

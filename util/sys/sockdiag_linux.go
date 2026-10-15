@@ -31,8 +31,9 @@ const (
 	bcSGE            = 2
 	bcSLE            = 3
 	tcpEstablished   = 1
-	tcpClose         = 7  // an unconnected UDP socket
+	tcpClose         = 7  // an unconnected UDP socket, a TCP socket only bound
 	tcpListen        = 10 // a listening TCP socket
+	tcpBoundInactive = 13 // a TCP socket only bound, which a kernel from 6.7 on lists
 	maxPortRanges    = 32
 )
 
@@ -210,22 +211,241 @@ func PortListeners(port int) ([]LocalEndpoint, error) {
 	return out, nil
 }
 
+// TCPSocket is a TCP socket on a local port, as sock_diag lists it.
+type TCPSocket struct {
+	Local     LocalEndpoint
+	Listening bool
+	State     int    // the kernel's TCP state: 1 established, 6 time-wait, 10 listen...
+	Inode     uint32 // 0 for a socket no program has any more (time-wait)
+	family    uint8
+	id        [48]byte // inet_diag_sockid, which names it to SOCK_DESTROY
+}
+
+// PortTCPSockets lists the TCP sockets whose local port is port, IPv4 and
+// IPv6: listeners and connections in every state, time-wait included. A
+// socket only bound to the port is left out: to list those, a kernel from
+// 6.7 on walks every bound socket with its bucket locked and softirqs off,
+// and a listener's bucket holds all the connections it accepted, so a busy
+// inbound's new connections would stall meanwhile. An IPv6 socket on an
+// IPv4 connection shows its v4-mapped address as IPv4.
+func PortTCPSockets(port int) ([]TCPSocket, error) {
+	return portTCPSockets(port, ^uint32(0)&^(1<<tcpBoundInactive))
+}
+
+// PortTCPListeners lists the TCP listeners on port, as PortTCPSockets
+// does. The kernel reads only its table of listeners, not the connections.
+func PortTCPListeners(port int) ([]TCPSocket, error) {
+	return portTCPSockets(port, 1<<tcpListen)
+}
+
+func portTCPSockets(port int, states uint32) ([]TCPSocket, error) {
+	var out []TCPSocket
+	bc := portFilter([]int{port})
+	for _, family := range []uint8{unix.AF_INET, unix.AF_INET6} {
+		var got []TCPSocket
+		add := func(msg []byte) {
+			// inet_diag_msg: family, state, timer, retrans, id[48], expires,
+			// rqueue, wqueue, uid, inode
+			if len(msg) < 72 {
+				return
+			}
+			s := TCPSocket{
+				Local:     msgLocal(msg),
+				Listening: msg[1] == tcpListen,
+				State:     int(msg[1]),
+				Inode:     binary.NativeEndian.Uint32(msg[68:72]),
+				family:    msg[0],
+			}
+			copy(s.id[:], msg[4:52])
+			if s.Local.Port == port {
+				got = append(got, s)
+			}
+		}
+		err := dumpDiag(family, unix.IPPROTO_TCP, states, bc, add)
+		if errors.Is(err, unix.EINVAL) {
+			got = nil
+			err = dumpDiag(family, unix.IPPROTO_TCP, states, nil, add) // no filter support
+		}
+		if err != nil {
+			if family == unix.AF_INET6 {
+				continue // IPv6 may be disabled
+			}
+			return nil, err
+		}
+		out = append(out, got...)
+	}
+	return out, nil
+}
+
+// sockDestroy is SOCK_DESTROY, which closes a socket from outside its program.
+const sockDestroy = 21
+
+// DestroyTCP closes s from outside its program, as "ss -K" does: the kernel
+// aborts the connection, sends the peer a reset, and the program's next
+// call on it fails with ECONNABORTED. A socket in time-wait is dropped. It
+// needs CAP_NET_ADMIN and a kernel built with INET_DIAG_DESTROY. A socket
+// gone meanwhile is not an error: the kernel finds s by its addresses and
+// checks its cookie, so a new socket on the same addresses, a listener
+// among them, is never taken for it.
+func DestroyTCP(s TCPSocket) error {
+	fd, err := diagSocket()
+	if err != nil {
+		return err
+	}
+	defer unix.Close(fd)
+	req := make([]byte, 16+56)
+	binary.NativeEndian.PutUint32(req[0:], uint32(len(req)))
+	binary.NativeEndian.PutUint16(req[4:], sockDestroy)
+	binary.NativeEndian.PutUint16(req[6:], unix.NLM_F_REQUEST|unix.NLM_F_ACK)
+	binary.NativeEndian.PutUint32(req[8:], 1)
+	req[16] = s.family
+	req[17] = unix.IPPROTO_TCP
+	binary.NativeEndian.PutUint32(req[20:], ^uint32(0))
+	copy(req[24:], s.id[:])
+	if err := unix.Sendto(fd, req, 0, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
+		return err
+	}
+	buf := make([]byte, 4096)
+	for {
+		n, _, err := unix.Recvfrom(fd, buf, 0)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if n < 20 || binary.NativeEndian.Uint16(buf[4:]) != unix.NLMSG_ERROR {
+			return errors.New("sock_diag: unexpected answer to SOCK_DESTROY")
+		}
+		switch code := syscall.Errno(-int32(binary.NativeEndian.Uint32(buf[16:]))); code {
+		case 0, unix.ENOENT:
+			return nil
+		default:
+			return code
+		}
+	}
+}
+
+// Owner finds the program that has the socket open, by its inode in
+// /proc/*/fd: its process id and name, or 0 and "" when none has or /proc
+// cannot tell. It may read every descriptor of every process, several
+// seconds on a server with a million connections, so it is for error
+// messages.
+func (s TCPSocket) Owner() (pid int, name string) {
+	if s.Inode == 0 {
+		return 0, ""
+	}
+	want := "socket:[" + strconv.FormatUint(uint64(s.Inode), 10) + "]"
+	for _, id := range procsByFDs() {
+		dir := "/proc/" + strconv.Itoa(id)
+		if hasFD(dir+"/fd", want) {
+			comm, _ := os.ReadFile(dir + "/comm")
+			return id, strings.TrimSpace(string(comm))
+		}
+	}
+	return 0, ""
+}
+
+// procsByFDs lists the processes, those with fewer open descriptors first.
+// A socket in a server's way is mostly some small program's, and the cores
+// hold nearly every descriptor on the host: theirs are read last. A kernel
+// from 6.2 on gives the count as the size of /proc/PID/fd; an older one
+// gives 0, and the order is /proc's.
+func procsByFDs() []int {
+	entries, _ := os.ReadDir("/proc")
+	type proc struct {
+		id  int
+		fds int64
+	}
+	var procs []proc
+	for _, e := range entries {
+		id, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		p := proc{id: id}
+		if fi, err := os.Stat("/proc/" + e.Name() + "/fd"); err == nil {
+			p.fds = fi.Size()
+		}
+		procs = append(procs, p)
+	}
+	sort.SliceStable(procs, func(i, j int) bool { return procs[i].fds < procs[j].fds })
+	ids := make([]int, len(procs))
+	for i, p := range procs {
+		ids[i] = p.id
+	}
+	return ids
+}
+
+// hasFD says whether a descriptor in dir links to target. Names are read in
+// batches: a core has hundreds of thousands.
+func hasFD(dir, target string) bool {
+	f, err := os.Open(dir)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	for {
+		names, err := f.Readdirnames(4096)
+		for _, n := range names {
+			if l, err := os.Readlink(dir + "/" + n); err == nil && l == target {
+				return true
+			}
+		}
+		if err != nil {
+			return false
+		}
+	}
+}
+
 func dumpTCP(family uint8, bytecode []byte, fn func(LocalEndpoint)) error {
 	return dumpSockets(family, unix.IPPROTO_TCP, 1<<tcpEstablished, bytecode, fn)
 }
 
 func dumpSockets(family, proto uint8, states uint32, bytecode []byte, fn func(LocalEndpoint)) error {
+	return dumpDiag(family, proto, states, bytecode, func(msg []byte) {
+		if len(msg) >= 24 {
+			fn(msgLocal(msg))
+		}
+	})
+}
+
+// msgLocal reads the local address and port of an inet_diag_msg: family,
+// state, timer, retrans, then inet_diag_sockid: sport, dport (big endian),
+// src[16], ...
+func msgLocal(msg []byte) LocalEndpoint {
+	port := int(binary.BigEndian.Uint16(msg[4:6]))
+	var ip net.IP
+	if msg[0] == unix.AF_INET {
+		ip = net.IP(append([]byte(nil), msg[8:12]...))
+	} else {
+		ip = net.IP(append([]byte(nil), msg[8:24]...))
+	}
+	return LocalEndpoint{IP: normIP(ip), Port: port}
+}
+
+func diagSocket() (int, error) {
 	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, unix.NETLINK_SOCK_DIAG)
 	if err != nil {
-		return err
+		return -1, err
 	}
-	defer unix.Close(fd)
 	tv := unix.NsecToTimeval(int64(10 * time.Second))
 	_ = unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &tv)
 	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, 4<<20)
 	if err := unix.Bind(fd, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
+		unix.Close(fd)
+		return -1, err
+	}
+	return fd, nil
+}
+
+// dumpDiag calls fn with each inet_diag_msg of a sock_diag dump.
+func dumpDiag(family, proto uint8, states uint32, bytecode []byte, fn func(msg []byte)) error {
+	fd, err := diagSocket()
+	if err != nil {
 		return err
 	}
+	defer unix.Close(fd)
 
 	// nlmsghdr + inet_diag_req_v2 (+ bytecode attribute)
 	req := make([]byte, 16+56)
@@ -277,19 +497,7 @@ func dumpSockets(family, proto uint8, states uint32, bytecode []byte, fn func(Lo
 				}
 				return nil
 			}
-			msg := b[16:l]
-			// inet_diag_msg: family, state, timer, retrans, then
-			// inet_diag_sockid: sport, dport (big endian), src[16], ...
-			if len(msg) >= 24 {
-				port := int(binary.BigEndian.Uint16(msg[4:6]))
-				var ip net.IP
-				if msg[0] == unix.AF_INET {
-					ip = net.IP(append([]byte(nil), msg[8:12]...))
-				} else {
-					ip = net.IP(append([]byte(nil), msg[8:24]...))
-				}
-				fn(LocalEndpoint{IP: normIP(ip), Port: port})
-			}
+			fn(b[16:l])
 			adv := (l + 3) &^ 3
 			if adv > len(b) {
 				break

@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mhsanaei/3x-ui/v2/config"
@@ -124,6 +125,8 @@ func EmbeddedAssets() embed.FS {
 type Server struct {
 	httpServer *http.Server
 	listener   net.Listener
+	addr       string     // where listener listens, "" while it does not
+	mu         sync.Mutex // listener and addr: the listener may come later
 
 	index *controller.IndexController
 	panel *controller.XUIController
@@ -488,11 +491,28 @@ func newCron(loc *time.Location) *cron.Cron {
 	return cron.New(cron.WithLocation(loc), cron.WithSeconds(), cron.WithChain(cron.Recover(cronLogger{})))
 }
 
-func (s *Server) Start() (err error) {
-	// This is an anonymous function, no function name
+// listenRetry is how often a web server that cannot listen tries again.
+var listenRetry = 10 * time.Second
+
+// Start starts the panel's web server on the address in the settings, its
+// jobs, the cores and the Telegram bot.
+func (s *Server) Start() error {
+	return s.StartWithFallback("")
+}
+
+// StartWithFallback is Start for a server that replaces one listening on
+// fallback. When the address in the settings cannot be listened on, the
+// server comes back on fallback, where the panel was reachable. When
+// neither can be, everything else runs without the web server, which keeps
+// trying in the background: exiting would take every core down with the
+// panel, and systemd would restart it into the same failure.
+func (s *Server) StartWithFallback(fallback string) (err error) {
+	// A failure leaves nothing of this server running. It never gets to
+	// the cores, and the ones running belong to the server this one
+	// replaces: they are not its to stop.
 	defer func() {
 		if err != nil {
-			s.Stop()
+			s.stop()
 		}
 	}()
 
@@ -526,28 +546,6 @@ func (s *Server) Start() (err error) {
 	if err != nil {
 		return err
 	}
-	listenAddr := net.JoinHostPort(listen, strconv.Itoa(port))
-	listener, err := net.Listen("tcp", listenAddr)
-	if err != nil {
-		return err
-	}
-	if certFile != "" || keyFile != "" {
-		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-		if err == nil {
-			c := &tls.Config{
-				Certificates: []tls.Certificate{cert},
-			}
-			listener = network.NewAutoHttpsListener(listener)
-			listener = tls.NewListener(listener, c)
-			logger.Info("Web server running HTTPS on", listener.Addr())
-		} else {
-			logger.Error("Error loading certificates:", err)
-			logger.Info("Web server running HTTP on", listener.Addr())
-		}
-	} else {
-		logger.Info("Web server running HTTP on", listener.Addr())
-	}
-	s.listener = listener
 
 	// No ReadTimeout: it would also cut the websocket and a slow database
 	// import; the header timeout stops connections that never send a request.
@@ -555,10 +553,14 @@ func (s *Server) Start() (err error) {
 		Handler:           engine,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-
-	go func() {
-		s.httpServer.Serve(listener)
-	}()
+	addrs := []string{net.JoinHostPort(listen, strconv.Itoa(port))}
+	if fallback != "" && fallback != addrs[0] {
+		addrs = append(addrs, fallback)
+	}
+	if err := s.listen(addrs, certFile, keyFile); err != nil {
+		logger.Errorf("Web server cannot listen on %s: %v; the cores run without it, retrying every %v", addrs[0], err, listenRetry)
+		go s.listenLater(addrs, certFile, keyFile)
+	}
 
 	s.startTask()
 
@@ -571,27 +573,120 @@ func (s *Server) Start() (err error) {
 	return nil
 }
 
+// listen serves on the first of addrs that can be listened on, and returns
+// why the first one cannot when none can.
+func (s *Server) listen(addrs []string, certFile, keyFile string) error {
+	var first error
+	for i, addr := range addrs {
+		host, p, _ := net.SplitHostPort(addr)
+		port, _ := strconv.Atoi(p)
+		l, err := service.ListenServer("Web", host, port)
+		if err != nil {
+			if first == nil {
+				first = err
+			}
+			continue
+		}
+		if i > 0 {
+			logger.Errorf("Web server cannot listen on %s: %v; it stays on %s", addrs[0], first, addr)
+		}
+		s.serve(l, addr, certFile, keyFile)
+		return nil
+	}
+	return first
+}
+
+// listenLater tries the listener again every listenRetry until it listens
+// or the server stops.
+func (s *Server) listenLater(addrs []string, certFile, keyFile string) {
+	tick := time.NewTicker(listenRetry)
+	defer tick.Stop()
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-tick.C:
+		}
+		if err := s.listen(addrs, certFile, keyFile); err != nil {
+			logger.Warningf("Web server still cannot listen on %s: %v", addrs[0], err)
+			continue
+		}
+		return
+	}
+}
+
+// serve serves the panel on l, over TLS when a certificate is set.
+func (s *Server) serve(l net.Listener, addr, certFile, keyFile string) {
+	if certFile != "" || keyFile != "" {
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err == nil {
+			c := &tls.Config{
+				Certificates: []tls.Certificate{cert},
+			}
+			l = network.NewAutoHttpsListener(l)
+			l = tls.NewListener(l, c)
+			logger.Info("Web server running HTTPS on", l.Addr())
+		} else {
+			logger.Error("Error loading certificates:", err)
+			logger.Info("Web server running HTTP on", l.Addr())
+		}
+	} else {
+		logger.Info("Web server running HTTP on", l.Addr())
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ctx.Err() != nil {
+		l.Close() // stopped meanwhile
+		return
+	}
+	s.listener, s.addr = l, addr
+	service.ServerListening("Web", addr)
+	go s.httpServer.Serve(l)
+}
+
+// Address is the host:port the web server listens on, or "" while it does
+// not.
+func (s *Server) Address() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.addr
+}
+
 // Stop gracefully shuts down the web server, stops Xray, cron jobs, and Telegram bot.
 func (s *Server) Stop() error {
 	s.cancel()
 	s.xrayService.StopXray()
-	if s.cron != nil {
-		s.cron.Stop()
-	}
 	if s.tgbotService.IsRunning() {
 		s.tgbotService.Stop()
+	}
+	return s.stop()
+}
+
+// stop shuts down what the server runs itself: its jobs, websocket hub and
+// listener. The cores are left alone.
+func (s *Server) stop() error {
+	s.cancel()
+	if s.cron != nil {
+		s.cron.Stop()
 	}
 	// Gracefully stop WebSocket hub
 	if s.wsHub != nil {
 		s.wsHub.Stop()
 	}
+	s.mu.Lock()
+	l := s.listener
+	if s.addr != "" {
+		service.ServerListening("Web", "")
+	}
+	s.listener, s.addr = nil, ""
+	s.mu.Unlock()
 	var err1 error
 	var err2 error
 	if s.httpServer != nil {
 		err1 = s.httpServer.Shutdown(s.ctx)
 	}
-	if s.listener != nil {
-		err2 = s.listener.Close()
+	if l != nil {
+		err2 = l.Close()
 	}
 	return common.Combine(err1, err2)
 }

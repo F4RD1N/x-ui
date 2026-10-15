@@ -108,6 +108,30 @@ func mergeReserved(current, oldOurs, want map[int]bool) (merged, ours map[int]bo
 // syncReservedPorts makes ports the panel's reservations. It reads the
 // kernel's list every time: another program may have changed it.
 func syncReservedPorts(ports map[int]bool) {
+	updateReservedPorts(func(map[int]bool) map[int]bool { return ports })
+}
+
+// reservePorts adds ports to the panel's reservations at once and keeps
+// all it has. A server of the panel moving to a new port must not lose it
+// to an outgoing connection before the restart that applies the move, and
+// its old port is in use until then; the next sync drops what is no
+// longer wanted. A port someone else reserved stays theirs.
+func reservePorts(ports ...int) {
+	updateReservedPorts(func(ours map[int]bool) map[int]bool {
+		want := map[int]bool{}
+		for p := range ours {
+			want[p] = true
+		}
+		for _, p := range ports {
+			want[p] = true
+		}
+		return want
+	})
+}
+
+// updateReservedPorts sets the panel's reservations to want(the ones it
+// has).
+func updateReservedPorts(want func(ours map[int]bool) map[int]bool) {
 	reservedMu.Lock()
 	defer reservedMu.Unlock()
 	cur, err := os.ReadFile(reservedPortsPath)
@@ -115,7 +139,8 @@ func syncReservedPorts(ports map[int]bool) {
 		return // not Linux, or no such sysctl
 	}
 	old, _ := os.ReadFile(reservedStatePath())
-	merged, ours := mergeReserved(parsePortList(string(cur)), parsePortList(string(old)), ports)
+	oldOurs := parsePortList(string(old))
+	merged, ours := mergeReserved(parsePortList(string(cur)), oldOurs, want(oldOurs))
 	if m := formatPortList(merged); m != strings.TrimSpace(string(cur)) {
 		if err := os.WriteFile(reservedPortsPath, []byte(m+"\n"), 0o644); err != nil {
 			logger.Warning("reserve inbound ports in ip_local_reserved_ports:", err)

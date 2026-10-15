@@ -81,3 +81,39 @@ func TestSyncReservedPorts(t *testing.T) {
 		t.Fatalf("someone else's port removed: %s", got)
 	}
 }
+
+// A server's new port is reserved at once, next to everything the panel
+// has: its old port is in use until the restart. A port someone else had
+// reserved stays theirs, and the next sync drops what is no longer wanted.
+func TestReservePorts(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XUI_DB_FOLDER", dir)
+	sysctl := filepath.Join(dir, "ip_local_reserved_ports")
+	os.WriteFile(sysctl, []byte("10001-10003\n"), 0o644)
+	old := reservedPortsPath
+	reservedPortsPath = sysctl
+	defer func() { reservedPortsPath = old }()
+	read := func(path string) string {
+		b, _ := os.ReadFile(path)
+		return strings.TrimSpace(string(b))
+	}
+
+	syncReservedPorts(parsePortList("443,2026"))
+	reservePorts(60000)
+	if got := read(sysctl); got != "443,2026,10001-10003,60000" {
+		t.Fatalf("after reserving 60000: %s", got)
+	}
+	if got := read(filepath.Join(dir, "reserved-ports")); got != "443,2026,60000" {
+		t.Fatalf("state file: %s", got)
+	}
+	// 10002 was someone else's: reserving it does not make it the panel's.
+	reservePorts(10002)
+	if got := read(filepath.Join(dir, "reserved-ports")); got != "443,2026,60000" {
+		t.Fatalf("someone else's port taken over: %s", got)
+	}
+	// The restart applied the move: 2026 goes, someone else's stay.
+	syncReservedPorts(parsePortList("443,60000"))
+	if got := read(sysctl); got != "443,10001-10003,60000" {
+		t.Fatalf("after the restart: %s", got)
+	}
+}

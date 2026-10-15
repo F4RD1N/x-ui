@@ -9,18 +9,29 @@ import (
 	"testing"
 
 	"github.com/mhsanaei/3x-ui/v2/logger"
+	"github.com/mhsanaei/3x-ui/v2/util/sys"
 
 	"github.com/op/go-logging"
 )
 
 // The package logs at ERROR under test, into a folder of its own: InitLogger
-// truncates the log file, which by default is the installed panel's.
+// truncates the log file, which by default is the installed panel's. A test
+// that moves a server's port reserves it: the reservations, and the file
+// the panel keeps them in, are that folder's too.
 func TestMain(m *testing.M) {
 	if code, done := reexecInOwnNetns(); done {
 		os.Exit(code)
 	}
+	// Closing the connections on a port is for the tests' own namespace:
+	// on the host they would be another program's.
+	if os.Getenv(ownNetnsEnv) != "1" {
+		closeSocket = func(sys.TCPSocket) error { return errNotOwnNetns }
+	}
 	dir, _ := os.MkdirTemp("", "xui-service-log-")
 	os.Setenv("XUI_LOG_FOLDER", dir)
+	os.Setenv("XUI_DB_FOLDER", dir)
+	reservedPortsPath = filepath.Join(dir, "ip_local_reserved_ports")
+	os.WriteFile(reservedPortsPath, nil, 0o644)
 	logger.InitLogger(logging.ERROR)
 	code := m.Run()
 	os.RemoveAll(dir)

@@ -364,10 +364,12 @@ set_port() {
     if [[ -z "${port}" ]]; then
         LOGD "Cancelled"
         before_show_menu
-    else
-        ${xui_folder}/x-ui setting -port ${port}
+    elif ${xui_folder}/x-ui setting -port ${port}; then
         echo -e "The port is set, Please restart the panel now, and use the new port ${green}${port}${plain} to access web panel"
         confirm_restart
+    else
+        LOGE "The port was not changed."
+        before_show_menu
     fi
 }
 

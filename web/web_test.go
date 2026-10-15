@@ -21,18 +21,27 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/database"
 	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/logger"
+	"github.com/mhsanaei/3x-ui/v2/util/netnstest"
 	"github.com/mhsanaei/3x-ui/v2/web/global"
 	"github.com/mhsanaei/3x-ui/v2/web/service"
 )
 
 // The logger is a nil pointer until initialised. Its file goes to a
-// temporary folder, and nothing below CRITICAL reaches syslog.
+// temporary folder, and nothing below CRITICAL reaches syslog. A server
+// started here starts the cores, which reserve their ports in
+// ip_local_reserved_ports: as root the tests run in a network namespace of
+// their own, and the panel's files go to that folder too.
 func TestMain(m *testing.M) {
+	if code, done := netnstest.Reexec(ownNetnsEnv); done {
+		os.Exit(code)
+	}
 	dir, err := os.MkdirTemp("", "web-test-log")
 	if err != nil {
 		panic(err)
 	}
 	os.Setenv("XUI_LOG_FOLDER", dir)
+	os.Setenv("XUI_DB_FOLDER", dir)
+	os.Setenv("XUI_BIN_FOLDER", dir)
 	logger.InitLogger(logging.CRITICAL)
 	code := m.Run()
 	logger.CloseLogger()

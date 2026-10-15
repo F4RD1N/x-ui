@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"net"
 	"path/filepath"
 	"strconv"
@@ -10,6 +11,10 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/database"
 	"github.com/mhsanaei/3x-ui/v2/database/model"
 )
+
+// errNotOwnNetns is what closeSocket returns outside the tests' own network
+// namespace (see TestMain).
+var errNotOwnNetns = errors.New("closes sockets only in the tests' own network namespace")
 
 // An inbound cannot take the panel's or the subscription server's port, and
 // those servers cannot move to a port an inbound or another program holds.
@@ -173,5 +178,45 @@ func TestAddPanelPorts(t *testing.T) {
 	s.addPanelPorts(got)
 	if !got[2096] {
 		t.Fatalf("sub on: %v", got)
+	}
+	// Moved to 60001 in the settings, the panel still listens on 60000
+	// until the restart: both stay reserved, and 60000 goes once the
+	// server listening there stopped.
+	if err := s.settingService.SetPort(60001); err != nil {
+		t.Fatal(err)
+	}
+	ServerListening("Web", ":60000")
+	defer ServerListening("Web", "")
+	got = map[int]bool{}
+	s.addPanelPorts(got)
+	if !got[60000] || !got[60001] {
+		t.Fatalf("port saved, not applied yet: %v", got)
+	}
+	ServerListening("Web", "")
+	got = map[int]bool{}
+	s.addPanelPorts(got)
+	if got[60000] || !got[60001] {
+		t.Fatalf("after the restart: %v", got)
+	}
+}
+
+func TestSharesAddress(t *testing.T) {
+	for _, c := range []struct {
+		listen, ip string
+		want       bool
+	}{
+		{"", "192.0.2.1", true},
+		{"0.0.0.0", "2001:db8::1", true},
+		{"::", "192.0.2.1", true},
+		{"192.0.2.1", "0.0.0.0", true}, // a listener on all addresses
+		{"192.0.2.1", "192.0.2.1", true},
+		{"::ffff:192.0.2.1", "192.0.2.1", true},
+		{"192.0.2.1", "192.0.2.2", false},
+		{"2001:db8::1", "2001:db8::1", true},
+		{"2001:db8::1", "192.0.2.1", false},
+	} {
+		if got := sharesAddress(c.listen, c.ip); got != c.want {
+			t.Errorf("sharesAddress(%q, %q) = %v", c.listen, c.ip, got)
+		}
 	}
 }

@@ -42,6 +42,7 @@ func embeddedTemplates(funcMap template.FuncMap) (*template.Template, error) {
 type Server struct {
 	httpServer *http.Server
 	listener   net.Listener
+	addr       string // where listener listens, "" while it does not
 
 	sub            *SUBController
 	settingService service.SettingService
@@ -359,7 +360,7 @@ func (s *Server) Start() (err error) {
 	}
 
 	listenAddr := net.JoinHostPort(listen, strconv.Itoa(port))
-	listener, err := net.Listen("tcp", listenAddr)
+	listener, err := service.ListenServer("Sub", listen, port)
 	if err != nil {
 		return err
 	}
@@ -381,6 +382,8 @@ func (s *Server) Start() (err error) {
 		logger.Info("Sub server running HTTP on", listener.Addr())
 	}
 	s.listener = listener
+	s.addr = listenAddr
+	service.ServerListening("Sub", listenAddr)
 
 	// Its routes never read a body; the header timeout stops connections
 	// that never send a request.
@@ -399,6 +402,10 @@ func (s *Server) Start() (err error) {
 // Stop gracefully shuts down the subscription server and closes the listener.
 func (s *Server) Stop() error {
 	s.cancel()
+	if s.addr != "" {
+		service.ServerListening("Sub", "")
+		s.addr = ""
+	}
 
 	var err1 error
 	var err2 error
@@ -409,6 +416,11 @@ func (s *Server) Stop() error {
 		err2 = s.listener.Close()
 	}
 	return common.Combine(err1, err2)
+}
+
+// Address is the host:port the server listens on, or "" while it does not.
+func (s *Server) Address() string {
+	return s.addr
 }
 
 // GetCtx returns the server's context for cancellation and deadline management.
