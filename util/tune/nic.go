@@ -65,6 +65,7 @@ type nicItem struct {
 	Key      string      `json:"key"`
 	Queues   queuePlan   `json:"queues"`
 	Table    string      `json:"rss_table,omitempty"`
+	RSS      *rssPlan    `json:"rss_weights,omitempty"`
 	Hash     []*itemPlan `json:"hash,omitempty"`
 	HashNote string      `json:"hash_note,omitempty"`
 	IRQs     []*irqPlan  `json:"irqs,omitempty"`
@@ -82,6 +83,7 @@ type nicItem struct {
 	keep    string
 	example string // a foreign interrupt, for the note
 	rss     []int
+	ours    bool      // the live RSS table is the weighted one x-ui wrote last
 	ns      *NICState // its state entry (nil: none, or another device's)
 }
 
@@ -280,12 +282,11 @@ func (e *Env) planNICs(f *Facts, st *State, o nicOpts) *nicPlan {
 		if ns != nil && ns.Driver != n.Driver {
 			ns = nil // another device at the same address
 		}
-		it.ns = ns
+		it.ns, it.ours = ns, ourTable(n, ns)
 		it.Queues = e.planQueues(f, t, np.Eligible, n, ns, o.Retry, admin)
-		it.Table = tableText(n)
 		e.planHash(it, ns)
 		e.planQdisc(it, st, fqOn, fqLater, fqWhy)
-		it.rss = rssOrder(n)
+		it.rss = rssOrder(n, it.ours)
 		np.NICs = append(np.NICs, it)
 	}
 
@@ -351,6 +352,7 @@ func (e *Env) planNICs(f *Facts, st *State, o nicOpts) *nicPlan {
 		e.planIRQs(np, it)
 		e.planRPS(np, it, it.ns)
 	}
+	np.planTables()
 	np.Unit = e.nicUnitFor(np, st)
 	return np
 }
@@ -381,8 +383,11 @@ func (e *Env) foreignIRQ(n *hw.NIC, ns *NICState, t *hw.Topology) *hw.QueueIRQ {
 }
 
 // rssOrder is the queues RSS hashes to, by their table entries (most first),
-// then index; all queues when the table is unreadable.
-func rssOrder(n *hw.NIC) []int {
+// then index; all queues when the table is unreadable. An even table goes by
+// index, as the kernel's default does, and so does x-ui's weighted table
+// (ours), which was made from an even one: its weights follow the placement,
+// which must not follow them back.
+func rssOrder(n *hw.NIC, ours bool) []int {
 	use := n.RSSUse()
 	if use == nil {
 		var all []int
@@ -395,27 +400,14 @@ func rssOrder(n *hw.NIC) []int {
 	for q := range use {
 		qs = append(qs, q)
 	}
+	even := ours || hw.EvenOver(n.Indir, len(use))
 	sort.Slice(qs, func(i, j int) bool {
-		if use[qs[i]] != use[qs[j]] {
+		if !even && use[qs[i]] != use[qs[j]] {
 			return use[qs[i]] > use[qs[j]]
 		}
 		return qs[i] < qs[j]
 	})
 	return qs
-}
-
-func tableText(n *hw.NIC) string {
-	if n.Indir == nil {
-		return "not readable"
-	}
-	use := n.RSSUse()
-	k := len(use)
-	switch {
-	case hw.EvenOver(n.Indir, k):
-		return fmt.Sprintf("%d entries, even over queues %s: kept", len(n.Indir), hw.CPUSet(sortedKeys(use)).List())
-	default:
-		return fmt.Sprintf("%d entries over %d queues, uneven (set by someone): kept", len(n.Indir), k)
-	}
 }
 
 func sortedKeys(m map[int]int) []int {
@@ -499,7 +491,7 @@ func (e *Env) planQueues(f *Facts, t *hw.Topology, eligible hw.CPUSet, n *hw.NIC
 	rssNote := ""
 	if q.RSSUse > 0 && q.RSSUse < int(q.Current) {
 		why := "the card's limit"
-		if !hw.DefaultForm(n.Indir, q.RSSUse) {
+		if !hw.DefaultForm(n.Indir, q.RSSUse) && (!ourTable(n, ns) || ns.Table.Rings == q.RSSUse) {
 			why = "its table"
 		}
 		rssNote = fmt.Sprintf("RSS uses %d: %s", q.RSSUse, why)

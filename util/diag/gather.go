@@ -121,10 +121,11 @@ type NICReport struct {
 
 // RSSReport is the RSS indirection table.
 type RSSReport struct {
-	Size   int       `json:"size"`
-	Queues int       `json:"queues"` // distinct queues it uses
-	Used   hw.CPUSet `json:"used"`   // the queues, as a list ("0-15")
-	Even   bool      `json:"even"`   // spread evenly over queues 0..Queues-1
+	Size     int       `json:"size"`
+	Queues   int       `json:"queues"`             // distinct queues it uses
+	Used     hw.CPUSet `json:"used"`               // the queues, as a list ("0-15")
+	Even     bool      `json:"even"`               // spread evenly over queues 0..Queues-1
+	Weighted bool      `json:"weighted,omitempty"` // x-ui tune's, weighted for the instance split
 }
 
 // IRQReport is one queue interrupt.
@@ -237,9 +238,10 @@ type ctx struct {
 	r       *Report
 	topo    *hw.Topology
 	allowed hw.CPUSet
-	owners  map[int][]string // CPU -> instances pinned there
-	tuned   map[string]bool  // NICs (PCI or name) "x-ui tune" manages
-	disable bool             // tuning turned off
+	owners  map[int][]string  // CPU -> instances pinned there
+	tuned   map[string]bool   // NICs (PCI or name) "x-ui tune" manages
+	tables  map[string]string // NICs -> the weighted RSS table "x-ui tune" wrote (hw.TableSum)
+	disable bool              // tuning turned off
 	irqb    IRQBalance
 	udp     *sys.UDPPortUse
 	a, b    *snap
@@ -248,7 +250,7 @@ type ctx struct {
 
 // gather reads everything but the sample. scan: count sockets.
 func (e *env) gather(version string, scan bool) *ctx {
-	c := &ctx{e: e, owners: map[int][]string{}, tuned: map[string]bool{}}
+	c := &ctx{e: e, owners: map[int][]string{}, tuned: map[string]bool{}, tables: map[string]string{}}
 	r := &Report{Time: e.now().UTC().Truncate(time.Second), Version: version, Root: e.root,
 		NICs: []*NICReport{}, Instances: []*InstanceReport{}, Warnings: []string{}}
 	c.r = r
@@ -621,15 +623,22 @@ func (c *ctx) readTuneState() {
 		return
 	}
 	var st struct {
-		Disabled bool                       `json:"disabled"`
-		NICs     map[string]json.RawMessage `json:"nics"`
+		Disabled bool `json:"disabled"`
+		NICs     map[string]struct {
+			Table *struct {
+				Written string `json:"written"`
+			} `json:"rss_table"`
+		} `json:"nics"`
 	}
 	if json.Unmarshal([]byte(data), &st) != nil {
 		return
 	}
 	c.disable = st.Disabled
-	for k := range st.NICs {
+	for k, ns := range st.NICs {
 		c.tuned[k] = true
+		if ns.Table != nil {
+			c.tables[k] = ns.Table.Written
+		}
 	}
 }
 
@@ -717,6 +726,7 @@ func (c *ctx) nicReport(n *hw.NIC, policy string) *NICReport {
 		rr.Used = hw.NewCPUSet(rr.Used...)
 		rr.Queues = len(rr.Used)
 		rr.Even = rr.Queues > 0 && rr.Used[rr.Queues-1] == rr.Queues-1 && hw.EvenOver(n.Indir, rr.Queues)
+		rr.Weighted = !rr.Even && c.tables[n.Key()] != "" && c.tables[n.Key()] == hw.TableSum(n.Indir)
 		nr.RSS = rr
 	} else {
 		for q := 0; q < max(nr.Queues, 1); q++ {

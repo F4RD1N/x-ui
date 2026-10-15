@@ -289,7 +289,9 @@ func TestNICProduction(t *testing.T) {
 }
 
 // Production with ten instances of 5 CPUs and 6 free: one RSS queue per
-// instance, 6 on the free CPUs; every CPU one queue; XPS one to one.
+// instance, 6 on the free CPUs; every CPU one queue; XPS one to one; the
+// RSS table stays even (every instance's queue weighs 5 CPUs). The auto
+// split (6 CPUs over two queues, 5 over one) gets it weighted.
 func TestNICProductionSplit(t *testing.T) {
 	e, b := onHW(t, hwtest.Production())
 	instances(t, b, "0-55", prodFixed...)
@@ -329,6 +331,9 @@ func TestNICProductionSplit(t *testing.T) {
 			t.Errorf("status lacks %q:\n%s", w, got)
 		}
 	}
+	if c := calls(b, "SetIndir"); len(c) != 0 || b.Eth.Devs["eno1"].Configured {
+		t.Errorf("table written: %v", c)
+	}
 	sum := e.summary()
 	for _, w := range []string{"NIC eno1: 56 queues, kept (RSS uses 16)", "UDP hashing eno1: IPs and ports (was IPs only)",
 		"Interrupts eno1: one queue per CPU; RSS 1 per instance, 6 on free CPUs", "XPS eno1: each CPU sends on its own queue",
@@ -350,18 +355,32 @@ func TestNICProductionSplit(t *testing.T) {
 		t.Errorf("auto split: RSS queues on %v\n          want %v (%v)", got, want, r.Changed)
 	}
 	np := nicPlanOf(t, e)
+	entries := map[string]int{}
+	for q, c := range tableUse(b.Eth.Devs["eno1"].Table) {
+		entries[np.place.Owner["eno1"][q]] += c
+	}
 	for i, set := range prodAuto {
-		c := np.place.Units["eno1"][fmt.Sprintf("xray-%d", i+1)]
-		wantRSS := 1
+		name := fmt.Sprintf("xray-%d", i+1)
+		c := np.place.Units["eno1"][name]
+		wantRSS, wantEntries := 1, 11 // 128 * 5/56
 		if strings.Count(set, ",") == 5 {
-			wantRSS = 2
+			wantRSS, wantEntries = 2, 14 // 2 * 128 * 3/56
 		}
-		if c[0] != wantRSS {
-			t.Errorf("xray-%d: %d RSS queues", i+1, c[0])
+		if c[0] != wantRSS || entries[name] != wantEntries {
+			t.Errorf("%s: %d RSS queues, %d table entries", name, c[0], entries[name])
 		}
 	}
 	if d, _ := e.Status(false); len(d) != 0 {
 		t.Errorf("drift: %v", d)
+	}
+
+	// Back to the fixed split: the table is even again (written out: the
+	// card refuses a default over its 56 queues).
+	instances(t, b, "0-55", prodFixed...)
+	b.Eth.Calls = nil
+	if r, err := e.RunNIC(NICOptions{}); err != nil || !slices.Contains(r.Changed, "eno1: RSS table even again (the instances' RSS queues weigh the same)") ||
+		!hw.DefaultForm(b.Eth.Devs["eno1"].Table, 16) || !slices.Equal(calls(b, "SetIndir"), []string{"SetIndir eno1 128"}) {
+		t.Errorf("fixed split again: %v %v %v", r.Changed, b.Eth.Calls, err)
 	}
 }
 
@@ -939,7 +958,7 @@ func TestIRQBalanceAdminArgsLater(t *testing.T) {
 	m.IRQBalance = "running"
 	e, b := onHW(t, m)
 	irqbalanceOn(t, b, "debian12")
-	instances(t, b, "0-55", prodFixed...)
+	instances(t, b, "0-55", prodAuto...)
 	fakeCommands(e, nil, "systemctl daemon-reload", "systemctl try-restart")
 	mustApply(t, e, ApplyOptions{Auto: true, Host: true})
 	irqbalanceCmd(b, "--policyscript="+IRQBalanceScript)
@@ -947,10 +966,11 @@ func TestIRQBalanceAdminArgsLater(t *testing.T) {
 	b.Settle()
 
 	b.WriteFile("/etc/default/irqbalance", "IRQBALANCE_ARGS=\"--banirq=45\"\n")
-	instances(t, b, "0-55", prodAuto...)
+	instances(t, b, "0-55", prodFixed...)
 	before := irqSnapshot(t, b)
 	e.Ran = nil
-	if r, _ := e.RunNIC(NICOptions{}); len(r.Changed) != 0 {
+	if r, _ := e.RunNIC(NICOptions{}); !slices.Equal(r.Changed, []string{"eno1: RSS table even again (x-ui does not place its interrupts)"}) ||
+		!hw.DefaultForm(b.Eth.Devs["eno1"].Table, 16) {
 		t.Errorf("tune nic placed them: %v", r.Changed)
 	}
 	// Only reads: tc's qdisc listing.
@@ -1867,7 +1887,8 @@ func TestNICStateCompat(t *testing.T) {
 	st.NICs = map[string]*NICState{"0000:82:00.0": {Name: "eno1", Driver: "ixgbe",
 		Channels: &ChanState{Orig: &hw.Channels{MaxCombined: 63, Combined: 16}, Want: 28, RSSCap: 20, Failed: "x", Attempt: &ChanAttempt{At: "t", From: 16, To: 28}},
 		Hash:     map[string]*KeyState{"udp4": {Orig: "sd", Written: "sdfn"}}, IRQ: map[string]*IRQState{"q0": {IRQ: 101, Orig: "1-55", Written: "1"}},
-		XPS: map[string]*KeyState{"tx-0": {Orig: "-", Written: "1"}}, RPS: map[string]*KeyState{"rx-0/rps_cpus": {Orig: "-", Written: "0-1"}}, Managed: true, TakeIRQs: true,
+		XPS: map[string]*KeyState{"tx-0": {Orig: "-", Written: "1"}}, RPS: map[string]*KeyState{"rx-0/rps_cpus": {Orig: "-", Written: "0-1"}},
+		Table: &TableState{Written: "128:0123456789abcdef", Rings: 16}, Managed: true, TakeIRQs: true,
 		Qdisc: &QdiscState{Orig: "mq, pfifo_fast on 16 queues", Kind: "mq", Handle: "8001:", Boot: "b"}}}
 	st.IRQBalancePolicy = true
 	if err := e.saveState(st, nil); err != nil {
@@ -1881,7 +1902,7 @@ func TestNICStateCompat(t *testing.T) {
 	json.Unmarshal([]byte(e.readTrim(StateFile)), &raw)
 	nic := raw["nics"].(map[string]any)["0000:82:00.0"].(map[string]any)
 	qdisc, _ := nic["qdisc"].(map[string]any)
-	if _, ok := nic["kernel_managed_irqs"]; !ok || qdisc["boot_id"] != "b" {
+	if nic["kernel_managed_irqs"] == nil || nic["rss_table"] == nil || qdisc["boot_id"] != "b" {
 		t.Errorf("json names: %s", e.readTrim(StateFile))
 	}
 	// Revert of an older state still undoes its irqbalance install.

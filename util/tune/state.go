@@ -63,10 +63,11 @@ type NICState struct {
 	Name     string               `json:"name"`
 	Driver   string               `json:"driver"` // a different driver at the same address is a new NIC
 	Channels *ChanState           `json:"channels,omitempty"`
-	Hash     map[string]*KeyState `json:"hash,omitempty"` // "udp4", "udp6": letters ("sd")
-	IRQ      map[string]*IRQState `json:"irq,omitempty"`  // "q3" (txrx), "q3rx", "q3tx": CPU lists
-	XPS      map[string]*KeyState `json:"xps,omitempty"`  // "tx-3": CPU lists
-	RPS      map[string]*KeyState `json:"rps,omitempty"`  // "rx-0/rps_cpus" (CPU list), "rx-0/rps_flow_cnt"
+	Hash     map[string]*KeyState `json:"hash,omitempty"`      // "udp4", "udp6": letters ("sd")
+	IRQ      map[string]*IRQState `json:"irq,omitempty"`       // "q3" (txrx), "q3rx", "q3tx": CPU lists
+	XPS      map[string]*KeyState `json:"xps,omitempty"`       // "tx-3": CPU lists
+	RPS      map[string]*KeyState `json:"rps,omitempty"`       // "rx-0/rps_cpus" (CPU list), "rx-0/rps_flow_cnt"
+	Table    *TableState          `json:"rss_table,omitempty"` // x-ui's weighted RSS table
 	Managed  bool                 `json:"kernel_managed_irqs,omitempty"`
 	TakeIRQs bool                 `json:"take_irqs,omitempty"`
 	Qdisc    *QdiscState          `json:"qdisc,omitempty"`
@@ -100,6 +101,13 @@ type ChanAttempt struct {
 	To   uint32 `json:"to"`
 }
 
+// TableState is x-ui's weighted RSS table, by its hw.TableSum.
+type TableState struct {
+	Written string `json:"written,omitempty"` // the table x-ui last wrote
+	Pending string `json:"pending,omitempty"` // a table x-ui is writing (saved before it does)
+	Rings   int    `json:"rings,omitempty"`   // the NIC's RX rings when x-ui weighted it
+}
+
 // IRQState is what x-ui did to one queue interrupt's CPUs.
 type IRQState struct {
 	IRQ     int    `json:"irq"`
@@ -125,7 +133,46 @@ func (e *Env) loadState() (*State, bool, error) {
 	if s.Keys == nil {
 		s.Keys = map[string]*KeyState{}
 	}
+	e.loadTables(s)
 	return s, true, nil
+}
+
+// x-ui's weighted RSS tables are kept in TablesFile as well: an x-ui from
+// before them rewrites the state without them (and places the interrupts by
+// the weights), and once this one is back its tables must still be its own,
+// to be re-placed, re-weighted or made even by revert.
+func (e *Env) loadTables(s *State) {
+	data, err := e.read(TablesFile)
+	if err != nil {
+		return
+	}
+	var tables map[string]TableState
+	if json.Unmarshal([]byte(data), &tables) != nil {
+		return
+	}
+	for k, ts := range tables {
+		if ns := s.NICs[k]; ns != nil && ns.Table == nil && ts.Written != "" {
+			ns.Table = &TableState{Written: ts.Written, Rings: ts.Rings}
+		}
+	}
+}
+
+// saveTables writes TablesFile from the state, or removes it when x-ui has
+// no weighted table.
+func (e *Env) saveTables(s *State) error {
+	tables := map[string]TableState{}
+	for k, ns := range s.NICs {
+		if ns.Table != nil && ns.Table.Written != "" {
+			tables[k] = TableState{Written: ns.Table.Written, Rings: ns.Table.Rings}
+		}
+	}
+	if len(tables) == 0 {
+		_, err := e.remove(TablesFile)
+		return err
+	}
+	data, _ := json.MarshalIndent(tables, "", "  ")
+	_, err := e.writeFile(TablesFile, append(data, '\n'), 0o600)
+	return err
 }
 
 // saveState writes the state when anything but its time changed.
@@ -139,8 +186,10 @@ func (e *Env) saveState(s *State, old []byte) error {
 	}
 	s.Time = time.Now().UTC().Format(time.RFC3339)
 	data, _ := json.MarshalIndent(s, "", "  ")
-	_, err := e.writeFile(StateFile, append(data, '\n'), 0o600)
-	return err
+	if _, err := e.writeFile(StateFile, append(data, '\n'), 0o600); err != nil {
+		return err
+	}
+	return e.saveTables(s)
 }
 
 // stateSnapshot is the state without its time, to tell whether it changed.

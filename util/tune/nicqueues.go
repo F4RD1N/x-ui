@@ -288,14 +288,17 @@ func (e *Env) raise(st *State, it *nicItem, to uint32, r *Result) raiseResult {
 	cs.Want, cs.Failed = to, ""
 	r.change("%s: queues %d -> %d", n.Name, from, to)
 
-	// RSS: a table still in the old default form is reset to the driver's
-	// default over the new queues (size 0, which also clears "configured").
+	// RSS: a table still in the old default form, or x-ui's weighted one,
+	// is reset to the driver's default over the new queues (size 0, which
+	// also clears "configured"); the weights follow the new placement.
 	t, err := e.eth().Indir(n.Name)
 	if err != nil || len(t) == 0 {
 		return raised
 	}
-	if hw.DefaultForm(t, int(from)) {
+	ns := st.NICs[it.Key]
+	if hw.DefaultForm(t, int(from)) || (ns.Table != nil && hw.TableSum(t) == ns.Table.Written) {
 		if e.eth().SetIndir(n.Name, nil) == nil {
+			ns.Table = nil
 			if t2, err := e.eth().Indir(n.Name); err == nil && len(t2) > 0 {
 				t = t2
 			}
@@ -354,6 +357,18 @@ func (e *Env) raisePending(st *State, np *nicPlan, boot bool, deadline time.Time
 		if !deadline.IsZero() && e.clock().Now().Add(e.raiseReserve(it.NIC)).After(deadline) {
 			r.problem("%s: queues not raised: out of time", it.NIC.Name)
 			return any
+		}
+		// x-ui's weighted RSS table is made even first: a driver may refuse
+		// a queue change while a table of the user's is set (bnxt_en when
+		// the change resizes it), and raise's look at the new queues needs
+		// the default. The caller weighs it again for the new queues.
+		if ourTable(it.NIC, ns) {
+			if err := e.evenTable(it.NIC, ns.Table); err != nil {
+				r.problem("%s: RSS table not made even before the queue raise: %s", it.NIC.Name, ethNote(err))
+			} else {
+				ns.Table = nil
+				any = true
+			}
 		}
 		res := e.raise(st, it, to, r)
 		any = any || res != skipped

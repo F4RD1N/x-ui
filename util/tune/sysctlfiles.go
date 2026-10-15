@@ -28,6 +28,7 @@ const (
 	OpenRCConfFile   = "/etc/conf.d/x-ui-tune"
 	StateDir         = "/var/lib/x-ui/tune"
 	StateFile        = StateDir + "/state.json"
+	TablesFile       = StateDir + "/rss-tables.json"
 	BackupDir        = StateDir + "/backup"
 	SwapFile         = "/var/lib/x-ui/swapfile"
 	NICUnitFile      = "/etc/systemd/system/x-ui-nic.service"

@@ -20,6 +20,7 @@ type FakeDev struct {
 	RSSCap     int // queues the table can address; 0: no limit
 	Table      []uint32
 	Configured bool // the table was set explicitly (not the default)
+	TableLock  bool // a queue change fails (EINVAL) while Configured, as bnxt_en's does when it resizes the table
 	Hash       map[string]uint64
 	HashNone   bool // FlowHash answers 0 (no fields) for a flow not in Hash: virtio_net without RSS
 	Features   map[string]bool
@@ -117,6 +118,9 @@ func (f *FakeEthtool) SetChannels(dev string, c hw.Channels) error {
 	}
 	if c.Rx == cur.Rx && c.Tx == cur.Tx && c.Other == cur.Other && c.Combined == cur.Combined {
 		return nil
+	}
+	if d.TableLock && d.Configured {
+		return invalid("SetChannels", dev)
 	}
 	d.Channels.Rx, d.Channels.Tx, d.Channels.Other, d.Channels.Combined = c.Rx, c.Tx, c.Other, c.Combined
 

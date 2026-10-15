@@ -103,9 +103,17 @@ Every install and update also tunes the server for x-ui (`x-ui tune`):
 The NIC's interrupts are placed by the xray instances' CPU split: the queues
 RSS spreads by hash go one per physical core, NIC-local cores first, shared
 out so that no instance carries more than its share (free CPUs first), and
-each CPU sends (XPS) on the queue whose interrupt is on its own core. The
-panel re-places them whenever the split changes. On ixgbe, igb and igc, UDP
-is hashed on ports as well as addresses (their default is addresses only).
+each CPU sends (XPS) on the queue whose interrupt is on its own core. Where
+the queues do not divide evenly (some instances hold one more), the RSS table
+is weighted so that each instance's share of the packets follows its CPUs, and
+the free CPUs' queues keep an even share (on ixgbe, igb, igc, i40e, ice and
+mlx5, which change it without a reset; a table someone else set is kept, and
+revert makes x-ui's even again). The panel re-places the interrupts and
+re-weighs the table whenever the split changes. Before going back to an x-ui
+without weighted tables, make them even (`ethtool -X <nic> equal <queues>`,
+the RSS queues): an older x-ui places the interrupts by the table's weights.
+On ixgbe, igb and igc, UDP is hashed on ports as well as addresses (their
+default is addresses only).
 A single-queue NIC (a typical VPS) gets RPS and RFS instead. An uplink that
 came up before fq was the default qdisc (at boot, before the sysctls) keeps
 the kernel's default of then, pfifo_fast or fq_codel: it gets fq (mq with fq

@@ -31,6 +31,7 @@ type Placement struct {
 	Owner map[string]map[int]string    // nic -> queue -> unit ("" for free CPUs)
 	XPS   map[string]map[int]CPUSet    // nic -> tx queue -> CPUs (no entry: no XPS for the NIC)
 	Units map[string]map[string][2]int // nic -> unit -> {RSS queues, all queues} on its CPUs
+	CPUs  map[string]int               // unit -> its eligible CPUs ("" the free ones)
 	Split bool                         // the instances were the units (else one unit of all eligible CPUs)
 }
 
@@ -239,7 +240,7 @@ type pqueue struct {
 // node; outside the first case the least used of them.
 func PlaceQueues(t *Topology, eligible CPUSet, units []Unit, nics []PlaceNIC) *Placement {
 	pl := &Placement{CPU: map[string]map[int]int{}, Owner: map[string]map[int]string{},
-		XPS: map[string]map[int]CPUSet{}, Units: map[string]map[string][2]int{}}
+		XPS: map[string]map[int]CPUSet{}, Units: map[string]map[string][2]int{}, CPUs: map[string]int{}}
 	p := &placer{t: t, unitOf: map[int]*punit{}, cpuQ: map[int]int{}, coreQ: map[int]int{}}
 
 	var us []*punit
@@ -272,6 +273,7 @@ func PlaceQueues(t *Topology, eligible CPUSet, units []Unit, nics []PlaceNIC) *P
 		for _, c := range u.cpus {
 			p.unitOf[c] = u
 		}
+		pl.CPUs[u.name] = len(u.cpus)
 	}
 	p.units = us
 	owner := func(cpu int) string {

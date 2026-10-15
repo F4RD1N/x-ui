@@ -183,7 +183,10 @@ func (c *ctx) renderNIC(p pr, nr *NICReport) {
 	p.kv("queues", q)
 	if rr := nr.RSS; rr != nil {
 		form := "even over queues " + rr.Used.List()
-		if !rr.Even {
+		switch {
+		case rr.Weighted:
+			form = "weighted by x-ui tune for the instance split: queues " + rr.Used.List()
+		case !rr.Even:
 			form = "custom: queues " + rr.Used.List() + " (an admin's table)"
 		}
 		p.kv("RSS table", fmt.Sprintf("%d entries, %s", rr.Size, form))

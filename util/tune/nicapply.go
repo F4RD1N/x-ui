@@ -110,8 +110,8 @@ func (e *Env) endAttempts(st *State, r *Result) {
 // applyNICKernel writes the planned kernel state of the NICs that have a
 // state entry (of the same driver: another card at that address is not
 // x-ui's until an apply makes its entry): UDP hashing, interrupt CPUs, XPS,
-// RPS, the root qdisc. A NIC whose interrupts turn out to be kernel-managed
-// is planned again with them kept.
+// RPS, the weighted RSS table, the root qdisc. A NIC whose interrupts turn
+// out to be kernel-managed is planned again with them kept.
 func (e *Env) applyNICKernel(f *Facts, st *State, np *nicPlan, no nicOpts, r *Result) *nicPlan {
 	saved := false
 	defer func() {
@@ -148,6 +148,7 @@ func (e *Env) applyNICKernel(f *Facts, st *State, np *nicPlan, no nicOpts, r *Re
 		for _, it := range np.NICs {
 			if ns := it.state(st); ns != nil {
 				e.writeQueueFiles(f, np, it, ns, r)
+				e.writeTable(it, ns, r)
 				e.writeQdisc(it, ns, r)
 			}
 		}
@@ -359,6 +360,13 @@ func markPending(st *State, np *nicPlan) bool {
 		ns.Hash = keys(ns.Hash, it.Hash)
 		ns.XPS = keys(ns.XPS, it.XPS)
 		ns.RPS = keys(ns.RPS, it.RPS)
+		if rp := it.RSS; rp != nil && rp.Write == "weighted" {
+			if ns.Table == nil {
+				ns.Table = &TableState{}
+			}
+			ns.Table.Pending, ns.Table.Rings = hw.TableSum(rp.table), it.NIC.RxRings
+			marked = true
+		}
 		for _, ip := range it.IRQs {
 			if ip.Want == "" {
 				continue
@@ -410,6 +418,12 @@ func dropPending(st *State) {
 				if is.Written == "" {
 					delete(ns.IRQ, k)
 				}
+			}
+		}
+		if ks := ns.Table; ks != nil && ks.Pending != "" {
+			ks.Pending = ""
+			if ks.Written == "" {
+				ns.Table = nil
 			}
 		}
 		if qs := ns.Qdisc; qs == nil || !qs.ran {
@@ -478,6 +492,15 @@ func (e *Env) settlePending(st *State) {
 					ks.Written = ks.Pending
 				}
 				unmark(g.m, k)
+			}
+		}
+		if ks := ns.Table; ks != nil && ks.Pending != "" {
+			if t, err := e.eth().Indir(name); name != "" && err == nil && hw.TableSum(t) == ks.Pending {
+				ks.Written = ks.Pending
+			}
+			ks.Pending = ""
+			if ks.Written == "" {
+				ns.Table = nil
 			}
 		}
 		e.settleQdisc(ns, name)
@@ -570,8 +593,8 @@ func (e *Env) nicNameOf(key string) string {
 }
 
 // revertNICs puts back every value x-ui changed that is still what x-ui
-// wrote. A raised queue count stays until the next reboot: changing it
-// would reset the link.
+// wrote (its weighted RSS table is made even). A raised queue count stays
+// until the next reboot: changing it would reset the link.
 func (e *Env) revertNICs(f *Facts, st *State, dry bool, r *Result) {
 	if f.Container() || len(st.NICs) == 0 {
 		return
@@ -686,6 +709,25 @@ func (e *Env) revertNICs(f *Facts, st *State, dry bool, r *Result) {
 				}
 				return e.eth().SetFlowHash(name, fl, want)
 			})
+		}
+		if ks := ns.Table; ks != nil && ks.Written != "" && n.Indir != nil {
+			use := n.RSSUse()
+			even := fmt.Sprintf("even over queues %s", hw.CPUSet(sortedKeys(use)).List())
+			switch {
+			case hw.TableSum(n.Indir) != ks.Written && hw.EvenOver(n.Indir, len(use)):
+				// Even again already (a driver resets its table when the
+				// card is reinitialised): nothing to undo.
+			case hw.TableSum(n.Indir) != ks.Written:
+				r.problem("%s RSS table left as it is: changed since x-ui weighted it", name)
+			case dry:
+				r.change("would make %s's weighted RSS table %s", name, even)
+			default:
+				if err := e.evenTable(n, ks); err != nil {
+					r.problem("%s RSS table: %s", name, ethNote(err))
+				} else {
+					r.change("%s RSS table: weighted -> %s", name, even)
+				}
+			}
 		}
 		for _, g := range sortedStrings(counted) {
 			r.change("%s: %d %s", name, counted[g], g)

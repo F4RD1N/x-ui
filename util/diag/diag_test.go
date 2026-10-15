@@ -411,3 +411,30 @@ func TestPresets(t *testing.T) {
 		t.Errorf("tunnel summary:\n%s", out)
 	}
 }
+
+// The RSS table x-ui tune weighted for the instance split is shown as
+// x-ui's (its fingerprint in the tuning state), not as an admin's.
+func TestWeightedTable(t *testing.T) {
+	table := hw.DefaultTable(128, 16)
+	for i := 0; i < 6; i++ {
+		table[16*i] = 15
+	}
+	for _, c := range []struct {
+		state, want string
+		weighted    bool
+	}{
+		{`{"name": "eno1", "driver": "ixgbe", "rss_table": {"written": "` + hw.TableSum(table) + `"}}`, "RSS table   128 entries, weighted by x-ui tune for the instance split: queues 0-15\n", true},
+		{`{"name": "eno1", "driver": "ixgbe", "rss_table": {"written": "128:0000000000000000"}}`, "RSS table   128 entries, custom: queues 0-15 (an admin's table)\n", false},
+		{`{"name": "eno1", "driver": "ixgbe"}`, "RSS table   128 entries, custom: queues 0-15 (an admin's table)\n", false},
+	} {
+		f := productionAfter(t)
+		f.b.Eth.SetIndir("eno1", table)
+		f.b.WriteFile("/var/lib/x-ui/tune/state.json", `{"version": 1, "nics": {"0000:82:00.0": `+c.state+`}}`+"\n")
+		if out := f.run("--seconds", "0"); !strings.Contains(out, c.want) {
+			t.Errorf("%s:\n%s", c.state, out)
+		}
+		if rr := f.gather(0).r.NICs[0].RSS; rr.Weighted != c.weighted || rr.Even {
+			t.Errorf("%s: %+v", c.state, rr)
+		}
+	}
+}

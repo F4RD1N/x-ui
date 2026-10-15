@@ -17,9 +17,9 @@ const usage = `Usage: x-ui tune [status|apply|revert|queues] [options]
 
 Tunes this server for x-ui: kernel limits (sysctl), the x-ui service's
 open-file limit and Go memory settings, BBR, the uplink NICs (interrupt CPUs,
-XPS, UDP hashing, RPS, queue count, fq as the root qdisc), the CPU clock
-(performance governor, no deep idle states), a local DNS cache (unbound),
-addresses kept through link drops, time sync, and swap on tiny VMs.
+RSS table, XPS, UDP hashing, RPS, queue count, fq as the root qdisc), the CPU
+clock (performance governor, no deep idle states), a local DNS cache
+(unbound), addresses kept through link drops, time sync, and swap on tiny VMs.
 It only ever raises a limit that something else set lower, writes only its own
 files, and revert undoes exactly what it did.
 
@@ -48,9 +48,10 @@ changing one, run 'apply'.
 Files: /etc/sysctl.d/51-x-ui.conf, /etc/systemd/system/x-ui.service.d/20-x-ui-tuning.conf,
 /etc/modules-load.d/x-ui.conf, /etc/modprobe.d/x-ui.conf, /etc/systemd/system/x-ui-nic.service,
 /etc/systemd/system/irqbalance.service.d/90-x-ui.conf, /var/lib/x-ui/tune/ (state.json,
-irqbalance-policy, irqbalance.env, backup/), /etc/unbound/unbound.conf.d/x-ui.conf,
-/etc/systemd/system/unbound.service.d/90-x-ui.conf, /etc/resolv.conf (the old one is
-restored by revert), /etc/systemd/network/<uplink>.network.d/90-x-ui-keep-ips.conf
+rss-tables.json, irqbalance-policy, irqbalance.env, backup/),
+/etc/unbound/unbound.conf.d/x-ui.conf, /etc/systemd/system/unbound.service.d/90-x-ui.conf,
+/etc/resolv.conf (the old one is restored by revert),
+/etc/systemd/network/<uplink>.network.d/90-x-ui-keep-ips.conf
 `
 
 // Main runs "x-ui tune" and returns the exit code: 0 ok (skipped keys are

@@ -131,7 +131,7 @@ func (e *Env) printNICs(np *nicPlan, st *State, dry bool) {
 			qt = strings.Replace(qt, " queues", "", 1)
 		}
 		line("queues", qt)
-		line("RSS table", it.Table)
+		line("RSS table", tableText(it, dry))
 		label, text := hashLine(it, dry)
 		line(label, text)
 
@@ -222,6 +222,7 @@ func (e *Env) nicDrift(np *nicPlan, f *Facts) []string {
 			}
 		}
 		add("UDP hashing", pend(it.Hash))
+		add("RSS table", it.RSS != nil && it.RSS.Write != "")
 		add("interrupts", irq)
 		add("XPS", pend(it.XPS))
 		add("RPS", pend(it.RPS))
