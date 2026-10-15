@@ -24,7 +24,10 @@ import (
 // new connections stalled). A server that asks 1.1.1.1 directly pays a round
 // trip on each. unbound, multi-threaded and caching, answers them in well
 // under a millisecond with no drops; it forwards to the resolvers the server
-// used before. /etc/resolv.conf names it first and the old resolver second.
+// used before. /etc/resolv.conf names it first and those resolvers after it.
+// Not systemd-resolved's 127.0.0.53: resolved reads x-ui's resolv.conf too,
+// takes 127.0.0.1 as its own server and would hand a lookup straight back to
+// the unbound that did not answer.
 //
 // A host service: done by a fresh install and by "apply", never by an update.
 // It leaves a server alone that already runs a DNS server of its own on
@@ -48,8 +51,11 @@ var unboundConfDirs = []string{"/etc/unbound/unbound.conf.d", "/etc/unbound/conf
 type DNSState struct {
 	Was       string   `json:"was"` // "link:<target>" or "file:<backup>": /etc/resolv.conf before
 	Upstreams []string `json:"upstreams"`
-	Fallback  string   `json:"fallback"`
-	Conf      string   `json:"conf"` // unbound's config file x-ui wrote
+	Fallbacks []string `json:"fallbacks,omitempty"` // resolv.conf's servers after 127.0.0.1
+	// Fallback is the one server older versions named after 127.0.0.1
+	// (127.0.0.53 on a systemd-resolved host); an apply replaces it.
+	Fallback string `json:"fallback,omitempty"`
+	Conf     string `json:"conf"` // unbound's config file x-ui wrote
 }
 
 // dnsPlan is what the DNS part of an apply does.
@@ -57,9 +63,26 @@ type dnsPlan struct {
 	Mode      string // resolved, static, ours; "" leaves DNS alone
 	Note      string
 	Upstreams []string
-	Fallback  string
-	Link      string // resolv.conf's link target, "" when it is a file
-	Install   bool   // unbound is not installed yet
+	Fallbacks []string
+	Now       []string // ours: the servers resolv.conf names after 127.0.0.1
+	Rewrite   bool     // ours: written by an older version, 127.0.0.53 to replace
+	Link      string   // resolv.conf's link target, "" when it is a file
+	Install   bool     // unbound is not installed yet
+}
+
+// dnsFallbacks are the servers resolv.conf names after unbound: the upstreams
+// themselves, at most two (the C library reads three nameservers), never a
+// loopback resolver (see above) and never a link-local one (its zone is lost,
+// and without it the address cannot be reached).
+func dnsFallbacks(servers []string) []string {
+	var out []string
+	for _, s := range servers {
+		a := net.ParseIP(s)
+		if len(out) < 2 && a != nil && !a.IsLoopback() && !a.IsLinkLocalUnicast() && !slices.Contains(out, s) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func isLoopback(ip string) bool {
@@ -118,8 +141,32 @@ func (e *Env) planDNS(f *Facts, st *State) *dnsPlan {
 		return p
 	}
 	if st.DNS != nil && e.isOurs(ResolvConf) {
-		p.Mode, p.Upstreams, p.Fallback = "ours", st.DNS.Upstreams, st.DNS.Fallback
-		p.Note = fmt.Sprintf("unbound at 127.0.0.1 (x-ui), forwarding to %s; then %s", strings.Join(p.Upstreams, ", "), p.Fallback)
+		p.Mode, p.Upstreams, p.Fallbacks = "ours", st.DNS.Upstreams, st.DNS.Fallbacks
+		if len(p.Fallbacks) == 0 {
+			// Written by an older version: a public server it named stays;
+			// 127.0.0.53 gives way to the upstreams.
+			if fb := st.DNS.Fallback; fb != "" && !isLoopback(fb) {
+				p.Fallbacks = []string{fb}
+			} else {
+				p.Fallbacks = dnsFallbacks(st.DNS.Upstreams)
+			}
+		}
+		for _, s := range nameservers(e.readTrim(ResolvConf)) {
+			if s != "127.0.0.1" {
+				p.Now = append(p.Now, s)
+			}
+		}
+		// Only the file an older version wrote, as it wrote it: anything
+		// else in it now is the admin's.
+		p.Rewrite = len(st.DNS.Fallbacks) == 0 && isLoopback(st.DNS.Fallback) &&
+			slices.Equal(p.Now, []string{st.DNS.Fallback}) && len(p.Fallbacks) > 0
+		p.Note = "unbound at 127.0.0.1 (x-ui), forwarding to " + strings.Join(p.Upstreams, ", ")
+		if len(p.Now) > 0 {
+			p.Note += "; then " + strings.Join(p.Now, ", ")
+		}
+		if p.Rewrite {
+			p.Note += " (would be " + strings.Join(p.Fallbacks, ", ") + ")"
+		}
 		return p
 	}
 	if st.DNS != nil {
@@ -140,12 +187,13 @@ func (e *Env) planDNS(f *Facts, st *State) *dnsPlan {
 		p.Note = "kept: /etc/resolv.conf is written by NetworkManager or resolvconf"
 		return p
 	case target == resolvedStub || (p.Link == "" && len(servers) == 1 && servers[0] == "127.0.0.53"):
-		p.Mode, p.Fallback = "resolved", "127.0.0.53"
+		p.Mode = "resolved"
 		for _, s := range nameservers(e.readTrim(resolvedUpstream)) {
 			if !isLoopback(s) {
 				p.Upstreams = append(p.Upstreams, s)
 			}
 		}
+		p.Fallbacks = dnsFallbacks(p.Upstreams)
 	default:
 		for _, s := range servers {
 			if isLoopback(s) {
@@ -153,10 +201,7 @@ func (e *Env) planDNS(f *Facts, st *State) *dnsPlan {
 				return p
 			}
 		}
-		p.Mode, p.Upstreams = "static", servers
-		if len(servers) > 0 {
-			p.Fallback = servers[0]
-		}
+		p.Mode, p.Upstreams, p.Fallbacks = "static", servers, dnsFallbacks(servers)
 	}
 	switch {
 	case len(p.Upstreams) == 0:
@@ -219,14 +264,14 @@ Restart=always
 RestartSec=2
 `
 
-// renderResolv is x-ui's /etc/resolv.conf: unbound first, the old resolver
+// renderResolv is x-ui's /etc/resolv.conf: unbound first, its upstreams
 // after it, and the old file's search and options lines.
-func renderResolv(old, fallback string) string {
+func renderResolv(old string, fallbacks []string) string {
 	var b strings.Builder
 	b.WriteString("# Written by x-ui tune (github.com/F4RD1N/x-ui).\n")
-	b.WriteString("# unbound (a local DNS cache) first; the resolver from before only when it does\n# not answer. 'x-ui tune revert' puts back the old file.\nnameserver 127.0.0.1\n")
-	if fallback != "" && fallback != "127.0.0.1" {
-		fmt.Fprintf(&b, "nameserver %s\n", fallback)
+	b.WriteString("# unbound (a local DNS cache) first; its upstream resolvers only when it does\n# not answer. 'x-ui tune revert' puts back the old file.\nnameserver 127.0.0.1\n")
+	for _, s := range dnsFallbacks(fallbacks) {
+		fmt.Fprintf(&b, "nameserver %s\n", s)
 	}
 	opts := []string{"timeout:2", "attempts:2"}
 	var keep []string
@@ -238,7 +283,9 @@ func renderResolv(old, fallback string) string {
 		switch f[0] {
 		case "options":
 			for _, o := range f[1:] {
-				if !strings.HasPrefix(o, "timeout:") && !strings.HasPrefix(o, "attempts:") && !slices.Contains(opts, o) {
+				// rotate would send most lookups past unbound; trust-ad
+				// would trust remote fallbacks' AD bit (unbound sets none).
+				if !strings.HasPrefix(o, "timeout:") && !strings.HasPrefix(o, "attempts:") && o != "rotate" && o != "trust-ad" && !slices.Contains(opts, o) {
 					opts = append(opts, o)
 				}
 			}
@@ -307,6 +354,17 @@ func (e *Env) applyDNS(f *Facts, st *State, r *Result) {
 	case "":
 		return
 	case "ours":
+		// A file written by an older version names 127.0.0.53 after unbound:
+		// first point it at the upstreams, then touch unbound.
+		if p.Rewrite {
+			old, _ := e.read(ResolvConf)
+			if _, err := e.writeFile(ResolvConf, []byte(renderResolv(old, p.Fallbacks)), 0o644); err != nil {
+				r.problem("dns: writing %s: %v (left as it was)", ResolvConf, err)
+			} else {
+				st.DNS.Fallbacks, st.DNS.Fallback = p.Fallbacks, ""
+				r.change("dns: %s falls back to %s when unbound does not answer (was %s)", ResolvConf, strings.Join(p.Fallbacks, ", "), strings.Join(p.Now, ", "))
+			}
+		}
 		// Already set up: keep the config current.
 		c1, err1 := e.writeFile(st.DNS.Conf, []byte(renderUnbound(f, st.DNS.Upstreams)), 0o644)
 		c2, err2 := e.writeFile(UnboundDropIn, []byte(unboundDropIn), 0o644)
@@ -386,13 +444,13 @@ func (e *Env) applyDNS(f *Facts, st *State, r *Result) {
 		}
 		was = "file:" + backup
 	}
-	if _, err := e.writeFile(ResolvConf, []byte(renderResolv(old, p.Fallback)), 0o644); err != nil {
+	if _, err := e.writeFile(ResolvConf, []byte(renderResolv(old, p.Fallbacks)), 0o644); err != nil {
 		r.problem("dns: writing %s: %v (left as it was)", ResolvConf, err)
 		return
 	}
-	st.DNS = &DNSState{Was: was, Upstreams: p.Upstreams, Fallback: p.Fallback, Conf: conf}
+	st.DNS = &DNSState{Was: was, Upstreams: p.Upstreams, Fallbacks: p.Fallbacks, Conf: conf}
 	r.change("dns: unbound caches lookups at 127.0.0.1 (forwarding to %s); %s names it first, %s after",
-		strings.Join(p.Upstreams, ", "), ResolvConf, p.Fallback)
+		strings.Join(p.Upstreams, ", "), ResolvConf, strings.Join(p.Fallbacks, ", "))
 }
 
 // restoreResolv puts /etc/resolv.conf back as it was.
@@ -462,7 +520,10 @@ func (e *Env) revertDNS(st *State, r *Result) {
 func (e *Env) dnsInfo(f *Facts, st *State) string {
 	p := e.planDNS(f, st)
 	if p.Mode == "ours" && f.Init == "systemd" && !e.fake() && !e.unitActive("unbound") {
-		return p.Note + " (unbound is NOT running: the old resolver answers)"
+		if len(p.Now) == 0 || slices.ContainsFunc(p.Now, isLoopback) {
+			return p.Note + " (unbound is NOT running: lookups fail)"
+		}
+		return p.Note + " (unbound is NOT running: " + strings.Join(p.Now, ", ") + " answer)"
 	}
 	return p.Note
 }

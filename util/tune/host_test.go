@@ -284,11 +284,12 @@ func TestDNSCache(t *testing.T) {
 	}
 	resolv := e.readTrim(ResolvConf)
 	if fi, _ := os.Lstat(e.P(ResolvConf)); fi.Mode()&os.ModeSymlink != 0 || !e.isOurs(ResolvConf) ||
-		!strings.Contains(resolv, "nameserver 127.0.0.1\nnameserver 127.0.0.53\noptions timeout:2 attempts:2 edns0 trust-ad\nsearch .") {
+		!strings.Contains(resolv, "nameserver 127.0.0.1\nnameserver 8.8.8.8\nnameserver 1.1.1.1\noptions timeout:2 attempts:2 edns0\nsearch .") {
 		t.Fatalf("resolv.conf:\n%s\n%v", resolv, r.Problems)
 	}
 	st, _, _ := e.loadState()
 	if st.DNS == nil || st.DNS.Was != "link:../run/systemd/resolve/stub-resolv.conf" || fmt.Sprint(st.DNS.Upstreams) != "[8.8.8.8 1.1.1.1]" ||
+		fmt.Sprint(st.DNS.Fallbacks) != "[8.8.8.8 1.1.1.1]" || st.DNS.Fallback != "" ||
 		!strings.Contains(fmt.Sprint(st.Installed), "unbound") || !strings.Contains(fmt.Sprint(st.Enabled), "unbound") {
 		t.Fatalf("state %+v %+v", st.DNS, st)
 	}
@@ -319,8 +320,8 @@ func TestDNSCache(t *testing.T) {
 	}
 }
 
-// A plain resolv.conf naming public servers: they become the upstreams, the
-// first one the fallback, and revert puts the file back byte for byte.
+// A plain resolv.conf naming public servers: they become the upstreams and the
+// fallbacks, and revert puts the file back byte for byte.
 func TestDNSCacheStaticResolvConf(t *testing.T) {
 	old := "nameserver 1.1.1.1\nnameserver 8.8.8.8\noptions rotate\n"
 	e := dnsMachine(t, map[string]string{ResolvConf: old})
@@ -330,7 +331,8 @@ func TestDNSCacheStaticResolvConf(t *testing.T) {
 		t.Error("installed unbound again")
 	}
 	resolv := e.readTrim(ResolvConf)
-	if !strings.Contains(resolv, "nameserver 127.0.0.1\nnameserver 1.1.1.1\noptions timeout:2 attempts:2 rotate") {
+	// rotate would start most lookups at a fallback instead of unbound.
+	if !strings.Contains(resolv, "nameserver 127.0.0.1\nnameserver 1.1.1.1\nnameserver 8.8.8.8\noptions timeout:2 attempts:2") || strings.Contains(resolv, "rotate") {
 		t.Fatalf("resolv.conf:\n%s", resolv)
 	}
 	st, _, _ := e.loadState()
@@ -342,6 +344,88 @@ func TestDNSCacheStaticResolvConf(t *testing.T) {
 	}
 	if got, _ := e.read(ResolvConf); got != old {
 		t.Fatalf("not restored:\n%q", got)
+	}
+}
+
+// A server set up by an older version names 127.0.0.53 after unbound, but
+// systemd-resolved reads that file too and only hands the lookup back to
+// unbound. A manual apply names the upstreams instead (an update or a boot
+// leaves the file alone); a public fallback an older version chose stays.
+func TestDNSCacheOldFallback(t *testing.T) {
+	e := dnsMachine(t, nil)
+	fakeCommands(e, dnsAnswers(false), dnsOK...)
+	mustApply(t, e, ApplyOptions{Auto: true, Host: true})
+	legacy := "# Written by x-ui tune (github.com/F4RD1N/x-ui).\n# old\nnameserver 127.0.0.1\nnameserver 127.0.0.53\noptions timeout:2 attempts:2 edns0 trust-ad\nsearch .\n"
+	writeT(t, e.Root, ResolvConf, legacy)
+	st, _, _ := e.loadState()
+	st.DNS.Fallbacks, st.DNS.Fallback = nil, "127.0.0.53"
+	if err := e.saveState(st, nil); err != nil {
+		t.Fatal(err)
+	}
+	if info := e.dnsInfo(e.gatherFacts(), st); !strings.Contains(info, "then 127.0.0.53 (would be 8.8.8.8, 1.1.1.1)") {
+		t.Errorf("status: %s", info)
+	}
+	mustApply(t, e, ApplyOptions{Auto: true})
+	mustApply(t, e, ApplyOptions{Boot: true})
+	if got, _ := e.read(ResolvConf); got != legacy {
+		t.Fatalf("an update or boot rewrote resolv.conf:\n%s", got)
+	}
+	r := mustApply(t, e, ApplyOptions{})
+	resolv := e.readTrim(ResolvConf)
+	if !e.isOurs(ResolvConf) || !strings.Contains(resolv, "nameserver 127.0.0.1\nnameserver 8.8.8.8\nnameserver 1.1.1.1\noptions timeout:2 attempts:2 edns0\nsearch .") ||
+		strings.Contains(resolv, "127.0.0.53") {
+		t.Fatalf("resolv.conf:\n%s\n%v", resolv, r.Problems)
+	}
+	if !strings.Contains(strings.Join(r.Changed, "\n"), "falls back to 8.8.8.8, 1.1.1.1 when unbound does not answer (was 127.0.0.53)") {
+		t.Errorf("not reported: %v", r.Changed)
+	}
+	st, _, _ = e.loadState()
+	if fmt.Sprint(st.DNS.Fallbacks) != "[8.8.8.8 1.1.1.1]" || st.DNS.Fallback != "" {
+		t.Errorf("state %+v", st.DNS)
+	}
+	if r := mustApply(t, e, ApplyOptions{}); len(r.Changed) != 0 {
+		t.Errorf("second apply changed %v", r.Changed)
+	}
+	if _, err := e.Revert(false, false); err != nil {
+		t.Fatal(err)
+	}
+	if l, err := os.Readlink(e.P(ResolvConf)); err != nil || l != "../run/systemd/resolve/stub-resolv.conf" {
+		t.Fatalf("resolv.conf not restored: %q %v", l, err)
+	}
+
+	// What an admin wrote into x-ui's file since stays: with the new state,
+	// and with the old state when the file no longer names just 127.0.0.53.
+	mine := "# Written by x-ui tune (github.com/F4RD1N/x-ui).\nnameserver 127.0.0.1\nnameserver 9.9.9.9\noptions timeout:2 attempts:2\n"
+	a := dnsMachine(t, nil)
+	fakeCommands(a, dnsAnswers(false), dnsOK...)
+	mustApply(t, a, ApplyOptions{})
+	writeT(t, a.Root, ResolvConf, mine)
+	if r := mustApply(t, a, ApplyOptions{}); len(r.Changed) != 0 || a.readTrim(ResolvConf)+"\n" != mine {
+		t.Errorf("an admin's servers were rewritten (new state): %v\n%s", r.Changed, a.readTrim(ResolvConf))
+	}
+	ast, _, _ := a.loadState()
+	ast.DNS.Fallbacks, ast.DNS.Fallback = nil, "127.0.0.53"
+	a.saveState(ast, nil)
+	if r := mustApply(t, a, ApplyOptions{}); len(r.Changed) != 0 || a.readTrim(ResolvConf)+"\n" != mine {
+		t.Errorf("an admin's servers were rewritten (old state): %v\n%s", r.Changed, a.readTrim(ResolvConf))
+	}
+
+	// A link-local upstream (its zone is lost) is never a fallback.
+	if got := fmt.Sprint(dnsFallbacks([]string{"fe80::1", "127.0.0.53", "2001:4860:4860::8888", "8.8.8.8", "1.1.1.1"})); got != "[2001:4860:4860::8888 8.8.8.8]" {
+		t.Errorf("dnsFallbacks: %s", got)
+	}
+
+	// An older version's public fallback stays as it is.
+	old := "nameserver 1.1.1.1\nnameserver 8.8.8.8\n"
+	s := dnsMachine(t, map[string]string{ResolvConf: old})
+	fakeCommands(s, dnsAnswers(true), dnsOK...)
+	mustApply(t, s, ApplyOptions{})
+	writeT(t, s.Root, ResolvConf, "# Written by x-ui tune (github.com/F4RD1N/x-ui).\nnameserver 127.0.0.1\nnameserver 1.1.1.1\noptions timeout:2 attempts:2\n")
+	sst, _, _ := s.loadState()
+	sst.DNS.Fallbacks, sst.DNS.Fallback = nil, "1.1.1.1"
+	s.saveState(sst, nil)
+	if r := mustApply(t, s, ApplyOptions{}); len(r.Changed) != 0 || !strings.Contains(s.readTrim(ResolvConf), "nameserver 1.1.1.1\noptions") {
+		t.Errorf("a public fallback was rewritten: %v\n%s", r.Changed, s.readTrim(ResolvConf))
 	}
 }
 
