@@ -594,11 +594,14 @@ tune_menu() {
 # Anti-abuse keeps the server's IPs out of abuse reports. An nftables table
 # refuses outgoing connections to the ports brute-force bots and spammers
 # use, to private networks through the uplink (a hoster's "netscan"), and to
-# new destinations faster than real users reach them (port and net scans).
-# fail2ban bans an IP after 2 failed SSH logins. Nothing here uses conntrack,
-# so it costs nothing on a busy server. "x-ui anti-abuse off" undoes it all.
+# new destinations faster than real users reach them (port and net scans),
+# and, for a while, to hosts that do not answer this server at all. fail2ban
+# bans an IP after 2 failed SSH logins. Nothing here uses conntrack, so it
+# costs nothing on a busy server. "x-ui anti-abuse off" undoes it all.
 anti_abuse_nft="/etc/x-ui/anti-abuse.nft"
 anti_abuse_unit="/etc/systemd/system/x-ui-anti-abuse.service"
+anti_abuse_check_unit="/etc/systemd/system/x-ui-anti-abuse-check.service"
+anti_abuse_check_timer="/etc/systemd/system/x-ui-anti-abuse-check.timer"
 anti_abuse_jail="/etc/fail2ban/jail.d/x-ui-anti-abuse.conf"
 anti_abuse_table="xui_anti_abuse"
 # SSH, Telnet, SMTP, MS-RPC, NetBIOS, SMB, MSSQL, Telnet, RDP, VNC
@@ -611,6 +614,13 @@ anti_abuse_udp_ports="137, 138, 161, 1900, 11211"
 # kept at ten times what users need: only fast scanners reach it.
 anti_abuse_wide="50/second burst 1000 packets"
 anti_abuse_deep="30/second burst 300 packets"
+# A host with this many connection attempts waiting and not one working
+# connection is refused for a while (checked every minute): users' apps fail
+# at once and try another address instead of waiting out a timeout, and a
+# flood at an unanswering target stops. Busy hosts keep working connections
+# (Telegram's had 700 waiting and 3,900 working), so they are never refused.
+anti_abuse_dead_waiting=100
+anti_abuse_dead_for="10m"
 
 # anti_abuse_uplinks prints the interfaces the default routes leave through.
 anti_abuse_uplinks() {
@@ -701,13 +711,18 @@ table inet ${anti_abuse_table} {
 	set wide6 { type ipv6_addr . inet_service; flags dynamic, timeout; timeout 5m; size 65536; }
 	set deep4 { type ipv4_addr; flags dynamic, timeout; timeout 5m; size 65536; }
 	set deep6 { type ipv6_addr; flags dynamic, timeout; timeout 5m; size 65536; }
+	set dead4 { type ipv4_addr; flags timeout; timeout ${anti_abuse_dead_for}; size 65536; }
+	set dead6 { type ipv6_addr; flags timeout; timeout ${anti_abuse_dead_for}; size 65536; }
 	counter private_nets { }
 	counter scan_wide { }
 	counter scan_deep { }
+	counter dead_hosts { }
 
 	chain output {
 		type filter hook output priority filter; policy accept;
 		oifname "lo" accept
+		tcp flags & (syn | ack) == syn ip daddr @dead4 counter name dead_hosts reject with tcp reset
+		tcp flags & (syn | ack) == syn ip6 daddr @dead6 counter name dead_hosts reject with tcp reset
 		tcp flags & (syn | ack) == syn tcp dport @tcp_ports reject with tcp reset
 		udp dport @udp_ports reject${private}
 		tcp flags & (syn | ack) == syn tcp dport != { 80, 443 } jump scan
@@ -869,18 +884,66 @@ ExecStop=${nft} delete table inet ${anti_abuse_table}
 [Install]
 WantedBy=sysinit.target
 EOF
+    # The check for hosts that do not answer, every minute.
+    cat >"$anti_abuse_check_unit" <<EOF
+[Unit]
+Description=x-ui anti-abuse: refuse hosts that do not answer for a while
+After=x-ui-anti-abuse.service
+
+[Service]
+Type=oneshot
+Nice=10
+ExecStart=$(command -v x-ui || echo /usr/bin/x-ui) anti-abuse check
+EOF
+    cat >"$anti_abuse_check_timer" <<EOF
+[Unit]
+Description=x-ui anti-abuse: look for hosts that do not answer, every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
+EOF
     systemctl daemon-reload
     systemctl enable x-ui-anti-abuse >/dev/null 2>&1
     systemctl restart x-ui-anti-abuse || { LOGE "x-ui-anti-abuse did not start (see: systemctl status x-ui-anti-abuse)."; return 1; }
+    systemctl enable --now x-ui-anti-abuse-check.timer >/dev/null 2>&1 || rc=1
     anti_abuse_ssh_jail || rc=1
 
     echo -e "${green}Anti-abuse is on:${plain}
   Refused: outgoing TCP ${anti_abuse_tcp_ports} and UDP ${anti_abuse_udp_ports}
   Refused: private networks through $(anti_abuse_uplinks | paste -sd, -)
   Scans refused: over ${anti_abuse_wide%%/*} new hosts/s on a port, ${anti_abuse_deep%%/*} new ports/s on a host
+  Dead hosts: refused for ${anti_abuse_dead_for} when ${anti_abuse_dead_waiting}+ connection attempts wait and none works
   SSH: 2 failed logins in 10 minutes = 1 hour ban, longer when the IP comes back
   Status: x-ui anti-abuse status   Off: x-ui anti-abuse off"
     return $rc
+}
+
+# anti_abuse_check refuses, for anti_abuse_dead_for, each host with at
+# least anti_abuse_dead_waiting connection attempts waiting (SYN sent, no
+# answer) and not one established connection. It runs every minute from
+# x-ui-anti-abuse-check.timer; ss asks the kernel by state, so it is quick
+# with hundreds of thousands of connections.
+anti_abuse_check() {
+    nft list set inet "$anti_abuse_table" dead4 >/dev/null 2>&1 || return 0
+    local waiting ip set
+    ss -Htn state syn-sent 2>/dev/null | awk '{ print $4 }' |
+        sed -E 's/:[0-9]+$//; s/^\[(::ffff:)?//; s/\]$//' | sort | uniq -c |
+        awk -v n="$anti_abuse_dead_waiting" '$1 >= n { print $1, $2 }' |
+        while read -r waiting ip; do
+            # One working connection means it answers: busy, not dead.
+            [[ -n $(ss -Htn state established dst "$ip" 2>/dev/null | head -1) ]] && continue
+            set=dead4
+            [[ $ip == *:* ]] && set=dead6
+            if nft add element inet "$anti_abuse_table" "$set" "{ $ip }" 2>/dev/null; then
+                logger -t x-ui-anti-abuse "refusing $ip for ${anti_abuse_dead_for}: $waiting connection attempts waiting, none working"
+            fi
+        done
+    return 0
 }
 
 # anti_abuse_counter prints a named counter's packets.
@@ -910,6 +973,10 @@ anti_abuse_status() {
     echo "  Refused ports:    ${ports:-none yet}"
     echo "  Private networks: $(anti_abuse_counter private_nets)"
     echo "  Scans refused:    $(anti_abuse_counter scan_wide) wide, $(anti_abuse_counter scan_deep) deep"
+    local dead
+    dead=$({ nft list set inet "$anti_abuse_table" dead4; nft list set inet "$anti_abuse_table" dead6; } 2>/dev/null |
+        grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}|[0-9a-f]*:[0-9a-f:]+' | paste -sd' ' -)
+    echo "  Dead hosts:       $(anti_abuse_counter dead_hosts) attempts refused; now: ${dead:-none}"
     if [[ -f $anti_abuse_jail ]] && command -v fail2ban-client >/dev/null 2>&1; then
         fail2ban-client status sshd 2>/dev/null | awk -F':\t' '
             /Currently banned/ { now = $2 } /Total banned/ { total = $2 } /Total failed/ { failed = $2 }
@@ -920,11 +987,15 @@ anti_abuse_status() {
 }
 
 anti_abuse_off() {
+    if [[ -f $anti_abuse_check_timer ]]; then
+        systemctl disable --now x-ui-anti-abuse-check.timer >/dev/null 2>&1
+        rm -f "$anti_abuse_check_timer" "$anti_abuse_check_unit"
+    fi
     if [[ -f $anti_abuse_unit ]]; then
         systemctl disable --now x-ui-anti-abuse >/dev/null 2>&1
         rm -f "$anti_abuse_unit"
-        systemctl daemon-reload
     fi
+    systemctl daemon-reload 2>/dev/null
     command -v nft >/dev/null 2>&1 && nft delete table inet "$anti_abuse_table" 2>/dev/null
     rm -f "$anti_abuse_nft"
     if [[ -f $anti_abuse_jail ]]; then
@@ -934,13 +1005,15 @@ anti_abuse_off() {
     LOGI "Anti-abuse is off."
 }
 
-# anti_abuse runs "x-ui anti-abuse [on|status|off|rules]".
+# anti_abuse runs "x-ui anti-abuse [on|status|off|rules|check]" (check is
+# the timer's).
 anti_abuse() {
     case "${1:-on}" in
     on) anti_abuse_on ;;
     status) anti_abuse_status ;;
     off) anti_abuse_off ;;
     rules) anti_abuse_rules ;;
+    check) anti_abuse_check ;;
     *)
         echo "Usage: x-ui anti-abuse [on|status|off|rules]"
         return 1

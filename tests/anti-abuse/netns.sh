@@ -45,22 +45,36 @@ in_net ip route add local 11.0.0.0/16 dev lo
 in_net ip route add local 10.9.9.9/32 dev lo
 in_net ip route add local 192.168.77.7/32 dev lo
 in_net ip route add 11.0.0.2/32 dev up1
+# 11.1.0.9 never answers (not local to "net", nothing routes it); 11.1.0.10
+# answers on 7001 but drops SYNs to 7000: busy, not dead.
+in_net ip route add local 11.1.0.10/32 dev lo
+in_net nft -f - <<'N'
+table inet t {
+	chain in {
+		type filter hook input priority 0; policy accept;
+		tcp dport 7000 drop
+	}
+}
+N
 
 # The internet: TCP on 22, 443, 8080 and 6000-6399, UDP on 53 and 443.
 in_net python3 - >"$work/listener.log" 2>&1 <<'P' &
 import socket, selectors
 sel = selectors.DefaultSelector()
-for p in [22, 443, 8080] + list(range(6000, 6400)):
+for p in [22, 443, 8080, 7001] + list(range(6000, 6400)):
     s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.setsockopt(socket.SOL_IP, 19, 1)  # IP_TRANSPARENT: answer for every local address
     s.bind(("0.0.0.0", p)); s.listen(4096); s.setblocking(False); sel.register(s, selectors.EVENT_READ, "tcp")
 for p in (53, 443):
     u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); u.bind(("0.0.0.0", p)); u.setblocking(False); sel.register(u, selectors.EVENT_READ, "udp")
 print("ready", flush=True)
+keep = []
 while True:
     for k, _ in sel.select():
         try:
-            if k.data == "tcp": c, _ = k.fileobj.accept(); c.close()
+            if k.data == "tcp":
+                c, _ = k.fileobj.accept()
+                keep.append(c) if c.getsockname()[1] == 7001 else c.close()  # 7001 stays connected
             else: d, a = k.fileobj.recvfrom(100); k.fileobj.sendto(d, a)
         except OSError: pass
 P
@@ -78,6 +92,36 @@ in_srv nft -f "$work/rules.nft"
 in_srv nft -f "$work/rules.nft" # loading twice must work (the unit's reload)
 
 rc=0
+# Hosts that do not answer: 120 attempts waiting at 11.1.0.9 (dead), 120 at
+# 11.1.0.10:7000 while one connection to 11.1.0.10:7001 works (busy), 50 at
+# 11.1.0.11 (below the threshold). "anti-abuse check" refuses only the dead.
+XUI_LOG_FOLDER=$work SCRIPT=$SCRIPT in_srv python3 - <<'P3' || rc=1
+import os, socket, subprocess, time
+fails = []
+def check(name, ok):
+    print(("ok   " if ok else "FAIL ") + name); ok or fails.append(name)
+held = []
+def pending(ip, port, n):
+    for _ in range(n):
+        s = socket.socket(); s.setblocking(False); s.connect_ex((ip, port)); held.append(s)
+live = socket.create_connection(("11.1.0.10", 7001), 3); held.append(live)
+pending("11.1.0.9", 7000, 120); pending("11.1.0.10", 7000, 120); pending("11.1.0.11", 7000, 50)
+time.sleep(0.5)
+subprocess.run(["bash", os.environ["SCRIPT"], "anti-abuse", "check"], check=True)
+dead = subprocess.run(["nft", "list", "set", "inet", "xui_anti_abuse", "dead4"], capture_output=True, text=True).stdout
+check("dead host refused for a while: 11.1.0.9 listed", "11.1.0.9" in dead)
+check("busy host (a working connection) not listed: 11.1.0.10", "11.1.0.10" not in dead)
+check("below the threshold not listed: 11.1.0.11", "11.1.0.11" not in dead)
+s = socket.socket(); s.settimeout(3); t = time.time()
+try: s.connect(("11.1.0.9", 7000)); r = "open"
+except ConnectionRefusedError: r = "refused"
+except OSError as e: r = "error %s" % e
+check("a new attempt at the dead host fails at once (%s, %.0f ms)" % (r, (time.time() - t) * 1000), r == "refused" and time.time() - t < 0.5)
+out = subprocess.run(["nft", "list", "counter", "inet", "xui_anti_abuse", "dead_hosts"], capture_output=True, text=True).stdout
+check("  ...and is counted", "packets 0 " not in out)
+for x in held: x.close()
+raise SystemExit(1 if fails else 0)
+P3
 in_srv python3 - "$work" <<'P' || rc=1
 import socket, subprocess, sys, time
 fails = []

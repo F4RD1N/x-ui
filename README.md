@@ -146,6 +146,11 @@ you turn it on:
   from one outgoing IP, or 30 new ports per second on one host. Web ports
   (TCP 80/443, UDP 443), loopback and destinations already in use are never
   limited;
+- a host that does not answer this server at all (100 or more connection
+  attempts waiting, not one working connection; checked every minute) is
+  refused for 10 minutes: apps fail at once and try another address instead
+  of waiting out a timeout, and a flood at that target stops. A busy host
+  always has working connections, so it is never refused;
 - fail2ban bans an IP after 2 failed SSH logins in 10 minutes, for an hour and
   longer each time it comes back. The address you run it from is never banned.
 
