@@ -231,6 +231,9 @@ uninstall() {
     if [[ -x ${xui_folder}/x-ui ]]; then
         ${xui_folder}/x-ui tune revert --purge
     fi
+    if [[ -f $anti_abuse_unit || -f $anti_abuse_jail ]]; then
+        anti_abuse_off
+    fi
 
     if [[ $release == "alpine" ]]; then
         rc-service x-ui stop
@@ -584,6 +587,392 @@ tune_menu() {
     *)
         echo -e "${red}Invalid option. Please select a valid number.${plain}\n"
         tune_menu
+        ;;
+    esac
+}
+
+# Anti-abuse keeps the server's IPs out of abuse reports. An nftables table
+# refuses outgoing connections to the ports brute-force bots and spammers
+# use, to private networks through the uplink (a hoster's "netscan"), and to
+# new destinations faster than real users reach them (port and net scans).
+# fail2ban bans an IP after 2 failed SSH logins. Nothing here uses conntrack,
+# so it costs nothing on a busy server. "x-ui anti-abuse off" undoes it all.
+anti_abuse_nft="/etc/x-ui/anti-abuse.nft"
+anti_abuse_unit="/etc/systemd/system/x-ui-anti-abuse.service"
+anti_abuse_jail="/etc/fail2ban/jail.d/x-ui-anti-abuse.conf"
+anti_abuse_table="xui_anti_abuse"
+# SSH, Telnet, SMTP, MS-RPC, NetBIOS, SMB, MSSQL, Telnet, RDP, VNC
+anti_abuse_tcp_ports="22, 23, 25, 135, 139, 445, 1433, 2323, 3389, 5900"
+# NetBIOS, SNMP, SSDP, memcached
+anti_abuse_udp_ports="137, 138, 161, 1900, 11211"
+# New destinations per second: hosts per outgoing IP and port, and ports
+# per host (TCP). Measured on busy servers, real users peak at about 5 and 2.
+# A scan uses up the allowance for everyone on its IP and port, so it is
+# kept well above what users need.
+anti_abuse_wide="20/second burst 400 packets"
+anti_abuse_deep="10/second burst 100 packets"
+
+# anti_abuse_uplinks prints the interfaces the default routes leave through.
+anti_abuse_uplinks() {
+    { ip -4 route show default; ip -6 route show default; } 2>/dev/null |
+        awk '{ for (i = 1; i < NF; i++) if ($i == "dev") print $(i + 1) }' | sort -u
+}
+
+# anti_abuse_allowed prints what stays reachable among private addresses
+# (family 4 or 6): the uplinks' own subnets and routes, and the DNS servers.
+anti_abuse_allowed() {
+    local fam=$1 dev re
+    if [[ $fam == 4 ]]; then
+        re='^(0|10|172\.(1[6-9]|2[0-9]|3[01])|192\.168|192\.0\.[02]|198\.1[89]|198\.51\.100|203\.0\.113|2(4[0-9]|5[0-5]))\.[0-9.]+(/([89]|[1-3][0-9]))?$'
+        echo "255.255.255.255"
+    else
+        re='^(f[cd][0-9a-f]{2}|fe[c-f][0-9a-f]|2001:0?db8):[0-9a-f:]*(/([89]|[1-9][0-9]|1[0-2][0-9]))?$'
+    fi
+    {
+        for dev in $(anti_abuse_uplinks); do
+            ip -"$fam" route show table all dev "$dev" 2>/dev/null |
+                awk '{ d = $1; if (d ~ /^(unicast|local|broadcast|multicast|anycast|throw|unreachable|prohibit|blackhole|nat)$/) d = $2; print d }'
+        done
+        awk '$1 == "nameserver" { sub(/%.*/, "", $2); print $2 }' /etc/resolv.conf /run/systemd/resolve/resolv.conf 2>/dev/null
+    } | tr 'A-F' 'a-f' | grep -E "$re" | sort -u
+}
+
+# anti_abuse_rules prints the nftables rules "x-ui anti-abuse" loads.
+anti_abuse_rules() {
+    local uplinks allowed4 allowed6 private=""
+    uplinks=$(anti_abuse_uplinks | awk '{ printf "%s\"%s\"", (NR > 1 ? ", " : ""), $1 }')
+    allowed4=$(anti_abuse_allowed 4 | paste -sd, - | sed 's/,/, /g')
+    allowed6=$(anti_abuse_allowed 6 | paste -sd, - | sed 's/,/, /g')
+    if [[ -n $uplinks ]]; then
+        uplinks="elements = { ${uplinks} }"
+        private="
+		oifname @uplinks ip daddr @private4 ip daddr != @allowed4 counter name private_nets reject with icmpx admin-prohibited
+		oifname @uplinks ip6 daddr @private6 ip6 daddr != @allowed6 counter name private_nets reject with icmpx admin-prohibited"
+    fi
+    [[ -n $allowed6 ]] && allowed6="elements = { ${allowed6} }"
+    cat <<EOF
+#!/usr/sbin/nft -f
+# Written by "x-ui anti-abuse"; "x-ui anti-abuse off" removes it.
+
+table inet ${anti_abuse_table}
+delete table inet ${anti_abuse_table}
+
+table inet ${anti_abuse_table} {
+	set tcp_ports {
+		type inet_service
+		counter
+		elements = { ${anti_abuse_tcp_ports} }
+	}
+	set udp_ports {
+		type inet_service
+		counter
+		elements = { ${anti_abuse_udp_ports} }
+	}
+	set uplinks {
+		type ifname
+		${uplinks}
+	}
+	set private4 {
+		type ipv4_addr
+		flags interval
+		elements = { 0.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.0.0.0/24, 192.0.2.0/24, 192.168.0.0/16,
+			     198.18.0.0/15, 198.51.100.0/24, 203.0.113.0/24, 240.0.0.0/4 }
+	}
+	set private6 {
+		type ipv6_addr
+		flags interval
+		elements = { 2001:db8::/32, fc00::/7, fec0::/10 }
+	}
+	set allowed4 {
+		type ipv4_addr
+		flags interval
+		auto-merge
+		elements = { ${allowed4} }
+	}
+	set allowed6 {
+		type ipv6_addr
+		flags interval
+		auto-merge
+		${allowed6}
+	}
+	set seen4 { type ipv4_addr . inet_service; flags dynamic, timeout; timeout 10m; size 262144; }
+	set seen6 { type ipv6_addr . inet_service; flags dynamic, timeout; timeout 10m; size 262144; }
+	set wide4 { type ipv4_addr . inet_service; flags dynamic, timeout; timeout 5m; size 65536; }
+	set wide6 { type ipv6_addr . inet_service; flags dynamic, timeout; timeout 5m; size 65536; }
+	set deep4 { type ipv4_addr; flags dynamic, timeout; timeout 5m; size 65536; }
+	set deep6 { type ipv6_addr; flags dynamic, timeout; timeout 5m; size 65536; }
+	counter private_nets { }
+	counter scan_wide { }
+	counter scan_deep { }
+
+	chain output {
+		type filter hook output priority filter; policy accept;
+		oifname "lo" accept
+		tcp flags & (syn | ack) == syn tcp dport @tcp_ports reject with tcp reset
+		udp dport @udp_ports reject${private}
+		tcp flags & (syn | ack) == syn tcp dport != { 80, 443 } jump scan
+		udp dport 1-1023 udp dport != 443 jump scan
+	}
+	# A destination (address and port) seen in the last 10 minutes passes;
+	# a new one counts against the scan limits.
+	chain scan {
+		meta nfproto ipv4 goto scan4
+		meta nfproto ipv6 goto scan6
+	}
+	chain scan4 {
+		ip daddr . th dport @seen4 update @seen4 { ip daddr . th dport } return
+		update @wide4 { ip saddr . th dport limit rate over ${anti_abuse_wide} } counter name scan_wide goto refuse
+		meta l4proto tcp update @deep4 { ip daddr limit rate over ${anti_abuse_deep} } counter name scan_deep goto refuse
+		add @seen4 { ip daddr . th dport }
+	}
+	chain scan6 {
+		ip6 daddr . th dport @seen6 update @seen6 { ip6 daddr . th dport } return
+		update @wide6 { ip6 saddr . th dport limit rate over ${anti_abuse_wide} } counter name scan_wide goto refuse
+		meta l4proto tcp update @deep6 { ip6 daddr limit rate over ${anti_abuse_deep} } counter name scan_deep goto refuse
+		add @seen6 { ip6 daddr . th dport }
+	}
+	chain refuse {
+		meta l4proto tcp reject with tcp reset
+		reject
+	}
+}
+EOF
+}
+
+# anti_abuse_install installs a package with the system's package manager.
+anti_abuse_install() {
+    case "${release}" in
+    ubuntu | debian | armbian)
+        apt-get update && apt-get install -y "$1"
+        ;;
+    fedora | amzn | virtuozzo | rhel | almalinux | rocky | ol | centos)
+        dnf -y install "$1" || yum -y install "$1"
+        ;;
+    arch | manjaro | parch)
+        pacman -S --noconfirm "$1"
+        ;;
+    opensuse-tumbleweed | opensuse-leap | sles)
+        zypper -n install "$1"
+        ;;
+    *)
+        return 1
+        ;;
+    esac
+}
+
+# anti_abuse_ssh_jail bans an IP after 2 failed SSH logins in 10 minutes:
+# for 1 hour, longer each time it comes back (up to a week). The address
+# this is run from is never banned.
+anti_abuse_ssh_jail() {
+    local ports unit client="" ignore backend=""
+    if ! command -v sshd >/dev/null 2>&1 && [[ ! -x /usr/sbin/sshd ]]; then
+        LOGI "No SSH server here, so no SSH ban is needed."
+        return 0
+    fi
+    install_fail2ban || return 1
+    ports=$( (sshd -T 2>/dev/null || /usr/sbin/sshd -T 2>/dev/null) | awk '$1 == "port" { print $2 }' | sort -un | paste -sd, -)
+    [[ -n $ports ]] || ports=ssh
+    # Never banned: loopback, what the admin already lists elsewhere, and
+    # the address this is run from.
+    [[ -n ${SSH_CLIENT:-} ]] && client=${SSH_CLIENT%% *}
+    ignore=$(
+        {
+            echo "127.0.0.1/8 ::1 ${client}"
+            for f in /etc/fail2ban/jail.conf /etc/fail2ban/jail.local /etc/fail2ban/jail.d/*.conf /etc/fail2ban/jail.d/*.local; do
+                [[ -f $f && $f != "$anti_abuse_jail" ]] && sed -n 's/^[[:space:]]*ignoreip[[:space:]]*=//p' "$f"
+            done
+        } | tr ' ,' '\n\n' | grep -v '^$' | grep -vF '%(' | awk '!seen[$0]++' | paste -sd' ' -
+    )
+    # Without a log file sshd only logs to the journal, as sshd or (OpenSSH
+    # 9.8+) sshd-session.
+    if command -v journalctl >/dev/null 2>&1 && [[ ! -s /var/log/auth.log && ! -s /var/log/secure ]]; then
+        unit=sshd
+        systemctl cat ssh.service >/dev/null 2>&1 && unit=ssh
+        backend="backend = systemd
+journalmatch = _SYSTEMD_UNIT=${unit}.service + _COMM=sshd + _COMM=sshd-session"
+    fi
+    mkdir -p "$(dirname "$anti_abuse_jail")"
+    cat >"$anti_abuse_jail" <<EOF
+# Written by "x-ui anti-abuse"; "x-ui anti-abuse off" removes it.
+[sshd]
+enabled = true
+port = ${ports}
+maxretry = 2
+findtime = 10m
+bantime = 1h
+bantime.increment = true
+bantime.maxtime = 1w
+ignoreip = ${ignore}
+${backend}
+EOF
+    if ! fail2ban-client -t >/dev/null 2>&1; then
+        rm -f "$anti_abuse_jail"
+        LOGE "fail2ban rejected the SSH jail (see: fail2ban-client -t); SSH bans are not on."
+        return 1
+    fi
+    systemctl enable fail2ban >/dev/null 2>&1
+    if systemctl is-active --quiet fail2ban; then
+        if ! fail2ban-client reload >/dev/null 2>&1; then
+            rm -f "$anti_abuse_jail"
+            fail2ban-client reload >/dev/null 2>&1
+            LOGE "fail2ban could not load the SSH jail; SSH bans are not on."
+            return 1
+        fi
+    else
+        systemctl restart fail2ban
+    fi
+    local i
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        [[ $(fail2ban-client get sshd maxretry 2>/dev/null) == 2 ]] && return 0
+        sleep 1
+    done
+    LOGE "fail2ban's SSH jail did not start (see: journalctl -u fail2ban)."
+    return 1
+}
+
+anti_abuse_on() {
+    local nft rc=0
+    if ! command -v systemctl >/dev/null 2>&1; then
+        LOGE "Anti-abuse needs systemd."
+        return 1
+    fi
+    if ! command -v nft >/dev/null 2>&1; then
+        anti_abuse_install nftables
+    fi
+    nft=$(command -v nft) || { LOGE "Could not install nftables."; return 1; }
+    mkdir -p "$(dirname "$anti_abuse_nft")"
+    anti_abuse_rules >"${anti_abuse_nft}.new"
+    if ! "$nft" -c -f "${anti_abuse_nft}.new"; then
+        rm -f "${anti_abuse_nft}.new"
+        LOGE "nftables rejected the rules; nothing changed."
+        return 1
+    fi
+    mv -f "${anti_abuse_nft}.new" "$anti_abuse_nft"
+    # After nftables.service and firewalld, whose start may flush the
+    # ruleset; before the network and x-ui come up.
+    cat >"$anti_abuse_unit" <<EOF
+[Unit]
+Description=x-ui anti-abuse (outgoing brute-force ports, private networks, scans)
+DefaultDependencies=no
+Wants=network-pre.target
+Before=network-pre.target shutdown.target x-ui.service
+After=local-fs.target nftables.service firewalld.service
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=${nft} -f ${anti_abuse_nft}
+ExecReload=${nft} -f ${anti_abuse_nft}
+ExecStop=${nft} delete table inet ${anti_abuse_table}
+
+[Install]
+WantedBy=sysinit.target
+EOF
+    systemctl daemon-reload
+    systemctl enable x-ui-anti-abuse >/dev/null 2>&1
+    systemctl restart x-ui-anti-abuse || { LOGE "x-ui-anti-abuse did not start (see: systemctl status x-ui-anti-abuse)."; return 1; }
+    anti_abuse_ssh_jail || rc=1
+
+    echo -e "${green}Anti-abuse is on:${plain}
+  Refused: outgoing TCP ${anti_abuse_tcp_ports} and UDP ${anti_abuse_udp_ports}
+  Refused: private networks through $(anti_abuse_uplinks | paste -sd, -)
+  Scans refused: over ${anti_abuse_wide%%/*} new hosts/s on a port, ${anti_abuse_deep%%/*} new ports/s on a host
+  SSH: 2 failed logins in 10 minutes = 1 hour ban, longer when the IP comes back
+  Status: x-ui anti-abuse status   Off: x-ui anti-abuse off"
+    return $rc
+}
+
+# anti_abuse_counter prints a named counter's packets.
+anti_abuse_counter() {
+    nft list counter inet "$anti_abuse_table" "$1" 2>/dev/null | awk '/packets/ { print $2 }'
+}
+
+# anti_abuse_hits prints "tcp/22 15, tcp/3389 2" for a port set's elements hit.
+anti_abuse_hits() {
+    nft list set inet "$anti_abuse_table" "$1" 2>/dev/null | grep -oE '[0-9]+ counter packets [0-9]+' |
+        awk -v p="$2" '$4 > 0 { printf "%s%s/%s %s", (n++ ? ", " : ""), p, $1, $4 }'
+}
+
+anti_abuse_status() {
+    if [[ ! -f $anti_abuse_unit ]]; then
+        echo -e "Anti-abuse: ${red}off${plain} (turn it on: x-ui anti-abuse)"
+        return 1
+    fi
+    local state ports
+    state=$(systemctl is-active x-ui-anti-abuse 2>/dev/null)
+    if [[ $state != active ]] || ! nft list table inet "$anti_abuse_table" >/dev/null 2>&1; then
+        echo -e "Anti-abuse: ${red}not loaded${plain} (${state}; load it again: x-ui anti-abuse)"
+        return 1
+    fi
+    ports=$(printf '%s, %s' "$(anti_abuse_hits tcp_ports tcp)" "$(anti_abuse_hits udp_ports udp)" | sed 's/^, //; s/, $//')
+    echo -e "Anti-abuse: ${green}on${plain} since $(systemctl show -p ActiveEnterTimestamp --value x-ui-anti-abuse)"
+    echo "  Refused ports:    ${ports:-none yet}"
+    echo "  Private networks: $(anti_abuse_counter private_nets)"
+    echo "  Scans refused:    $(anti_abuse_counter scan_wide) wide, $(anti_abuse_counter scan_deep) deep"
+    if [[ -f $anti_abuse_jail ]] && command -v fail2ban-client >/dev/null 2>&1; then
+        fail2ban-client status sshd 2>/dev/null | awk -F':\t' '
+            /Currently banned/ { now = $2 } /Total banned/ { total = $2 } /Total failed/ { failed = $2 }
+            END { printf "  SSH bans:         %s now, %s in total (%s failed logins)\n", now, total, failed }'
+    else
+        echo "  SSH bans:         off"
+    fi
+}
+
+anti_abuse_off() {
+    if [[ -f $anti_abuse_unit ]]; then
+        systemctl disable --now x-ui-anti-abuse >/dev/null 2>&1
+        rm -f "$anti_abuse_unit"
+        systemctl daemon-reload
+    fi
+    command -v nft >/dev/null 2>&1 && nft delete table inet "$anti_abuse_table" 2>/dev/null
+    rm -f "$anti_abuse_nft"
+    if [[ -f $anti_abuse_jail ]]; then
+        rm -f "$anti_abuse_jail"
+        systemctl is-active --quiet fail2ban && fail2ban-client reload >/dev/null
+    fi
+    LOGI "Anti-abuse is off."
+}
+
+# anti_abuse runs "x-ui anti-abuse [on|status|off|rules]".
+anti_abuse() {
+    case "${1:-on}" in
+    on) anti_abuse_on ;;
+    status) anti_abuse_status ;;
+    off) anti_abuse_off ;;
+    rules) anti_abuse_rules ;;
+    *)
+        echo "Usage: x-ui anti-abuse [on|status|off|rules]"
+        return 1
+        ;;
+    esac
+}
+
+anti_abuse_menu() {
+    echo -e "${green}\t1.${plain} Show status"
+    echo -e "${green}\t2.${plain} Turn on (or apply again)"
+    echo -e "${green}\t3.${plain} Turn off"
+    echo -e "${green}\t0.${plain} Back to Main Menu"
+    read -rp "Choose an option: " choice
+    case "$choice" in
+    0)
+        show_menu
+        ;;
+    1)
+        anti_abuse_status
+        before_show_menu
+        ;;
+    2)
+        anti_abuse_on
+        before_show_menu
+        ;;
+    3)
+        anti_abuse_off
+        before_show_menu
+        ;;
+    *)
+        echo -e "${red}Invalid option. Please select a valid number.${plain}\n"
+        anti_abuse_menu
         ;;
     esac
 }
@@ -1838,61 +2227,68 @@ iplimit_main() {
     esac
 }
 
-install_iplimit() {
-    if ! command -v fail2ban-client &>/dev/null; then
-        echo -e "${green}Fail2ban is not installed. Installing now...!${plain}\n"
+# install_fail2ban installs fail2ban if it is missing (IP Limit and
+# anti-abuse both use it).
+install_fail2ban() {
+    command -v fail2ban-client &>/dev/null && return 0
+    echo -e "${green}Fail2ban is not installed. Installing now...!${plain}\n"
 
-        # Check the OS and install necessary packages
-        case "${release}" in
-        ubuntu)
-            apt-get update
-            if [[ "${os_version}" -ge 24 ]]; then
-                apt-get install python3-pip -y
-                python3 -m pip install pyasynchat --break-system-packages
-            fi
-            apt-get install fail2ban -y
-            ;;
-        debian)
-            apt-get update
-            if [ "$os_version" -ge 12 ]; then
-                apt-get install -y python3-systemd
-            fi
-            apt-get install -y fail2ban
-            ;;
-        armbian)
-            apt-get update && apt-get install fail2ban -y
-            ;;
-        fedora | amzn | virtuozzo | rhel | almalinux | rocky | ol)
-            dnf -y update && dnf -y install fail2ban
-            ;;
-        centos)
-            if [[ "${VERSION_ID}" =~ ^7 ]]; then
-                yum update -y && yum install epel-release -y
-                yum -y install fail2ban
-            else
-                dnf -y update && dnf -y install fail2ban
-            fi
-            ;;
-        arch | manjaro | parch)
-            pacman -Syu --noconfirm fail2ban
-            ;;
-        alpine)
-            apk add fail2ban
-            ;;
-        *)
-            echo -e "${red}Unsupported operating system. Please check the script and install the necessary packages manually.${plain}\n"
-            exit 1
-            ;;
-        esac
-
-        if ! command -v fail2ban-client &>/dev/null; then
-            echo -e "${red}Fail2ban installation failed.${plain}\n"
-            exit 1
+    # Check the OS and install necessary packages
+    case "${release}" in
+    ubuntu)
+        apt-get update
+        if [[ "${os_version}" -ge 24 ]]; then
+            apt-get install python3-pip -y
+            python3 -m pip install pyasynchat --break-system-packages
         fi
+        apt-get install fail2ban -y
+        ;;
+    debian)
+        apt-get update
+        if [ "$os_version" -ge 12 ]; then
+            apt-get install -y python3-systemd
+        fi
+        apt-get install -y fail2ban
+        ;;
+    armbian)
+        apt-get update && apt-get install fail2ban -y
+        ;;
+    fedora | amzn | virtuozzo | rhel | almalinux | rocky | ol)
+        dnf -y update && dnf -y install fail2ban
+        ;;
+    centos)
+        if [[ "${VERSION_ID}" =~ ^7 ]]; then
+            yum update -y && yum install epel-release -y
+            yum -y install fail2ban
+        else
+            dnf -y update && dnf -y install fail2ban
+        fi
+        ;;
+    arch | manjaro | parch)
+        pacman -Syu --noconfirm fail2ban
+        ;;
+    alpine)
+        apk add fail2ban
+        ;;
+    *)
+        echo -e "${red}Unsupported operating system. Please check the script and install the necessary packages manually.${plain}\n"
+        return 1
+        ;;
+    esac
 
-        echo -e "${green}Fail2ban installed successfully!${plain}\n"
-    else
+    if ! command -v fail2ban-client &>/dev/null; then
+        echo -e "${red}Fail2ban installation failed.${plain}\n"
+        return 1
+    fi
+
+    echo -e "${green}Fail2ban installed successfully!${plain}\n"
+}
+
+install_iplimit() {
+    if command -v fail2ban-client &>/dev/null; then
         echo -e "${yellow}Fail2ban is already installed.${plain}\n"
+    else
+        install_fail2ban || exit 1
     fi
 
     echo -e "${green}Configuring IP Limit...${plain}\n"
@@ -2274,6 +2670,7 @@ show_usage() {
 │  ${blue}x-ui update-all-geofiles${plain}   - Update all geo files             │
 │  ${blue}x-ui tune${plain}                  - Server tuning (x-ui tune -h)     │
 │  ${blue}x-ui diag${plain}                  - Server diagnostics (x-ui diag -h)│
+│  ${blue}x-ui anti-abuse${plain}            - Anti-abuse (status, off)         │
 │  ${blue}x-ui db=\"<url>\"${plain}            - Replace database from a URL      │
 │  ${blue}x-ui install${plain}               - Install                          │
 │  ${blue}x-ui uninstall${plain}             - Uninstall                        │
@@ -2317,10 +2714,11 @@ show_menu() {
 │  ${green}24.${plain} Server Tuning                             │
 │  ${green}25.${plain} Update Geo Files                          │
 │  ${green}26.${plain} Speedtest by Ookla                        │
+│  ${green}27.${plain} Anti-Abuse                                │
 ╚────────────────────────────────────────────────╝
 "
     show_status
-    echo && read -rp "Please enter your selection [0-26]: " num
+    echo && read -rp "Please enter your selection [0-27]: " num
 
     case "${num}" in
     0)
@@ -2404,8 +2802,11 @@ show_menu() {
     26)
         run_speedtest
         ;;
+    27)
+        anti_abuse_menu
+        ;;
     *)
-        LOGE "Please enter the correct number [0-26]"
+        LOGE "Please enter the correct number [0-27]"
         ;;
     esac
 }
@@ -2465,6 +2866,10 @@ if [[ $# -gt 0 ]]; then
         ;;
     "tune" | "diag")
         check_install 0 && { ${xui_folder}/x-ui "$@"; exit $?; }
+        ;;
+    "anti-abuse")
+        anti_abuse "${2:-}"
+        exit $?
         ;;
     "setting" | "migrate" | "cert")
         # Passed straight to the panel binary (x-ui setting -xrayEgress ...).

@@ -121,6 +121,32 @@ x-ui tune revert    # undo exactly, and keep it off for later updates
 
 `bash install.sh tune=off` skips it for one install.
 
+## Anti-abuse
+
+`x-ui anti-abuse` keeps the server's IPs out of abuse reports. It is off until
+you turn it on:
+
+- outgoing connections to brute-force and spam ports are refused (TCP 22, 23,
+  25, 135, 139, 445, 1433, 2323, 3389, 5900; UDP 137, 138, 161, 1900, 11211);
+- private and reserved addresses are refused through the internet uplink (what
+  a hoster reports as a netscan); the uplink's own subnets and routes still work;
+- port and net scans are refused: more than 20 new hosts per second on a port
+  from one outgoing IP, or 10 new ports per second on one host. Web ports
+  (TCP 80/443, UDP 443), loopback and destinations already in use are never
+  limited;
+- fail2ban bans an IP after 2 failed SSH logins in 10 minutes, for an hour and
+  longer each time it comes back. The address you run it from is never banned.
+
+It is an nftables table of its own (`x-ui-anti-abuse.service`), without
+conntrack, so it costs nothing on a busy server and leaves other firewalls
+alone.
+
+```bash
+x-ui anti-abuse          # turn it on (again after network changes)
+x-ui anti-abuse status   # what it has refused, and SSH bans
+x-ui anti-abuse off      # remove it all
+```
+
 ## Updating
 
 The **x-ui** card on the overview page has an **Update** button. It checks this
