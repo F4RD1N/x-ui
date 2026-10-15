@@ -345,7 +345,11 @@ func (e *Env) health(f *Facts) []string {
 			inRange = append(inRange, strconv.Itoa(p))
 		}
 	}
-	if len(inRange) > 0 {
+	if len(inRange) > 20 {
+		// Unconnected UDP sockets count too: a busy proxy has tens of
+		// thousands of outgoing ones.
+		out = append(out, fmt.Sprintf("listening ports inside the ephemeral range and not reserved: %d (%s, ...)", len(inRange), strings.Join(inRange[:20], ",")))
+	} else if len(inRange) > 0 {
 		out = append(out, "listening ports inside the ephemeral range and not reserved: "+strings.Join(inRange, ","))
 	}
 	if e.readTrim("/proc/sys/vm/overcommit_memory") == "2" {
