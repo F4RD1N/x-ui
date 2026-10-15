@@ -17,9 +17,9 @@ const usage = `Usage: x-ui tune [status|apply|revert|queues] [options]
 
 Tunes this server for x-ui: kernel limits (sysctl), the x-ui service's
 open-file limit and Go memory settings, BBR, the uplink NICs (interrupt CPUs,
-XPS, UDP hashing, RPS, queue count), the CPU clock (performance governor, no
-deep idle states), a local DNS cache (unbound), addresses kept through link
-drops, time sync, and swap on tiny VMs.
+XPS, UDP hashing, RPS, queue count, fq as the root qdisc), the CPU clock
+(performance governor, no deep idle states), a local DNS cache (unbound),
+addresses kept through link drops, time sync, and swap on tiny VMs.
 It only ever raises a limit that something else set lower, writes only its own
 files, and revert undoes exactly what it did.
 
@@ -32,7 +32,8 @@ files, and revert undoes exactly what it did.
   queues --now                raise them now: the link resets for a few seconds, and
                               the old count comes back if the gateway stops answering
   nic [--boot]                run by x-ui itself: place the NICs' interrupts by the
-                              xray instances' CPUs (--boot: raise the queues first)
+                              xray instances' CPUs, and put fq on uplinks that still run
+                              the kernel's old default qdisc (--boot: raise the queues first)
 
 The DNS cache, addresses kept through link drops, time sync, irqbalance's
 policy and swap are set up by a fresh install and by 'apply', never by an

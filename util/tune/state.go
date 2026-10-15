@@ -69,6 +69,19 @@ type NICState struct {
 	RPS      map[string]*KeyState `json:"rps,omitempty"`  // "rx-0/rps_cpus" (CPU list), "rx-0/rps_flow_cnt"
 	Managed  bool                 `json:"kernel_managed_irqs,omitempty"`
 	TakeIRQs bool                 `json:"take_irqs,omitempty"`
+	Qdisc    *QdiscState          `json:"qdisc,omitempty"`
+}
+
+// QdiscState is the root qdisc x-ui put on a NIC in place of the kernel's
+// default.
+type QdiscState struct {
+	Orig    string `json:"orig,omitempty"`    // what ran before ("mq, pfifo_fast on 16 queues")
+	Kind    string `json:"kind,omitempty"`    // x-ui's root: "mq" or "fq"
+	Handle  string `json:"handle,omitempty"`  // the handle it got ("8001:")
+	Boot    string `json:"boot_id,omitempty"` // the boot it is from: handles start at 8001: again after a reboot
+	Pending string `json:"pending,omitempty"` // the root being put in (saved before it is)
+
+	ran bool // this run ran the replace but could not read the root back: Pending stays for the next run
 }
 
 // ChanState is x-ui's raise of a NIC's queue count.

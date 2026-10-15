@@ -15,12 +15,12 @@ type NICOptions struct {
 }
 
 // RunNIC re-applies the NICs' kernel state (UDP hashing, interrupt CPUs,
-// XPS, RPS) by the current instance split, for the NICs an apply recorded
-// and that this network namespace sees. It writes no file but the state
-// and runs no service manager command, and does nothing at all in a
-// container, before the first apply, or after a revert. With Boot, it first
-// raises the queue counts that wait for the boot, unless x-ui already runs
-// or the root file system is on the network.
+// XPS, RPS, the root qdisc) by the current instance split, for the NICs an
+// apply recorded and that this network namespace sees. It writes no file but
+// the state and runs no service manager command, and does nothing at all in
+// a container, before the first apply, or after a revert. With Boot, it
+// first raises the queue counts that wait for the boot, unless x-ui already
+// runs or the root file system is on the network.
 func (e *Env) RunNIC(o NICOptions) (*Result, error) {
 	r := &Result{}
 	if !e.exists(StateFile) {

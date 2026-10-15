@@ -182,6 +182,9 @@ func (e *Env) printNICs(np *nicPlan, st *State, dry bool) {
 			}
 		}
 		line("RPS/RFS", rps)
+		if it.Qdisc != nil {
+			line("qdisc", it.Qdisc.text(dry))
+		}
 	}
 	if ib := np.IRQBalance; ib != nil && (ib.Unit != "" || ib.Running) {
 		e.printf("  %-11s %s\n", "irqbalance", ib.text())
@@ -222,6 +225,7 @@ func (e *Env) nicDrift(np *nicPlan, f *Facts) []string {
 		add("interrupts", irq)
 		add("XPS", pend(it.XPS))
 		add("RPS", pend(it.RPS))
+		add("qdisc", it.Qdisc != nil && (it.Qdisc.Want != "" || it.Qdisc.later))
 	}
 	if f.Init == "systemd" {
 		have, _ := e.read(NICUnitFile)
@@ -282,6 +286,9 @@ func (np *nicPlan) summary() []string {
 		}
 		if strings.HasPrefix(it.RPSNote, "over CPUs") {
 			out = append(out, "RPS/RFS "+n+": "+it.RPSNote)
+		}
+		if it.Qdisc != nil {
+			out = append(out, "Qdisc "+n+": "+it.Qdisc.text(false))
 		}
 	}
 	if ib := np.IRQBalance; ib != nil && (ib.Unit != "" || ib.Running) {

@@ -344,6 +344,7 @@ func (e *Env) Revert(purge, dry bool) (*Result, error) {
 	f := e.gatherFacts()
 	if dry {
 		e.revertNICs(f, st, true, r)
+		e.revertQdiscs(f, st, true, r)
 		for _, p := range ownFiles {
 			if e.isOurs(p) {
 				r.change("would remove %s", p)
@@ -416,6 +417,9 @@ func (e *Env) Revert(purge, dry bool) (*Result, error) {
 		}
 		r.change("%s: %s -> %s", k, live, ks.Orig)
 	}
+	// After the sysctls: the kernel's default root comes back with the
+	// default qdisc put back.
+	e.revertQdiscs(f, st, false, r)
 	if h := st.Hashsize; h != nil && h.Written != "" {
 		live := e.readTrim(hashsizePath)
 		if live == h.Written {

@@ -953,8 +953,10 @@ func TestIRQBalanceAdminArgsLater(t *testing.T) {
 	if r, _ := e.RunNIC(NICOptions{}); len(r.Changed) != 0 {
 		t.Errorf("tune nic placed them: %v", r.Changed)
 	}
-	if d := diffMaps(before, irqSnapshot(t, b)); len(d) > 0 || len(e.Ran) > 0 || !e.exists(IRQBalanceDropIn) {
-		t.Errorf("tune nic: %v, ran %v", d[:min(3, len(d))], e.Ran)
+	// Only reads: tc's qdisc listing.
+	ran := slices.DeleteFunc(slices.Clone(e.Ran), func(c string) bool { return strings.HasPrefix(c, "tc -j qdisc show ") })
+	if d := diffMaps(before, irqSnapshot(t, b)); len(d) > 0 || len(ran) > 0 || !e.exists(IRQBalanceDropIn) {
+		t.Errorf("tune nic: %v, ran %v", d[:min(3, len(d))], ran)
 	}
 	if got := statusText(t, e); !strings.Contains(got, "x-ui's 90-x-ui.conf hides the IRQBALANCE_ARGS set in /etc/default/irqbalance: 'x-ui tune apply' removes it") {
 		t.Errorf("status:\n%s", got)
@@ -1865,7 +1867,8 @@ func TestNICStateCompat(t *testing.T) {
 	st.NICs = map[string]*NICState{"0000:82:00.0": {Name: "eno1", Driver: "ixgbe",
 		Channels: &ChanState{Orig: &hw.Channels{MaxCombined: 63, Combined: 16}, Want: 28, RSSCap: 20, Failed: "x", Attempt: &ChanAttempt{At: "t", From: 16, To: 28}},
 		Hash:     map[string]*KeyState{"udp4": {Orig: "sd", Written: "sdfn"}}, IRQ: map[string]*IRQState{"q0": {IRQ: 101, Orig: "1-55", Written: "1"}},
-		XPS: map[string]*KeyState{"tx-0": {Orig: "-", Written: "1"}}, RPS: map[string]*KeyState{"rx-0/rps_cpus": {Orig: "-", Written: "0-1"}}, Managed: true, TakeIRQs: true}}
+		XPS: map[string]*KeyState{"tx-0": {Orig: "-", Written: "1"}}, RPS: map[string]*KeyState{"rx-0/rps_cpus": {Orig: "-", Written: "0-1"}}, Managed: true, TakeIRQs: true,
+		Qdisc: &QdiscState{Orig: "mq, pfifo_fast on 16 queues", Kind: "mq", Handle: "8001:", Boot: "b"}}}
 	st.IRQBalancePolicy = true
 	if err := e.saveState(st, nil); err != nil {
 		t.Fatal(err)
@@ -1876,7 +1879,9 @@ func TestNICStateCompat(t *testing.T) {
 	}
 	var raw map[string]any
 	json.Unmarshal([]byte(e.readTrim(StateFile)), &raw)
-	if _, ok := raw["nics"].(map[string]any)["0000:82:00.0"].(map[string]any)["kernel_managed_irqs"]; !ok {
+	nic := raw["nics"].(map[string]any)["0000:82:00.0"].(map[string]any)
+	qdisc, _ := nic["qdisc"].(map[string]any)
+	if _, ok := nic["kernel_managed_irqs"]; !ok || qdisc["boot_id"] != "b" {
 		t.Errorf("json names: %s", e.readTrim(StateFile))
 	}
 	// Revert of an older state still undoes its irqbalance install.

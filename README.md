@@ -106,7 +106,13 @@ out so that no instance carries more than its share (free CPUs first), and
 each CPU sends (XPS) on the queue whose interrupt is on its own core. The
 panel re-places them whenever the split changes. On ixgbe, igb and igc, UDP
 is hashed on ports as well as addresses (their default is addresses only).
-A single-queue NIC (a typical VPS) gets RPS and RFS instead. The queue count
+A single-queue NIC (a typical VPS) gets RPS and RFS instead. An uplink that
+came up before fq was the default qdisc (at boot, before the sysctls) keeps
+the kernel's default of then, pfifo_fast or fq_codel: it gets fq (mq with fq
+on each queue) once, unless someone set up its root qdisc or chose another
+default qdisc; revert puts the kernel's default back (fq took over the
+pacing of the connections open then, so those that use BBR send unpaced
+until they close; an x-ui restart closes xray's). The queue count
 is only ever raised, to one queue per physical core near the NIC, and never
 while the server is in use: at boot, before x-ui starts
 (`x-ui-nic.service`), or with `x-ui tune queues --now` (the link resets for a

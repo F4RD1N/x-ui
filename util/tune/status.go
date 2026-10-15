@@ -75,6 +75,14 @@ func (e *Env) Status(asJSON bool) ([]string, error) {
 	f := e.gatherFacts()
 	p := e.plan(f, st)
 	np := e.planNICs(f, st, nicOpts{})
+	// fq as the default qdisc is not fq on the uplinks that came up before.
+	if lag := np.qdiscLag(); lag != "" {
+		for _, k := range p.Keys {
+			if k.Key == "net.core.default_qdisc" && k.Live == "fq" && k.Want == "" {
+				k.State, k.Note = "partly", lag
+			}
+		}
+	}
 	d := append(e.drift(p), e.nicDrift(np, f)...)
 	if cp := e.planCPU(f, st); len(cp.Governor) > 0 || len(cp.Idle) > 0 {
 		if len(cp.Governor) > 0 {

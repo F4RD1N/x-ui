@@ -110,8 +110,8 @@ func (e *Env) endAttempts(st *State, r *Result) {
 // applyNICKernel writes the planned kernel state of the NICs that have a
 // state entry (of the same driver: another card at that address is not
 // x-ui's until an apply makes its entry): UDP hashing, interrupt CPUs, XPS,
-// RPS. A NIC whose interrupts turn out to be kernel-managed is planned again
-// with them kept.
+// RPS, the root qdisc. A NIC whose interrupts turn out to be kernel-managed
+// is planned again with them kept.
 func (e *Env) applyNICKernel(f *Facts, st *State, np *nicPlan, no nicOpts, r *Result) *nicPlan {
 	saved := false
 	defer func() {
@@ -148,6 +148,7 @@ func (e *Env) applyNICKernel(f *Facts, st *State, np *nicPlan, no nicOpts, r *Re
 		for _, it := range np.NICs {
 			if ns := it.state(st); ns != nil {
 				e.writeQueueFiles(f, np, it, ns, r)
+				e.writeQdisc(it, ns, r)
 			}
 		}
 		break
@@ -373,6 +374,9 @@ func markPending(st *State, np *nicPlan) bool {
 			is.Pending = ip.Want
 			marked = true
 		}
+		if markQdisc(it, ns) {
+			marked = true
+		}
 	}
 	return marked
 }
@@ -389,7 +393,8 @@ func unmark(m map[string]*KeyState, key string) {
 }
 
 // dropPending forgets every value still marked as being written (the run
-// did not get to it).
+// did not get to it). A root qdisc that was replaced but not read back
+// stays marked: the next run settles it.
 func dropPending(st *State) {
 	for _, ns := range st.NICs {
 		for _, m := range []map[string]*KeyState{ns.Hash, ns.XPS, ns.RPS} {
@@ -407,13 +412,17 @@ func dropPending(st *State) {
 				}
 			}
 		}
+		if qs := ns.Qdisc; qs == nil || !qs.ran {
+			unmarkQdisc(ns)
+		}
 	}
 }
 
-// settlePending ends the writes a dead run left marked: a value that is
-// live now is x-ui's (it was written), any other is forgotten. An interrupt
-// on the other thread of its pending CPU's core was written too: writeIRQs
-// puts it there when that CPU has no vector left (ENOSPC).
+// settlePending ends the writes a dead run left marked: a value (or root
+// qdisc) that is live now is x-ui's (it was written), any other is
+// forgotten. An interrupt on the other thread of its pending CPU's core was
+// written too: writeIRQs puts it there when that CPU has no vector left
+// (ENOSPC).
 func (e *Env) settlePending(st *State) {
 	var topo *hw.Topology
 	sibling := func(pending string, live hw.CPUSet) bool {
@@ -471,6 +480,7 @@ func (e *Env) settlePending(st *State) {
 				unmark(g.m, k)
 			}
 		}
+		e.settleQdisc(ns, name)
 	}
 }
 

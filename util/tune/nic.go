@@ -15,13 +15,13 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/util/hw"
 )
 
-// NIC tuning: the uplink NICs' queue count, UDP hashing, interrupt CPUs, XPS
-// and RPS. Three kinds of change:
+// NIC tuning: the uplink NICs' queue count, UDP hashing, interrupt CPUs, XPS,
+// RPS and root qdisc. Three kinds of change:
 //
-//   - kernel state (interrupt CPUs, XPS, RPS/RFS) and the UDP hash on
-//     ixgbe, igb and igc (a register write, no link reset) are set by every
-//     apply but the boot one, and by "x-ui tune nic" (the panel, when the
-//     instance split changes; the boot unit);
+//   - kernel state (interrupt CPUs, XPS, RPS/RFS, fq as the root qdisc) and
+//     the UDP hash on ixgbe, igb and igc (a register write, no link reset)
+//     are set by every apply but the boot one, and by "x-ui tune nic" (the
+//     panel, when the instance split changes; the boot unit);
 //   - the queue count is only ever raised, and only by x-ui-nic.service at
 //     boot (before x-ui starts) or by "x-ui tune queues --now", under a
 //     watchdog that puts the old count back when the gateway stops
@@ -73,6 +73,7 @@ type nicItem struct {
 	XPSNote  string      `json:"xps_note,omitempty"`
 	RPS      []*itemPlan `json:"rps,omitempty"`
 	RPSNote  string      `json:"rps_note,omitempty"`
+	Qdisc    *qdiscPlan  `json:"qdisc,omitempty"`
 
 	// keep: why the interrupts are not moved: "foreign" (placed by
 	// someone else), "managed" (by the kernel), "irqbalance", "unknown"
@@ -225,7 +226,7 @@ func rpsFlowEntries(f *Facts) int64 {
 }
 
 // planNICs works out everything about the uplink NICs. It reads but never
-// writes (ethtool getters only).
+// writes (ethtool getters and tc's qdisc listing only).
 func (e *Env) planNICs(f *Facts, st *State, o nicOpts) *nicPlan {
 	np := &nicPlan{rpsF: rpsFlowEntries(f)}
 	if f.Container() {
@@ -272,6 +273,7 @@ func (e *Env) planNICs(f *Facts, st *State, o nicOpts) *nicPlan {
 	}
 
 	admin := e.adminChannelFiles()
+	fqOn, fqLater, fqWhy := e.fqDefault(f, st)
 	for _, n := range nics {
 		it := &nicItem{NIC: n, Key: nicKey(n)}
 		ns := st.NICs[it.Key]
@@ -282,6 +284,7 @@ func (e *Env) planNICs(f *Facts, st *State, o nicOpts) *nicPlan {
 		it.Queues = e.planQueues(f, t, np.Eligible, n, ns, o.Retry, admin)
 		it.Table = tableText(n)
 		e.planHash(it, ns)
+		e.planQdisc(it, st, fqOn, fqLater, fqWhy)
 		it.rss = rssOrder(n)
 		np.NICs = append(np.NICs, it)
 	}

@@ -62,10 +62,14 @@ func (e *Env) summary() []string {
 	if len(backlog) > 0 {
 		out = append(out, "Backlog: "+strings.Join(backlog, ", "))
 	}
+	np := e.planNICs(f, st, nicOpts{})
 	if cc := normValue(e.readTrim(sysctlPath("net.ipv4.tcp_congestion_control"))); cc != "" {
 		line := "Congestion control: " + cc
 		if q := normValue(e.readTrim(sysctlPath("net.core.default_qdisc"))); q != "" {
 			line += " with " + q
+			if lag := np.qdiscLag(); q == "fq" && lag != "" {
+				line += ", but " + lag
+			}
 		}
 		out = append(out, line)
 	}
@@ -77,5 +81,5 @@ func (e *Env) summary() []string {
 	} else if d != "" {
 		out = append(out, "DNS: "+d)
 	}
-	return append(out, e.planNICs(f, st, nicOpts{}).summary()...)
+	return append(out, np.summary()...)
 }
