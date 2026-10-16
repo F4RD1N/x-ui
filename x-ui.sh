@@ -247,6 +247,10 @@ uninstall() {
         systemctl daemon-reload
         systemctl reset-failed
     fi
+    # Only now that the cores are gone: until then the guard is still needed.
+    if [[ -f $protect_unit ]]; then
+        protect_off
+    fi
 
     rm /etc/x-ui/ -rf
     rm ${xui_folder}/ -rf
@@ -1048,6 +1052,219 @@ anti_abuse_menu() {
     *)
         echo -e "${red}Invalid option. Please select a valid number.${plain}\n"
         anti_abuse_menu
+        ;;
+    esac
+}
+
+# Protection is set up by every install and update, unlike the opt-in
+# anti-abuse:
+#  - The direct guard. The panel marks every connection the cores' freedom
+#    ("direct") outbounds make (web/service/xray_direct_mark.go, directMark),
+#    and an nftables table refuses marked packets to this server's loopback
+#    and to private networks. Freedom resolves an allowed name itself and
+#    dials whatever comes back, which routing never sees: a name pointing at
+#    127.0.0.1 would reach what listens only there -- the cores' API takes
+#    commands without a password. The server's public addresses stay open:
+#    what listens there is open to the internet anyway, and VPN apps test the
+#    configs of the server they are connected to through it.
+#  - Speed-test servers (iperf3) are stopped and kept from starting: they let
+#    anyone on the internet pull the uplink's whole bandwidth.
+# "x-ui protect off" takes the guard away; speed-test servers stay stopped.
+protect_nft="/etc/x-ui/direct-guard.nft"
+protect_unit="/etc/systemd/system/x-ui-direct-guard.service"
+protect_table="xui_direct_guard"
+protect_mark=4242
+protect_speedtest_units="iperf3.service iperf.service"
+protect_dropin="x-ui-protect.conf"
+
+# protect_rules prints the direct guard's nftables rules.
+protect_rules() {
+    cat <<EOF
+#!/usr/sbin/nft -f
+# Written by "x-ui protect"; "x-ui protect off" removes it.
+
+table inet ${protect_table}
+delete table inet ${protect_table}
+
+table inet ${protect_table} {
+	set private4 {
+		type ipv4_addr
+		flags interval
+		elements = { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12,
+			     192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/3 }
+	}
+	set private6 {
+		type ipv6_addr
+		flags interval
+		elements = { ::/128, fc00::/7, fe80::/10, ff00::/8 }
+	}
+	counter local { }
+	counter private { }
+	counter self { }
+
+	chain output {
+		type filter hook output priority filter - 1; policy accept;
+		meta mark != ${protect_mark} return
+		ip daddr 127.0.0.0/8 counter name local goto refuse
+		ip6 daddr ::1 counter name local goto refuse
+		ip daddr @private4 counter name private goto refuse
+		ip6 daddr @private6 counter name private goto refuse
+		# This server's own public addresses: open, counted.
+		oifname "lo" counter name self
+	}
+	chain refuse {
+		meta l4proto tcp reject with tcp reset
+		reject with icmpx admin-prohibited
+	}
+}
+EOF
+}
+
+# protect_speedtest_held says whether a speed-test server is kept from
+# starting for good: masked, or (a unit file in /etc/systemd/system cannot be
+# masked) held back by our drop-in. A runtime mask goes at the next boot.
+protect_speedtest_held() {
+    [[ $(systemctl is-enabled "$1" 2>/dev/null) == masked ]] || [[ -f /etc/systemd/system/$1.d/$protect_dropin ]]
+}
+
+# protect_speedtest_stopped says whether a speed-test server is held and not
+# running: a plain "systemctl mask" leaves a running one running.
+protect_speedtest_stopped() {
+    protect_speedtest_held "$1" || return 1
+    case "$(systemctl is-active "$1" 2>/dev/null)" in
+    active | activating | reloading | deactivating) return 1 ;;
+    esac
+    return 0
+}
+
+# protect_speedtest_stop stops the speed-test servers and keeps them from
+# starting again.
+protect_speedtest_stop() {
+    local u en
+    for u in $protect_speedtest_units; do
+        en=$(systemctl is-enabled "$u" 2>/dev/null) || true
+        [[ -z $en || $en == not-found ]] && continue
+        protect_speedtest_stopped "$u" && continue
+        systemctl disable --now "$u" >/dev/null 2>&1 || true
+        systemctl stop "$u" >/dev/null 2>&1 || true
+        systemctl unmask --runtime "$u" >/dev/null 2>&1 || true
+        systemctl mask "$u" >/dev/null 2>&1 || true
+        if ! protect_speedtest_held "$u"; then
+            mkdir -p "/etc/systemd/system/$u.d"
+            cat >"/etc/systemd/system/$u.d/$protect_dropin" <<EOF
+# Written by "x-ui protect": speed-test servers stay off. To start it again:
+# delete this file, then systemctl daemon-reload && systemctl enable --now $u
+[Unit]
+ConditionPathExists=/nonexistent/x-ui-protect
+EOF
+            systemctl daemon-reload
+        fi
+        LOGI "Stopped the speed-test server ${u%.service}; it stays off."
+    done
+    return 0
+}
+
+# protect_speedtest_summary prints what became of the speed-test servers.
+protect_speedtest_summary() {
+    local u out=""
+    for u in $protect_speedtest_units; do
+        case "$(systemctl is-enabled "$u" 2>/dev/null)" in
+        "" | not-found) continue ;;
+        esac
+        if protect_speedtest_stopped "$u"; then
+            out+="${out:+, }${u%.service} stopped"
+        elif protect_speedtest_held "$u"; then
+            out+="${out:+, }${u%.service} held but RUNNING"
+        else
+            out+="${out:+, }${u%.service} $(systemctl is-active "$u" 2>/dev/null)"
+        fi
+    done
+    echo "${out:-none here}"
+}
+
+protect_on() {
+    local nft rc=0
+    if ! command -v systemctl >/dev/null 2>&1; then
+        LOGE "Protection needs systemd; it is not set up."
+        return 1
+    fi
+    protect_speedtest_stop
+    if ! command -v nft >/dev/null 2>&1; then
+        anti_abuse_install nftables >/dev/null 2>&1
+    fi
+    nft=$(command -v nft) || { LOGE "Could not install nftables; the direct guard is not set up."; return 1; }
+    mkdir -p "$(dirname "$protect_nft")"
+    protect_rules >"${protect_nft}.new"
+    if ! "$nft" -c -f "${protect_nft}.new"; then
+        rm -f "${protect_nft}.new"
+        LOGE "nftables rejected the direct guard (no permission here?); it is not set up."
+        return 1
+    fi
+    mv -f "${protect_nft}.new" "$protect_nft"
+    cat >"$protect_unit" <<EOF
+[Unit]
+Description=x-ui direct guard (the cores' direct connections never reach this server's loopback or private networks)
+DefaultDependencies=no
+Wants=network-pre.target
+Before=network-pre.target shutdown.target x-ui.service
+After=local-fs.target nftables.service firewalld.service
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=${nft} -f ${protect_nft}
+ExecReload=${nft} -f ${protect_nft}
+ExecStop=${nft} delete table inet ${protect_table}
+
+[Install]
+WantedBy=sysinit.target
+EOF
+    systemctl daemon-reload
+    systemctl enable x-ui-direct-guard >/dev/null 2>&1
+    # A reload swaps the table in one go: no moment without the guard.
+    systemctl reload-or-restart x-ui-direct-guard || { LOGE "x-ui-direct-guard did not start (see: systemctl status x-ui-direct-guard)."; rc=1; }
+    nft list table inet "$protect_table" >/dev/null 2>&1 || rc=1
+    [[ $rc == 0 ]] && LOGI "Direct guard on; speed-test servers: $(protect_speedtest_summary)."
+    return $rc
+}
+
+protect_counter() {
+    nft list counter inet "$protect_table" "$1" 2>/dev/null | awk '/packets/ { print $2 }'
+}
+
+protect_status() {
+    if nft list table inet "$protect_table" >/dev/null 2>&1; then
+        echo -e "Direct guard: ${green}on${plain}"
+        echo "  Refused: $(protect_counter local) packets to this server's loopback, $(protect_counter private) to private networks"
+        echo "  Passed:  $(protect_counter self) packets to this server's public addresses"
+    else
+        echo -e "Direct guard: ${red}off${plain} (turn it on: x-ui protect)"
+    fi
+    echo "Speed-test servers: $(protect_speedtest_summary)"
+}
+
+protect_off() {
+    if [[ -f $protect_unit ]]; then
+        systemctl disable --now x-ui-direct-guard >/dev/null 2>&1
+        rm -f "$protect_unit"
+        systemctl daemon-reload 2>/dev/null
+    fi
+    command -v nft >/dev/null 2>&1 && nft delete table inet "$protect_table" 2>/dev/null
+    rm -f "$protect_nft"
+    LOGI "Direct guard off. Speed-test servers stay stopped; to start iperf3 again: systemctl unmask iperf3 && systemctl enable --now iperf3 (if it was held by /etc/systemd/system/iperf3.service.d/${protect_dropin}: delete that, systemctl daemon-reload, then enable --now)."
+}
+
+# protect runs "x-ui protect [on|status|off|rules]".
+protect() {
+    case "${1:-on}" in
+    on) protect_on ;;
+    status) protect_status ;;
+    off) protect_off ;;
+    rules) protect_rules ;;
+    *)
+        echo "Usage: x-ui protect [on|status|off|rules]"
+        return 1
         ;;
     esac
 }
@@ -2746,6 +2963,7 @@ show_usage() {
 │  ${blue}x-ui tune${plain}                  - Server tuning (x-ui tune -h)     │
 │  ${blue}x-ui diag${plain}                  - Server diagnostics (x-ui diag -h)│
 │  ${blue}x-ui anti-abuse${plain}            - Anti-abuse (status, off)         │
+│  ${blue}x-ui protect${plain}               - Direct guard, speed tests        │
 │  ${blue}x-ui db=\"<url>\"${plain}            - Replace database from a URL      │
 │  ${blue}x-ui install${plain}               - Install                          │
 │  ${blue}x-ui uninstall${plain}             - Uninstall                        │
@@ -2944,6 +3162,10 @@ if [[ $# -gt 0 ]]; then
         ;;
     "anti-abuse")
         anti_abuse "${2:-}"
+        exit $?
+        ;;
+    "protect")
+        protect "${2:-}"
         exit $?
         ;;
     "setting" | "migrate" | "cert")

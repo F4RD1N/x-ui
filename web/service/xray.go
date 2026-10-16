@@ -130,6 +130,7 @@ func (s *XrayService) buildXrayConfigAndInbounds(templateConfig string) (*xray.C
 	if err != nil {
 		return nil, nil, err
 	}
+	xrayConfig.OutboundConfigs = withDirectMark(xrayConfig.OutboundConfigs)
 
 	s.inboundService.addTraffic(nil, nil)
 

@@ -19,8 +19,11 @@
 # fresh install also sets up time sync, irqbalance's policy (when irqbalance is
 # installed) and swap on tiny VMs; an update leaves those alone. It only raises
 # limits, never lowers one set elsewhere, and "x-ui tune revert" undoes it and
-# keeps it off for later updates. The install ends with a short summary of the
-# server and of what was set up ("x-ui diag --summary", read-only).
+# keeps it off for later updates. Every install and update also protects the
+# server ("x-ui protect"): the cores' direct connections never reach its
+# loopback or private networks, and speed-test servers (iperf3) stay stopped.
+# The install ends with a short summary of the server and of what was set up
+# ("x-ui diag --summary", read-only).
 
 set -uo pipefail
 
@@ -281,6 +284,21 @@ tune_server() {
     fi
 }
 
+# ---- protection ------------------------------------------------------------
+# On every install and update ("x-ui protect"): the cores' direct connections
+# never reach this server's loopback or private networks, and speed-test
+# servers (iperf3) stay stopped. The opt-in anti-abuse is not touched.
+PROTECT_RESULT="not run"
+protect_server() {
+    info "Protecting the server (direct guard, speed-test servers)"
+    if /usr/bin/x-ui protect on 2>&1 | sed 's/^/  /'; then
+        PROTECT_RESULT="on (details: x-ui protect status)"
+    else
+        warn "The direct guard could not be set up; the panel is installed anyway. Retry with: x-ui protect"
+        PROTECT_RESULT="NOT on (retry: x-ui protect)"
+    fi
+}
+
 start_x_ui() {
     systemctl daemon-reload
     systemctl enable x-ui >/dev/null 2>&1
@@ -308,6 +326,7 @@ install_base
 install_x_ui
 configure
 tune_server
+protect_server
 start_x_ui
 
 # What the server is and what x-ui set up on it. It only reads, and it is
@@ -330,6 +349,7 @@ echo
 echo "  Core:     bundled dialect fork, not switchable"
 echo "  Database: ${db_folder}/x-ui.db"
 echo "  Tuning:   ${TUNE_RESULT}"
+echo "  Protect:  ${PROTECT_RESULT}"
 echo "  Replace the database later with: x-ui db=\"https://host/x-ui.db\""
 echo
 systemctl --no-pager status x-ui | head -5
