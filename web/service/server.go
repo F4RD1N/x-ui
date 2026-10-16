@@ -31,7 +31,6 @@ import (
 	"github.com/shirou/gopsutil/v4/host"
 	"github.com/shirou/gopsutil/v4/load"
 	"github.com/shirou/gopsutil/v4/mem"
-	"github.com/shirou/gopsutil/v4/net"
 	"github.com/xtls/xray-core/app/router"
 	"google.golang.org/protobuf/proto"
 )
@@ -315,25 +314,22 @@ func (s *ServerService) GetStatus(lastStatus *Status) *Status {
 		status.Loads = []float64{avgState.Load1, avgState.Load5, avgState.Load15}
 	}
 
-	// Network stats
-	ioStats, err := net.IOCounters(false)
-	if err != nil {
+	// Network stats: the uplinks, each counted once (netio.go).
+	if sent, recv, err := hostNetCounters(); err != nil {
 		logger.Warning("get io counters failed:", err)
-	} else if len(ioStats) > 0 {
-		ioStat := ioStats[0]
-		status.NetTraffic.Sent = ioStat.BytesSent
-		status.NetTraffic.Recv = ioStat.BytesRecv
+	} else {
+		status.NetTraffic.Sent = sent
+		status.NetTraffic.Recv = recv
 
 		if lastStatus != nil {
-			duration := now.Sub(lastStatus.T)
-			seconds := float64(duration) / float64(time.Second)
-			up := uint64(float64(status.NetTraffic.Sent-lastStatus.NetTraffic.Sent) / seconds)
-			down := uint64(float64(status.NetTraffic.Recv-lastStatus.NetTraffic.Recv) / seconds)
-			status.NetIO.Up = up
-			status.NetIO.Down = down
+			seconds := now.Sub(lastStatus.T).Seconds()
+			// A counter that went back (an interface gone, a bond
+			// rebuilt) gives no speed this time rather than a huge one.
+			if seconds > 0 && sent >= lastStatus.NetTraffic.Sent && recv >= lastStatus.NetTraffic.Recv {
+				status.NetIO.Up = uint64(float64(sent-lastStatus.NetTraffic.Sent) / seconds)
+				status.NetIO.Down = uint64(float64(recv-lastStatus.NetTraffic.Recv) / seconds)
+			}
 		}
-	} else {
-		logger.Warning("can not find io counters")
 	}
 
 	// TCP/UDP connections
