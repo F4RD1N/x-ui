@@ -57,7 +57,16 @@ func runWebServer() {
 	godotenv.Load()
 	keepFilesPrivate()
 
-	err := database.InitDB(config.GetDBPath())
+	lock, err := lockServer(config.GetDBFolderPath())
+	switch {
+	case errors.Is(err, errServerRunning):
+		log.Fatalf("Not starting: %v", err)
+	case err != nil:
+		logger.Warning("panel lock:", err)
+	}
+	serverLock = lock
+
+	err = database.InitDB(config.GetDBPath())
 	if err != nil {
 		log.Fatalf("Error initializing database: %v", err)
 	}
