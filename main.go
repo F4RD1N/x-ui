@@ -39,17 +39,18 @@ import (
 func runWebServer() {
 	log.Printf("Starting %v %v", config.GetName(), config.GetVersion())
 
+	var level logging.Level
 	switch config.GetLogLevel() {
 	case config.Debug:
-		logger.InitLogger(logging.DEBUG)
+		level = logging.DEBUG
 	case config.Info:
-		logger.InitLogger(logging.INFO)
+		level = logging.INFO
 	case config.Notice:
-		logger.InitLogger(logging.NOTICE)
+		level = logging.NOTICE
 	case config.Warning:
-		logger.InitLogger(logging.WARNING)
+		level = logging.WARNING
 	case config.Error:
-		logger.InitLogger(logging.ERROR)
+		level = logging.ERROR
 	default:
 		log.Fatalf("Unknown log level: %v", config.GetLogLevel())
 	}
@@ -57,16 +58,19 @@ func runWebServer() {
 	godotenv.Load()
 	keepFilesPrivate()
 
-	lock, err := lockServer(config.GetDBFolderPath())
-	switch {
-	case errors.Is(err, errServerRunning):
-		log.Fatalf("Not starting: %v", err)
-	case err != nil:
-		logger.Warning("panel lock:", err)
+	// The lock comes before the logger: opening the log file empties it,
+	// and a second panel must not empty the running one's.
+	lock, lockErr := lockServer(config.GetDBFolderPath())
+	if errors.Is(lockErr, errServerRunning) {
+		log.Fatalf("Not starting: %v", lockErr)
 	}
 	serverLock = lock
+	logger.InitLogger(level)
+	if lockErr != nil {
+		logger.Warning("panel lock:", lockErr)
+	}
 
-	err = database.InitDB(config.GetDBPath())
+	err := database.InitDB(config.GetDBPath())
 	if err != nil {
 		log.Fatalf("Error initializing database: %v", err)
 	}

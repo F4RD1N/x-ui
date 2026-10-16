@@ -25,10 +25,17 @@ import (
 
 const ownNetnsEnv = "XUI_MAIN_TEST_NETNS"
 
+// runPanelEnv makes the test binary run a panel server (see TestMain).
+const runPanelEnv = "XUI_MAIN_TEST_RUN_PANEL"
+
 // Moving the panel's port reserves it in ip_local_reserved_ports and closes
 // the connections holding it: as root the tests run in a network namespace
 // of their own.
 func TestMain(m *testing.M) {
+	if os.Getenv(runPanelEnv) == "1" {
+		runWebServer() // a panel server started by a test
+		os.Exit(0)
+	}
 	if code, done := netnstest.Reexec(ownNetnsEnv); done {
 		os.Exit(code)
 	}

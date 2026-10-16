@@ -38,17 +38,23 @@ func lockServer(dir string) (*os.File, error) {
 	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		b, _ := os.ReadFile(p)
 		f.Close()
-		if errors.Is(err, unix.EWOULDBLOCK) {
-			if pid := strings.TrimSpace(string(b)); pid != "" {
-				return nil, fmt.Errorf("%w (pid %s, lock %s)", errServerRunning, pid, p)
-			}
-			return nil, fmt.Errorf("%w (lock %s)", errServerRunning, p)
-		}
-		return nil, err
+		return nil, lockError(err, strings.TrimSpace(string(b)), p)
 	}
 	// The pid is only for the message a second one prints.
 	if f.Truncate(0) == nil {
 		f.WriteAt([]byte(strconv.Itoa(os.Getpid())+"\n"), 0)
 	}
 	return f, nil
+}
+
+// lockError says what a failed flock means: only a lock someone holds is
+// errServerRunning; ENOLCK, EOPNOTSUPP and the like are not.
+func lockError(err error, pid, path string) error {
+	if !errors.Is(err, unix.EWOULDBLOCK) {
+		return err
+	}
+	if pid != "" {
+		return fmt.Errorf("%w (pid %s, lock %s)", errServerRunning, pid, path)
+	}
+	return fmt.Errorf("%w (lock %s)", errServerRunning, path)
 }
