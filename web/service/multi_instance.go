@@ -278,9 +278,14 @@ func usesUDP(in *model.Inbound) bool {
 // SaveSubInbounds makes subs the sub-inbounds of inbound id. Ports must be
 // free and distinct; an empty instance name gets the next default one; an
 // instance may be shared by the inbound's own sub-inbounds (and the inbound
-// itself), never with other inbounds, and its cores must fit next to every
-// other instance. Changes go to the running cores through their API: the
-// cores of other sub-inbounds keep running.
+// itself), and by sub-inbounds of other inbounds -- never by another inbound
+// itself, whose edits would then be refused (prepareXrayInstance). A sub-inbound
+// in an instance other inbounds' sub-inbounds use must carry that instance's
+// cores: while it is shared, no one inbound changes them. Cores must fit next
+// to every other instance. The new
+// ports are reserved before they are tried. Changes go to the running cores
+// through their API: the cores of other sub-inbounds keep running, and so
+// does a running core a sub-inbound joins.
 func (s *InboundService) SaveSubInbounds(id int, subs []model.SubInbound) (*model.Inbound, bool, error) {
 	editMu.RLock()
 	defer editMu.RUnlock()
@@ -296,6 +301,13 @@ func (s *InboundService) SaveSubInbounds(id int, subs []model.SubInbound) (*mode
 		return nil, false, err
 	}
 	otherNames := instanceCores(others)
+	// Instances that run another inbound itself, not only its sub-inbounds.
+	runsInbound := map[string]bool{}
+	for _, o := range others {
+		if o.SubOf == 0 {
+			runsInbound[instanceName(o)] = true
+		}
+	}
 	used := map[string]bool{instanceName(src): true}
 	for n := range otherNames {
 		used[n] = true
@@ -306,6 +318,18 @@ func (s *InboundService) SaveSubInbounds(id int, subs []model.SubInbound) (*mode
 		}
 	}
 	own := ownPorts(src)
+	// A port an outgoing connection takes between the check below and the
+	// core's bind would fail the add and restart that core: keep the kernel
+	// from handing the new ones out first.
+	var fresh []int
+	for _, sub := range subs {
+		if sub.Port >= 1 && sub.Port <= 65535 && !own[sub.Port] {
+			fresh = append(fresh, sub.Port)
+		}
+	}
+	if len(fresh) > 0 {
+		reservePorts(fresh...)
+	}
 	seen := map[int]bool{src.Port: true}
 	family := map[string]int{instanceName(src): src.XrayCores}
 	for i := range subs {
@@ -325,8 +349,14 @@ func (s *InboundService) SaveSubInbounds(id int, subs []model.SubInbound) (*mode
 			sub.Instance = model.NextXrayInstanceName(used)
 			used[sub.Instance] = true
 		}
-		if _, other := otherNames[sub.Instance]; other {
-			return nil, false, common.NewErrorf("instance %s belongs to another inbound", sub.Instance)
+		if n, other := otherNames[sub.Instance]; other {
+			if runsInbound[sub.Instance] {
+				return nil, false, common.NewErrorf("instance %s belongs to another inbound", sub.Instance)
+			}
+			// It runs other inbounds' sub-inbounds: the cores are the instance's.
+			if sub.Cores != n {
+				return nil, false, common.NewErrorf("instance %s runs sub-inbounds of other inbounds with %d CPU cores; a sub-inbound joining it must have the same", sub.Instance, n)
+			}
 		}
 		if sub.Instance == instanceName(src) {
 			sub.Cores = src.XrayCores // it shares the inbound's own core

@@ -5,6 +5,7 @@ import (
 
 	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/util/common"
+	"github.com/mhsanaei/3x-ui/v2/xray"
 )
 
 // checkDialects refuses VLESS dialects the core would refuse. It takes a
@@ -28,6 +29,26 @@ func checkDialects(in *model.Inbound) error {
 		if d > 255 {
 			return common.NewErrorf("dialects must each be 0-255, got %d", d)
 		}
+	}
+	return nil
+}
+
+// checkInboundBuilds refuses an inbound the core would refuse, before any of
+// it reaches a running core. The live add would fail, and the cores that run
+// the inbound and its sub-inbounds -- with every other inbound on them -- be
+// restarted into a config they cannot load. It checks the inbound as a core
+// started now would get it (coreInbound), from a copy.
+func checkInboundBuilds(in *model.Inbound) error {
+	c := *in
+	if err := coreInbound(&c); err != nil {
+		return err
+	}
+	b, err := json.Marshal(c.GenXrayInboundConfig())
+	if err != nil {
+		return err
+	}
+	if err := xray.CheckInbound(b); err != nil {
+		return common.NewError("the core would refuse this inbound:", err)
 	}
 	return nil
 }

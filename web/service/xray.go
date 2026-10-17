@@ -142,86 +142,9 @@ func (s *XrayService) buildXrayConfigAndInbounds(templateConfig string) (*xray.C
 		if !inbound.Enable {
 			continue
 		}
-		// get settings clients
-		settings := map[string]any{}
-		json.Unmarshal([]byte(inbound.Settings), &settings)
-		clients, ok := settings["clients"].([]any)
-		if ok {
-			// Fast O(N) lookup map for client traffic enablement
-			clientStats := inbound.ClientStats
-			enableMap := make(map[string]bool, len(clientStats))
-			for _, clientTraffic := range clientStats {
-				enableMap[clientTraffic.Email] = clientTraffic.Enable
-			}
-
-			// filter and clean clients
-			var final_clients []any
-			for _, client := range clients {
-				c, ok := client.(map[string]any)
-				if !ok {
-					continue
-				}
-
-				email, _ := c["email"].(string)
-
-				// check users active or not via stats
-				if enable, exists := enableMap[email]; exists && !enable {
-					logger.Infof("Remove Inbound User %s due to expiration or traffic limit", email)
-					continue
-				}
-
-				// check manual disabled flag
-				if manualEnable, ok := c["enable"].(bool); ok && !manualEnable {
-					continue
-				}
-
-				// clear client config for additional parameters
-				for key := range c {
-					if key != "email" && key != "id" && key != "password" && key != "flow" && key != "method" && key != "auth" {
-						delete(c, key)
-					}
-					if flow, ok := c["flow"].(string); ok && flow == "xtls-rprx-vision-udp443" {
-						c["flow"] = "xtls-rprx-vision"
-					}
-				}
-				fillShadowsocksClientMethod(inbound.Protocol, settings, c)
-				final_clients = append(final_clients, any(c))
-			}
-
-			settings["clients"] = final_clients
-			modifiedSettings, err := json.MarshalIndent(settings, "", "  ")
-			if err != nil {
-				return nil, nil, err
-			}
-
-			inbound.Settings = string(modifiedSettings)
+		if err := coreInbound(inbound); err != nil {
+			return nil, nil, err
 		}
-
-		if len(inbound.StreamSettings) > 0 {
-			// Unmarshal stream JSON
-			var stream map[string]any
-			json.Unmarshal([]byte(inbound.StreamSettings), &stream)
-
-			// Remove the "settings" field under "tlsSettings" and "realitySettings"
-			tlsSettings, ok1 := stream["tlsSettings"].(map[string]any)
-			realitySettings, ok2 := stream["realitySettings"].(map[string]any)
-			if ok1 || ok2 {
-				if ok1 {
-					delete(tlsSettings, "settings")
-				} else if ok2 {
-					delete(realitySettings, "settings")
-				}
-			}
-
-			delete(stream, "externalProxy")
-
-			newStream, err := json.MarshalIndent(stream, "", "  ")
-			if err != nil {
-				return nil, nil, err
-			}
-			inbound.StreamSettings = string(newStream)
-		}
-
 		inboundConfig := inbound.GenXrayInboundConfig()
 		xrayConfig.InboundConfigs = append(xrayConfig.InboundConfigs, *inboundConfig)
 		// Sub-inbounds: the same inbound on their own ports.
@@ -237,6 +160,93 @@ func (s *XrayService) buildXrayConfigAndInbounds(templateConfig string) (*xray.C
 	}
 	// The cores are planned per inbound and sub-inbound alike.
 	return xrayConfig, model.ExpandSubInbounds(inbounds), nil
+}
+
+// coreInbound makes in what the cores run: the clients its traffic rows or
+// its own flag disable left out, each client cut to the fields the core
+// reads, a shadowsocks client given the inbound's cipher, and the panel's own
+// fields taken out of the stream settings. in is changed in place.
+func coreInbound(inbound *model.Inbound) error {
+	// get settings clients
+	settings := map[string]any{}
+	json.Unmarshal([]byte(inbound.Settings), &settings)
+	clients, ok := settings["clients"].([]any)
+	if ok {
+		// Fast O(N) lookup map for client traffic enablement
+		clientStats := inbound.ClientStats
+		enableMap := make(map[string]bool, len(clientStats))
+		for _, clientTraffic := range clientStats {
+			enableMap[clientTraffic.Email] = clientTraffic.Enable
+		}
+
+		// filter and clean clients
+		var final_clients []any
+		for _, client := range clients {
+			c, ok := client.(map[string]any)
+			if !ok {
+				continue
+			}
+
+			email, _ := c["email"].(string)
+
+			// check users active or not via stats
+			if enable, exists := enableMap[email]; exists && !enable {
+				logger.Infof("Remove Inbound User %s due to expiration or traffic limit", email)
+				continue
+			}
+
+			// check manual disabled flag
+			if manualEnable, ok := c["enable"].(bool); ok && !manualEnable {
+				continue
+			}
+
+			// clear client config for additional parameters
+			for key := range c {
+				if key != "email" && key != "id" && key != "password" && key != "flow" && key != "method" && key != "auth" {
+					delete(c, key)
+				}
+				if flow, ok := c["flow"].(string); ok && flow == "xtls-rprx-vision-udp443" {
+					c["flow"] = "xtls-rprx-vision"
+				}
+			}
+			fillShadowsocksClientMethod(inbound.Protocol, settings, c)
+			final_clients = append(final_clients, any(c))
+		}
+
+		settings["clients"] = final_clients
+		modifiedSettings, err := json.MarshalIndent(settings, "", "  ")
+		if err != nil {
+			return err
+		}
+
+		inbound.Settings = string(modifiedSettings)
+	}
+
+	if len(inbound.StreamSettings) > 0 {
+		// Unmarshal stream JSON
+		var stream map[string]any
+		json.Unmarshal([]byte(inbound.StreamSettings), &stream)
+
+		// Remove the "settings" field under "tlsSettings" and "realitySettings"
+		tlsSettings, ok1 := stream["tlsSettings"].(map[string]any)
+		realitySettings, ok2 := stream["realitySettings"].(map[string]any)
+		if ok1 || ok2 {
+			if ok1 {
+				delete(tlsSettings, "settings")
+			} else if ok2 {
+				delete(realitySettings, "settings")
+			}
+		}
+
+		delete(stream, "externalProxy")
+
+		newStream, err := json.MarshalIndent(stream, "", "  ")
+		if err != nil {
+			return err
+		}
+		inbound.StreamSettings = string(newStream)
+	}
+	return nil
 }
 
 // GetXrayTraffic collects, and resets, the traffic counters of every running

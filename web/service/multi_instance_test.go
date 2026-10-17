@@ -3,9 +3,11 @@ package service
 import (
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mhsanaei/3x-ui/v2/database"
 	"github.com/mhsanaei/3x-ui/v2/database/model"
@@ -264,6 +266,155 @@ func TestSubInboundsIntegration(t *testing.T) {
 	})
 }
 
+// A second inbound moves into the running cores of the first one: its own
+// port into the first one's instance, its sub-inbounds into the instances of
+// the first one's sub-inbounds. No core restarts while it joins, while the
+// first one is edited (or an edit of it is refused), or when the first one is
+// deleted and the second one keeps the cores.
+func TestSubInboundsShareInstancesIntegration(t *testing.T) {
+	integrationCore(t)
+	var xs XrayService
+	var is InboundService
+	if err := xs.RestartXray(true); err != nil {
+		t.Fatal(err)
+	}
+	base := freeRun(t, 6)
+	a := vlessInbound(t, "", 1)
+	a.Port, a.Tag = base, fmt.Sprintf("inbound-%d", base)
+	a, _, err := is.AddInbound(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := is.SaveSubInbounds(a.Id, []model.SubInbound{{Port: base + 1, Cores: 1, Enable: true}, {Port: base + 2, Cores: 1, Enable: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := xs.ApplyInboundChanges(); err != nil {
+		t.Fatal(err)
+	}
+	a, _ = is.GetInbound(a.Id)
+	names := []string{a.XrayInstance, a.Subs()[0].Instance, a.Subs()[1].Instance}
+	pids := map[string]int{}
+	for _, n := range names {
+		pids[n] = pidOf(t, n)
+	}
+	same := func(what string) {
+		t.Helper()
+		for _, n := range names {
+			if pidOf(t, n) != pids[n] {
+				t.Fatalf("%s restarted: %s", n, what)
+			}
+		}
+	}
+
+	b := vlessInbound(t, a.XrayInstance, a.XrayCores)
+	b.Port, b.Tag = base+3, fmt.Sprintf("inbound-%d", base+3)
+	b, needRestart, err := is.AddInbound(b)
+	if err != nil || needRestart {
+		t.Fatalf("add b: restart=%v err=%v", needRestart, err)
+	}
+	if err := xs.ApplyInboundChanges(); err != nil {
+		t.Fatal(err)
+	}
+	same("adding b in a's instance")
+	if !listening(b.Port) {
+		t.Fatal("b is not listening")
+	}
+
+	bSubs := []model.SubInbound{
+		{Port: base + 4, Instance: names[1], Cores: 1, Enable: true},
+		{Port: base + 5, Instance: names[2], Cores: 1, Enable: true},
+	}
+	if _, needRestart, err = is.SaveSubInbounds(b.Id, bSubs); err != nil || needRestart {
+		t.Fatalf("b's sub-inbounds: restart=%v err=%v", needRestart, err)
+	}
+	if err := xs.ApplyInboundChanges(); err != nil {
+		t.Fatal(err)
+	}
+	same("b's sub-inbounds joining a's sub-inbound instances")
+	for _, p := range []int{base + 1, base + 2, base + 4, base + 5} {
+		if !listening(p) {
+			t.Fatalf("port %d is not listening", p)
+		}
+	}
+	// Each shared core runs both, and the apply leaves them as they are.
+	for i, n := range names[1:] {
+		tags := map[string]bool{}
+		for _, ic := range procOf(n).GetConfig().InboundConfigs {
+			tags[ic.Tag] = true
+		}
+		if !tags[model.SubTag(a.Tag, base+1+i)] || !tags[model.SubTag(b.Tag, base+4+i)] {
+			t.Fatalf("%s runs %v", n, tags)
+		}
+	}
+	if err := xs.ApplyInboundChanges(); err != nil {
+		t.Fatal(err)
+	}
+	same("a second apply")
+
+	// Editing a re-adds its inbound and sub-inbounds; b's stay.
+	cur, _ := is.GetInbound(a.Id)
+	cur.Remark = "a edited"
+	cur.SubInbounds = ""
+	if _, needRestart, err = is.UpdateInbound(cur); err != nil || needRestart {
+		t.Fatalf("edit a: restart=%v err=%v", needRestart, err)
+	}
+	if err := xs.ApplyInboundChanges(); err != nil {
+		t.Fatal(err)
+	}
+	same("editing a")
+	if !listening(base+4) || !listening(base+1) {
+		t.Fatal("a sub-inbound stopped listening after editing a")
+	}
+
+	// An edit the core would refuse is refused before it reaches a core.
+	bad, _ := is.GetInbound(a.Id)
+	bad.SubInbounds = ""
+	bad.Settings = `{"clients":[{"id":"6b0e9c1c-2d6f-4c6e-9b8a-00000000ffff","email":"bad@test","enable":true,"flow":""}],"fallbacks":[]}`
+	if _, _, err := is.UpdateInbound(bad); err == nil || !strings.Contains(err.Error(), "would refuse") {
+		t.Fatalf("edit without decryption: %v", err)
+	}
+	if err := xs.ApplyInboundChanges(); err != nil {
+		t.Fatal(err)
+	}
+	same("a refused edit")
+	if cur, _ := is.GetInbound(a.Id); strings.Contains(cur.Settings, "bad@test") {
+		t.Fatal("the refused edit was saved")
+	}
+
+	// Deleting a, the older one, leaves b's cores and ports as they were.
+	if _, err := is.DelInbound(a.Id); err != nil {
+		t.Fatal(err)
+	}
+	if err := xs.ApplyInboundChanges(); err != nil {
+		t.Fatal(err)
+	}
+	same("deleting a")
+	for _, p := range []int{base, base + 1, base + 2} {
+		if c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", p), 300*time.Millisecond); err == nil {
+			c.Close()
+			t.Fatalf("port %d of a still listening", p)
+		}
+	}
+	for _, p := range []int{base + 3, base + 4, base + 5} {
+		if !listening(p) {
+			t.Fatalf("port %d of b stopped", p)
+		}
+	}
+	// b, alone in them now, can be edited and keeps its cores.
+	cur, _ = is.GetInbound(b.Id)
+	cur.Remark = "b edited"
+	cur.SubInbounds = ""
+	if _, needRestart, err = is.UpdateInbound(cur); err != nil || needRestart {
+		t.Fatalf("edit b: restart=%v err=%v", needRestart, err)
+	}
+	if err := xs.ApplyInboundChanges(); err != nil {
+		t.Fatal(err)
+	}
+	same("editing b alone")
+	is.DelInbound(b.Id)
+	xs.ApplyInboundChanges()
+}
+
 // The checks on sub-inbounds that need only the database.
 func TestSubInboundChecks(t *testing.T) {
 	dir := t.TempDir()
@@ -323,6 +474,100 @@ func TestSubInboundChecks(t *testing.T) {
 		in := vlessInbound(t, "subs", 0)
 		if _, _, err := is.AddInbound(in); err == nil || !strings.Contains(err.Error(), "sub-inbounds of another inbound") {
 			t.Fatalf("inbound added into a sub-inbound's instance: %v", err)
+		}
+	})
+
+	t.Run("another inbound's sub-inbounds can join a sub-inbound's instance", func(t *testing.T) {
+		// "subs" runs a's sub-inbound on base+3, auto cores, since the run above.
+		b := add(vlessInbound(t, "", 0), base+4)
+		join := func(instance string, cores int) error {
+			_, _, err := is.SaveSubInbounds(b.Id, []model.SubInbound{{Port: base + 7, Instance: instance, Cores: cores, Enable: true}})
+			return err
+		}
+		if err := join("subs", 2); err == nil || !strings.Contains(err.Error(), "must have the same") {
+			t.Fatalf("other cores in a shared instance: %v", err)
+		}
+		if err := join(a.XrayInstance, a.XrayCores); err == nil || !strings.Contains(err.Error(), "belongs to another inbound") {
+			t.Fatalf("sub-inbound in the instance of another inbound itself: %v", err)
+		}
+		if err := join("subs", 0); err != nil {
+			t.Fatal(err)
+		}
+		// b's port and its sub-inbound's were reserved before they were tried.
+		cur, _ := os.ReadFile(reservedPortsPath)
+		if got := parsePortList(string(cur)); !got[base+4] || !got[base+7] {
+			t.Fatalf("not reserved: %q", cur)
+		}
+		// Both inbounds can still be edited, and neither can take the other's instance.
+		for _, id := range []int{a.Id, b.Id} {
+			cur, _ := is.GetInbound(id)
+			cur.Remark += " edited"
+			cur.SubInbounds = ""
+			if _, _, err := is.UpdateInbound(cur); err != nil {
+				t.Fatalf("edit #%d next to a shared instance: %v", id, err)
+			}
+		}
+		in := vlessInbound(t, "subs", 0)
+		if _, _, err := is.AddInbound(in); err == nil || !strings.Contains(err.Error(), "sub-inbounds of another inbound") {
+			t.Fatalf("inbound added into a shared sub-inbound instance: %v", err)
+		}
+		// a cannot change the shared instance's cores on its own.
+		a, _ = is.GetInbound(a.Id)
+		subs := a.Subs()
+		subs[0].Cores = 2
+		if _, _, err := is.SaveSubInbounds(a.Id, subs); err == nil || !strings.Contains(err.Error(), "must have the same") {
+			t.Fatalf("cores of a shared instance changed by one inbound: %v", err)
+		}
+		// The instance list shows both under it.
+		info, err := is.GetXrayInstancesInfo()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []int
+		for _, it := range info.Instances {
+			if it.Name == "subs" {
+				for _, ib := range it.Inbounds {
+					if ib.Sub {
+						ids = append(ids, ib.Id)
+					}
+				}
+			}
+		}
+		if len(ids) != 2 || ids[0] == ids[1] {
+			t.Fatalf("instance subs lists sub-inbounds of %v", ids)
+		}
+		// Removing b's leaves a's.
+		if _, _, err := is.SaveSubInbounds(b.Id, nil); err != nil {
+			t.Fatal(err)
+		}
+		if a, _ = is.GetInbound(a.Id); len(a.Subs()) != 1 || a.Subs()[0].Instance != "subs" {
+			t.Fatalf("a's sub-inbounds: %q", a.SubInbounds)
+		}
+		is.DelInbound(b.Id)
+	})
+
+	t.Run("what the core would refuse is refused", func(t *testing.T) {
+		in := vlessInbound(t, "", 0)
+		in.Settings = `{"clients":[{"id":"6b0e9c1c-2d6f-4c6e-9b8a-00000000aaaa","email":"nodec@test","enable":true,"flow":""}],"fallbacks":[]}`
+		if _, _, err := is.AddInbound(in); err == nil || !strings.Contains(err.Error(), "would refuse") {
+			t.Fatalf("inbound without decryption: %v", err)
+		}
+		cur, _ := is.GetInbound(a.Id)
+		before := cur.StreamSettings
+		cur.SubInbounds = ""
+		cur.StreamSettings = `{"network":"tcp","security":"reality","realitySettings":{"target":"google.com:443","serverNames":[],"privateKey":"","shortIds":[""]}}`
+		if _, _, err := is.UpdateInbound(cur); err == nil || !strings.Contains(err.Error(), "would refuse") {
+			t.Fatalf("REALITY without server names: %v", err)
+		}
+		if got, _ := is.GetInbound(a.Id); got.StreamSettings != before {
+			t.Fatal("the refused edit was saved")
+		}
+		bad := &model.Inbound{Id: a.Id, Settings: `{"clients":[{"id":"not a uuid and longer than thirty characters","email":"badid@test","enable":true,"flow":""}]}`}
+		if _, err := is.AddInboundClient(bad); err == nil || !strings.Contains(err.Error(), "would refuse") {
+			t.Fatalf("client id the core cannot read: %v", err)
+		}
+		if got, _ := is.GetInbound(a.Id); strings.Contains(got.Settings, "badid@test") {
+			t.Fatal("the refused client was saved")
 		}
 	})
 

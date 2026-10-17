@@ -98,6 +98,17 @@ func (x *XrayAPI) Ready(timeout time.Duration) error {
 	return err
 }
 
+// CheckInbound builds an inbound config the way AddInbound does, without a
+// core: what fails here would fail an add, and stop a core started with it.
+func CheckInbound(inbound []byte) error {
+	c := new(conf.InboundDetourConfig)
+	if err := json.Unmarshal(inbound, c); err != nil {
+		return err
+	}
+	_, err := c.Build()
+	return err
+}
+
 // AddInbound adds a new inbound configuration to the Xray core via gRPC.
 func (x *XrayAPI) AddInbound(inbound []byte) error {
 	if x.HandlerServiceClient == nil {

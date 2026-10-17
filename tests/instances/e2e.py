@@ -455,6 +455,62 @@ def main():
             check("the sub-inbound's traffic counts on the inbound", inbound_traffic() >= want, inbound_traffic())
         finally:
             client2.kill()
+
+        # --- a second inbound in the running cores of the first (how a new transport
+        #     is rolled out next to the old one): its own port in C's instance, its
+        #     sub-inbounds in the instances of C's sub-inbounds. Sent as JSON, like a script.
+        http_tcp = {"header": {"type": "http", "request": {"version": "1.1", "method": "GET", "path": ["/"], "headers": {}},
+                               "response": {"version": "1.1", "status": "200", "reason": "OK", "headers": {}}}}
+        pe, ce, ee = quiet_port(3), str(uuid.uuid4()), f"e2e-e-{int(time.time())}"
+        pay = inbound_payload(pe, ee, ce, instance=c["xrayInstance"], cores=c["xrayCores"])
+        pay["enable"] = True
+        pay["streamSettings"] = json.dumps({"network": "tcp", "security": "none", "tcpSettings": http_tcp})
+        pre = procs()
+        res = api("POST", "/panel/api/inbounds/add", json=pay)
+        check("add inbound E into C's running instance", res["success"] and res["obj"]["xrayInstance"] == c["xrayInstance"], res.get("msg"))
+        e = res["obj"]
+        created.append(e["id"])
+        check("E listening, no core restarted", listening(pe) and procs() == pre, (pre, procs()))
+        esubs = [{"port": pe + 1 + i, "instance": subs[i]["instance"], "cores": 1, "enable": True} for i in range(2)]
+        bad = [dict(x, cores=2) for x in esubs]
+        res = api("POST", f"/panel/api/inbounds/{e['id']}/subInbounds", data={"subs": json.dumps(bad)})
+        check("a shared instance keeps its cores", not res["success"] and "must have the same" in (res.get("msg") or ""), res.get("msg"))
+        res = api("POST", f"/panel/api/inbounds/{e['id']}/subInbounds", data={"subs": json.dumps(esubs)})
+        check("E's sub-inbounds join the instances of C's", res["success"], res.get("msg"))
+        check("E's sub-inbounds listening, no core restarted", listening(pe + 1) and listening(pe + 2) and procs() == pre, (pre, procs()))
+        info2 = api("GET", "/panel/api/inbounds/xrayInstances")["obj"]
+        shared = {it["name"]: sorted(i["id"] for i in it["inbounds"] if i["sub"]) for it in info2["instances"]}
+        check("both inbounds' sub-inbounds listed under each shared instance",
+              all(shared.get(x["instance"]) == sorted([c["id"], e["id"]]) for x in esubs), shared)
+        socks3 = free_port()
+        ccfg3 = dict(ccfg)
+        ccfg3["inbounds"] = [{"listen": "127.0.0.1", "port": socks3, "protocol": "socks", "settings": {"udp": False}}]
+        ccfg3["outbounds"] = [{"protocol": "vless", "settings": {"vnext": [{"address": "127.0.0.1", "port": pe + 2, "users": [{"id": ce, "encryption": "none"}]}]},
+                               "streamSettings": {"network": "tcp", "tcpSettings": http_tcp}}]
+        cpath3 = os.path.join(tmp, "client3.json")
+        json.dump(ccfg3, open(cpath3, "w"))
+        client3 = subprocess.Popen([XRAY, "-c", cpath3], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            listening(socks3)
+            dl = subprocess.run(["curl", "-s", "-o", "/dev/null", "-w", "%{size_download}", "--socks5-hostname",
+                                 f"127.0.0.1:{socks3}", f"http://{TARGET}:{hp}/blob"], capture_output=True, text=True, timeout=120)
+            check("20 MB through E's sub-inbound in a shared core", dl.stdout.strip() == str(20 * 1024 * 1024), dl.stdout)
+            def traffic_of(iid):
+                ib = next(i for i in api("GET", "/panel/api/inbounds/list")["obj"] if i["id"] == iid)
+                return ib["up"] + ib["down"]
+            c_before = traffic_of(c["id"])
+            end = time.time() + 30
+            while traffic_of(e["id"]) < 20 * 1024 * 1024 - 16 * 1024 and time.time() < end:
+                time.sleep(2)
+            check("it counts on E, not on C", traffic_of(e["id"]) >= 20 * 1024 * 1024 - 16 * 1024 and traffic_of(c["id"]) - c_before < 1024 * 1024,
+                  (traffic_of(e["id"]), traffic_of(c["id"]) - c_before))
+        finally:
+            client3.kill()
+        api("POST", f"/panel/api/inbounds/del/{e['id']}")
+        created.remove(e["id"])
+        check("deleting E leaves C's cores and ports", procs() == pre and listening(pc + 1) and listening(pc + 2)
+              and not listening(pe, 1) and not listening(pe + 2, 1), (pre, procs()))
+
         # Disable one sub-inbound: only its core stops.
         subs[0]["enable"] = False
         pre = procs()

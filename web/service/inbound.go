@@ -243,6 +243,11 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 	if err := checkDialects(inbound); err != nil {
 		return inbound, false, err
 	}
+	// An outgoing connection that takes the port before the core binds it
+	// fails the add and restarts that core: keep the kernel from handing it out.
+	if !model.SocketListen(inbound.Listen) {
+		reservePorts(inbound.Port)
+	}
 	// Sub-inbounds are added with Multi Instance, never with the inbound.
 	inbound.SubInbounds = ""
 	if err = s.prepareXrayInstance(inbound, nil); err != nil {
@@ -306,6 +311,12 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 				return inbound, false, common.NewError("empty client ID")
 			}
 		}
+	}
+
+	// A config the core would refuse never reaches it: the add would fail and
+	// the core be restarted into it, and stay down.
+	if err = checkInboundBuilds(inbound); err != nil {
+		return inbound, false, err
 	}
 
 	db := database.GetDB()
@@ -460,6 +471,10 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 			return inbound, false, common.NewError("Port already used by a sub-inbound of this inbound:", inbound.Port)
 		}
 	}
+	// A new port is kept from outgoing connections before the core binds it.
+	if inbound.Port != oldInbound.Port && !model.SocketListen(inbound.Listen) {
+		reservePorts(inbound.Port)
+	}
 	// The sub-inbounds listen where the inbound does, so a new address must
 	// be free on their ports too; a unix socket has no ports for them.
 	if subs := (&model.Inbound{SubInbounds: oldInbound.SubInbounds}).Subs(); len(subs) > 0 && inbound.Listen != oldInbound.Listen {
@@ -580,6 +595,12 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 		oldInbound.Tag = fmt.Sprintf("inbound-%v", inbound.Port)
 	} else {
 		oldInbound.Tag = fmt.Sprintf("inbound-%v:%v", inbound.Listen, inbound.Port)
+	}
+
+	// A config the core would refuse never reaches it: the cores that run the
+	// inbound would be restarted into it and stay down.
+	if err = checkInboundBuilds(oldInbound); err != nil {
+		return inbound, false, err
 	}
 
 	needRestart := false
@@ -819,6 +840,9 @@ func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
 	}
 
 	oldInbound.Settings = string(newSettings)
+	if err = checkInboundBuilds(oldInbound); err != nil {
+		return false, err
+	}
 
 	db := database.GetDB()
 	tx := db.Begin()
@@ -1062,6 +1086,9 @@ func (s *InboundService) UpdateInboundClient(data *model.Inbound, clientId strin
 	}
 
 	oldInbound.Settings = string(newSettings)
+	if err = checkInboundBuilds(oldInbound); err != nil {
+		return false, err
+	}
 	db := database.GetDB()
 	tx := db.Begin()
 
