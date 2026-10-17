@@ -32,8 +32,6 @@ import (
 	"github.com/shirou/gopsutil/v4/load"
 	"github.com/shirou/gopsutil/v4/mem"
 	"github.com/shirou/gopsutil/v4/net"
-	"github.com/xtls/xray-core/app/router"
-	"google.golang.org/protobuf/proto"
 )
 
 // ProcessState represents the current state of a system process.
@@ -874,48 +872,6 @@ func (s *ServerService) IsValidGeofileName(filename string) bool {
 	validGeofilePattern := `^[a-zA-Z0-9._-]+\.dat$`
 	matched, _ := regexp.MatchString(validGeofilePattern, filename)
 	return matched
-}
-
-// NormalizeGeositeCountryCodes reads a geosite .dat file, uppercases all
-// country_code fields, and writes it back. This works around a case-sensitivity
-// mismatch in Xray-core: the router normalizes codes to uppercase before lookup,
-// but the find() function compares bytes case-sensitively. Some geosite.dat
-// providers (e.g. Loyalsoldier) store codes in lowercase, causing lookup failures.
-func NormalizeGeositeCountryCodes(path string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("failed to read geosite file %s: %w", path, err)
-	}
-
-	var list router.GeoSiteList
-	if err := proto.Unmarshal(data, &list); err != nil {
-		return fmt.Errorf("failed to parse geosite file %s: %w", path, err)
-	}
-
-	changed := false
-	for _, entry := range list.Entry {
-		upper := strings.ToUpper(entry.CountryCode)
-		if entry.CountryCode != upper {
-			entry.CountryCode = upper
-			changed = true
-		}
-	}
-
-	if !changed {
-		return nil
-	}
-
-	normalized, err := proto.Marshal(&list)
-	if err != nil {
-		return fmt.Errorf("failed to serialize normalized geosite file %s: %w", path, err)
-	}
-
-	if err := os.WriteFile(path, normalized, 0o644); err != nil {
-		return fmt.Errorf("failed to write normalized geosite file %s: %w", path, err)
-	}
-
-	logger.Infof("Normalized country codes to uppercase in %s (%d entries)", path, len(list.Entry))
-	return nil
 }
 
 func (s *ServerService) UpdateGeofile(fileName string) error {
