@@ -562,6 +562,26 @@ func TestSubInboundChecks(t *testing.T) {
 		if got, _ := is.GetInbound(a.Id); got.StreamSettings != before {
 			t.Fatal("the refused edit was saved")
 		}
+		cur, _ = is.GetInbound(a.Id)
+		cur.SubInbounds = ""
+		cur.Settings = `{"clients":[{"id":"6b0e9c1c-2d6f-4c6e-9b8a-00000000bbbb","email":"dup@test","enable":true,"flow":""},{"id":"6b0e9c1c-2d6f-4c6e-9b8a-00000000cccc","email":"DUP@test","enable":true,"flow":""}],"decryption":"none","fallbacks":[]}`
+		if _, _, err := is.UpdateInbound(cur); err == nil || !strings.Contains(err.Error(), "Duplicate email") {
+			t.Fatalf("one email twice: %v", err)
+		}
+		// A disabled inbound is not checked: a broken one can be switched off.
+		off := vlessInbound(t, "", 0)
+		off.Enable = false
+		off.StreamSettings = `{"network":"tcp","security":"reality","realitySettings":{"target":"google.com:443","serverNames":[],"privateKey":"","shortIds":[""]}}`
+		if _, _, err := is.AddInbound(off); err != nil {
+			t.Fatalf("disabled inbound refused: %v", err)
+		}
+		// Clients the traffic rows disable are checked too.
+		hidden := vlessInbound(t, "", 0)
+		hidden.Settings = `{"clients":[{"id":"not a uuid and longer than thirty characters","email":"hidden@test","enable":true,"flow":""}],"decryption":"none","fallbacks":[]}`
+		hidden.ClientStats = []xray.ClientTraffic{{Email: "hidden@test", Enable: false}}
+		if _, _, err := is.AddInbound(hidden); err == nil || !strings.Contains(err.Error(), "would refuse") {
+			t.Fatalf("client hidden by its traffic row: %v", err)
+		}
 		bad := &model.Inbound{Id: a.Id, Settings: `{"clients":[{"id":"not a uuid and longer than thirty characters","email":"badid@test","enable":true,"flow":""}]}`}
 		if _, err := is.AddInboundClient(bad); err == nil || !strings.Contains(err.Error(), "would refuse") {
 			t.Fatalf("client id the core cannot read: %v", err)

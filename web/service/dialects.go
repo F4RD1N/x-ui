@@ -37,9 +37,15 @@ func checkDialects(in *model.Inbound) error {
 // it reaches a running core. The live add would fail, and the cores that run
 // the inbound and its sub-inbounds -- with every other inbound on them -- be
 // restarted into a config they cannot load. It checks the inbound as a core
-// started now would get it (coreInbound), from a copy.
+// started now would get it (coreInbound), from a copy, with every client the
+// traffic rows disable too: a reset brings them back. A disabled inbound no
+// core runs is not checked, so a broken one can always be switched off.
 func checkInboundBuilds(in *model.Inbound) error {
+	if !in.Enable {
+		return nil
+	}
 	c := *in
+	c.ClientStats = nil
 	if err := coreInbound(&c); err != nil {
 		return err
 	}

@@ -598,7 +598,14 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 	}
 
 	// A config the core would refuse never reaches it: the cores that run the
-	// inbound would be restarted into it and stay down.
+	// inbound would be restarted into it and stay down. That includes one
+	// email twice, which the core refuses only when it loads the inbound.
+	if newClients, err2 := s.GetClients(oldInbound); err2 == nil {
+		if dup := firstTakenEmail(newClients, nil); dup != "" {
+			err = common.NewError("Duplicate email:", dup)
+			return inbound, false, err
+		}
+	}
 	if err = checkInboundBuilds(oldInbound); err != nil {
 		return inbound, false, err
 	}
