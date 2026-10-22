@@ -20,9 +20,9 @@ geo_files() {
         echo "  geo: copying from $GEO_SRC"
         cp -f "$GEO_SRC"/geoip.dat "$GEO_SRC"/geosite.dat "$dest"/ 2>/dev/null || true
         for extra in geoip_IR geosite_IR geoip_RU geosite_RU; do
-            [[ -f "$GEO_SRC/$extra.dat" ]] && cp -f "$GEO_SRC/$extra.dat" "$dest"/
+            if [[ -f "$GEO_SRC/$extra.dat" ]]; then cp -f "$GEO_SRC/$extra.dat" "$dest"/; fi
         done
-        return
+        return 0
     fi
     echo "  geo: downloading"
     curl -4fsSL -o "$dest/geoip.dat"       https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat
@@ -63,6 +63,17 @@ for ARCH in $ARCHES; do
         go build -trimpath -ldflags "-s -w" -o "$STAGE/bin/xray-linux-$ARCH" ./main )
 
     geo_files "$STAGE/bin"
+
+    # The default xray template names some 140 geosite tags: a release whose
+    # geo files lack one would start no core on a fresh install.
+    if [[ "$ARCH" == "$(go env GOHOSTARCH)" ]]; then
+        echo "  default xray template against these geo files"
+        if ! XRAY_LOCATION_ASSET="$STAGE/bin" "$STAGE/bin/xray-linux-$ARCH" run -test -c web/service/config.json >"$OUT/template-check.log" 2>&1; then
+            tail -5 "$OUT/template-check.log"
+            echo "  !! the default xray template does not load with these geo files"
+            exit 1
+        fi
+    fi
 
     cp x-ui.sh "$STAGE/"
     cp x-ui.service.debian x-ui.service.arch x-ui.service.rhel x-ui.rc "$STAGE/" 2>/dev/null || true

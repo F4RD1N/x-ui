@@ -325,6 +325,9 @@ func (s *Server) startTask() {
 
 	// Check if xray needs to be restarted every 30 seconds
 	s.cron.AddFunc("@every 30s", func() {
+		// An inbound added while the core runs reaches it over the API, with
+		// no restart: its port is reserved here.
+		s.xrayService.SyncReservedPorts()
 		if s.xrayService.IsNeedRestartAndSetFalse() {
 			err := s.xrayService.RestartXray(false)
 			if err != nil {

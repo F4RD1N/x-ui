@@ -19,6 +19,10 @@ function LOGI() {
     echo -e "${green}[INF] $* ${plain}"
 }
 
+function LOGW() {
+    echo -e "${yellow}[WRN] $* ${plain}"
+}
+
 # Port helpers: detect listener and owning process (best effort)
 is_port_in_use() {
     local port="$1"
@@ -64,7 +68,8 @@ else
     echo "Failed to check the system OS, please contact the author!" >&2
     exit 1
 fi
-echo "The OS release is: $release"
+# Only the menu says it: subcommands print just their own output.
+[[ $# -eq 0 ]] && echo "The OS release is: $release"
 
 os_version=""
 os_version=$(grep "^VERSION_ID" /etc/os-release | cut -d '=' -f2 | tr -d '"' | tr -d '.')
@@ -78,7 +83,7 @@ iplimit_log_path="${log_folder}/3xipl.log"
 iplimit_banned_log_path="${log_folder}/3xipl-banned.log"
 
 confirm() {
-    if [[ $# > 1 ]]; then
+    if [[ $# -gt 1 ]]; then
         echo && read -rp "$1 [Default $2]: " temp
         if [[ "${temp}" == "" ]]; then
             temp=$2
@@ -107,9 +112,25 @@ before_show_menu() {
     show_menu
 }
 
+# run_installer downloads the fork's install.sh and runs it with the given
+# arguments. The script is saved first: piping a failed download into bash
+# would run an error page, or nothing at all and report success.
+run_installer() {
+    local script rc
+    script=$(mktemp) || return 1
+    if ! curl -4fsSL -o "$script" https://raw.githubusercontent.com/F4RD1N/x-ui/main/install.sh; then
+        rm -f "$script"
+        LOGE "Could not download install.sh from GitHub."
+        return 1
+    fi
+    bash "$script" "$@"
+    rc=$?
+    rm -f "$script"
+    return $rc
+}
+
 install() {
-    bash <(curl -Ls https://raw.githubusercontent.com/F4RD1N/x-ui/main/install.sh)
-    if [[ $? == 0 ]]; then
+    if run_installer; then
         if [[ $# == 0 ]]; then
             start
         else
@@ -119,7 +140,19 @@ install() {
 }
 
 update() {
-    confirm "This function will update all x-ui components to the latest version, and the data will not be lost. Do you want to continue?" "y"
+    local current latest
+    current=$(${xui_folder}/x-ui -v 2>/dev/null)
+    latest=$(curl -4fsSL --max-time 10 https://api.github.com/repos/F4RD1N/x-ui/releases/latest 2>/dev/null \
+        | grep -m1 '"tag_name"' | cut -d '"' -f 4)
+    echo -e "Installed: ${green}${current:-unknown}${plain}   latest release: ${green}${latest:-unknown}${plain}"
+    if [[ -n "$latest" && "${latest#v}" == "${current#v}" ]]; then
+        # The same version string can still be a different build (a branch
+        # build installed by hand): reinstalling would replace it.
+        LOGI "This is already the latest release."
+        confirm "Reinstall the release build anyway? The login, port, path and data are kept." "n"
+    else
+        confirm "Update x-ui to the latest release? The login, port, path and data are kept." "y"
+    fi
     if [[ $? != 0 ]]; then
         LOGE "Cancelled"
         if [[ $# == 0 ]]; then
@@ -127,11 +160,29 @@ update() {
         fi
         return 0
     fi
-    bash <(curl -Ls https://raw.githubusercontent.com/F4RD1N/x-ui/main/install.sh)
-    if [[ $? == 0 ]]; then
+    # Update mode keeps the username, password, port and path; the install
+    # mode would reset them to the defaults.
+    if XUI_MODE=update run_installer update; then
         LOGI "Update is complete, Panel has automatically restarted "
+    else
+        LOGE "The update failed; see the messages above."
+    fi
+    if [[ $# == 0 ]]; then
         before_show_menu
     fi
+}
+
+# fetch_menu_script replaces /usr/bin/x-ui with the latest x-ui.sh. It is
+# downloaded beside it, checked, and moved over it: writing into the file
+# bash is running from would corrupt this very run, and a dropped download
+# would leave a broken menu.
+fetch_menu_script() {
+    local tmp=/usr/bin/x-ui.new
+    if ! curl -4fsSL -o "$tmp" https://raw.githubusercontent.com/F4RD1N/x-ui/main/x-ui.sh || ! bash -n "$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        return 1
+    fi
+    chmod +x "$tmp" && mv -f "$tmp" /usr/bin/x-ui
 }
 
 update_menu() {
@@ -145,12 +196,8 @@ update_menu() {
         return 0
     fi
 
-    curl -fLRo /usr/bin/x-ui https://raw.githubusercontent.com/F4RD1N/x-ui/main/x-ui.sh
-    chmod +x ${xui_folder}/x-ui.sh
-    chmod +x /usr/bin/x-ui
-
-    if [[ $? == 0 ]]; then
-        echo -e "${green}Update successful. The panel has automatically restarted.${plain}"
+    if fetch_menu_script; then
+        echo -e "${green}The menu is updated. Run x-ui again to use it.${plain}"
         exit 0
     else
         echo -e "${red}Failed to update the menu.${plain}"
@@ -180,6 +227,14 @@ uninstall() {
         return 0
     fi
 
+    # Undo what install set up on the server: the DNS cache, anti-abuse
+    # (and, once the panel and its core are stopped, BBR's sysctl file and
+    # the swapfile).
+    dns_off keep
+    if [[ -f $anti_abuse_unit || -f $anti_abuse_jail || -f $anti_abuse_jail_old ]]; then
+        anti_abuse_off keep
+    fi
+
     if [[ $release == "alpine" ]]; then
         rc-service x-ui stop
         rc-update del x-ui
@@ -188,9 +243,15 @@ uninstall() {
         systemctl stop x-ui
         systemctl disable x-ui
         rm ${xui_service}/x-ui.service -f
+        rmdir ${xui_service}/x-ui.service.d 2>/dev/null
         systemctl daemon-reload
         systemctl reset-failed
     fi
+    # Only now that the cores are gone: until then the guard is still needed.
+    if [[ -f $protect_unit ]]; then
+        protect_off keep
+    fi
+    host_revert
 
     rm /etc/x-ui/ -rf
     rm ${xui_folder}/ -rf
@@ -298,25 +359,7 @@ check_config() {
             echo -e "${green}Access URL: https://${server_ip}:${existing_port}${existing_webBasePath}${plain}"
         fi
     else
-        echo -e "${red}⚠ WARNING: No SSL certificate configured!${plain}"
-        echo -e "${yellow}You can get a Let's Encrypt certificate for your IP address (valid ~6 days, auto-renews).${plain}"
-        read -rp "Generate SSL certificate for IP now? [y/N]: " gen_ssl
-        if [[ "$gen_ssl" == "y" || "$gen_ssl" == "Y" ]]; then
-            stop >/dev/null 2>&1
-            ssl_cert_issue_for_ip
-            if [[ $? -eq 0 ]]; then
-                echo -e "${green}Access URL: https://${server_ip}:${existing_port}${existing_webBasePath}${plain}"
-                # ssl_cert_issue_for_ip already restarts the panel, but ensure it's running
-                start >/dev/null 2>&1
-            else
-                LOGE "IP certificate setup failed."
-                echo -e "${yellow}You can try again via option 19 (SSL Certificate Management).${plain}"
-                start >/dev/null 2>&1
-            fi
-        else
-            echo -e "${yellow}Access URL: http://${server_ip}:${existing_port}${existing_webBasePath}${plain}"
-            echo -e "${yellow}For security, please configure SSL certificate using option 19 (SSL Certificate Management)${plain}"
-        fi
+        echo -e "${green}Access URL: http://${server_ip}:${existing_port}${existing_webBasePath}${plain}"
     fi
 }
 
@@ -326,10 +369,14 @@ set_port() {
     if [[ -z "${port}" ]]; then
         LOGD "Cancelled"
         before_show_menu
-    else
-        ${xui_folder}/x-ui setting -port ${port}
+    elif ${xui_folder}/x-ui setting -port ${port}; then
+        # the direct guard keeps the VPN off the panel's new port
+        [[ -f $protect_unit ]] && protect_on >/dev/null 2>&1
         echo -e "The port is set, Please restart the panel now, and use the new port ${green}${port}${plain} to access web panel"
         confirm_restart
+    else
+        LOGE "The port was not changed."
+        before_show_menu
     fi
 }
 
@@ -530,7 +577,6 @@ bbr_menu() {
         ;;
     esac
 }
-
 disable_bbr() {
 
     if [[ $(sysctl -n net.ipv4.tcp_congestion_control) != "bbr" ]] || [[ ! $(sysctl -n net.core.default_qdisc) =~ ^(fq|cake)$ ]]; then
@@ -538,6 +584,16 @@ disable_bbr() {
         before_show_menu
     fi
 
+    # Installs and updates leave BBR off from now on.
+    mkdir -p "$(dirname "$host_bbr_off")" && : >"$host_bbr_off"
+    if grep -qs '^net.ipv4.tcp_congestion_control' "$host_sysctl"; then
+        # Set by the installer (host_bbr): back to what it was before.
+        old_settings=$(sed -n 's/^# before x-ui: //p' "$host_sysctl" | head -1)
+        [[ -n $old_settings ]] || old_settings="fq_codel:cubic"
+        sed -i '/^net.core.default_qdisc/d; /^net.ipv4.tcp_congestion_control/d; /^# before x-ui:/d' "$host_sysctl"
+        sysctl -w net.core.default_qdisc="${old_settings%:*}" >/dev/null 2>&1
+        sysctl -w net.ipv4.tcp_congestion_control="${old_settings#*:}"
+    fi
     if [ -f "/etc/sysctl.d/99-bbr-x-ui.conf" ]; then
         old_settings=$(head -1 /etc/sysctl.d/99-bbr-x-ui.conf | tr -d '#')
         sysctl -w net.core.default_qdisc="${old_settings%:*}"
@@ -559,13 +615,13 @@ disable_bbr() {
         echo -e "${red}Failed to replace BBR with CUBIC. Please check your system configuration.${plain}"
     fi
 }
-
 enable_bbr() {
     if [[ $(sysctl -n net.ipv4.tcp_congestion_control) == "bbr" ]] && [[ $(sysctl -n net.core.default_qdisc) =~ ^(fq|cake)$ ]]; then
         echo -e "${green}BBR is already enabled!${plain}"
         before_show_menu
     fi
 
+    rm -f "$host_bbr_off"
     # Enable BBR
     if [ -d "/etc/sysctl.d/" ]; then
         {
@@ -595,14 +651,1546 @@ enable_bbr() {
     fi
 }
 
+# Server setup run by every install ("x-ui host-setup install|update", from
+# install.sh): BBR with fq, unless the admin chose another congestion
+# control; on a fresh install of a small machine (2 GiB of RAM or less) with
+# no swap, a 1 GiB swapfile. Uninstall takes both away again.
+host_sysctl="/etc/sysctl.d/60-x-ui.conf"
+host_swapfile="/swapfile"
+host_fstab_tag="# x-ui swapfile"
+
+# host_container says whether this runs in a container, where the host's
+# kernel settings and swap belong to the host.
+host_container() {
+    systemd-detect-virt --container --quiet 2>/dev/null
+}
+
+# host_sysctl_set KEY VALUE writes KEY into x-ui's sysctl file and applies it.
+host_sysctl_set() {
+    local key=$1 value=$2
+    [[ -f $host_sysctl ]] || printf '# Written by x-ui (install and update); uninstall removes it.\n' >"$host_sysctl"
+    sed -i "/^${key//./\\.}[[:space:]]*=/d" "$host_sysctl"
+    echo "${key} = ${value}" >>"$host_sysctl"
+    sysctl -q -w "${key}=${value}" >/dev/null 2>&1
+}
+
+# host_sysctl_admin KEY says whether a sysctl file other than x-ui's sets
+# KEY: then it is the admin's (or the menu's "Enable BBR") choice.
+host_sysctl_admin() {
+    local key=${1//./\\.} f
+    for f in /etc/sysctl.conf /etc/sysctl.d/*.conf /run/sysctl.d/*.conf /usr/local/lib/sysctl.d/*.conf; do
+        [[ -f $f && $f != "$host_sysctl" ]] || continue
+        grep -qsE "^[[:space:]]*${key}[[:space:]]*=" "$f" && return 0
+    done
+    return 1
+}
+
+# host_bbr turns on BBR with fq where the congestion control is still the
+# kernel's default (cubic or reno) and no sysctl file chose it; the menu's
+# "Disable BBR" turns it off for good (host_bbr_off).
+host_bbr_off="/etc/x-ui/bbr.off"
+host_bbr() {
+    local cc qdisc
+    cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    if [[ -f $host_bbr_off ]]; then
+        echo "BBR: kept off (turned off in the menu; Enable BBR turns it on)"
+        return 0
+    fi
+    if host_sysctl_admin net.ipv4.tcp_congestion_control; then
+        echo "BBR: kept ${cc:-as it is} (chosen in this server's sysctl files)"
+        return 0
+    fi
+    case "$cc" in
+    bbr)
+        # on, but maybe only until the next boot (x-ui was uninstalled and
+        # installed again): written down here.
+        grep -qs '^net.ipv4.tcp_congestion_control = bbr' "$host_sysctl" ||
+            host_sysctl_set net.ipv4.tcp_congestion_control bbr
+        echo "BBR: already on"
+        return 0
+        ;;
+    cubic | reno) ;;
+    "") echo "BBR: no congestion control setting here, left alone"; return 0 ;;
+    *) echo "BBR: kept ${cc} (chosen on this server)"; return 0 ;;
+    esac
+    if ! grep -qw bbr /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then
+        modprobe tcp_bbr >/dev/null 2>&1
+        if ! grep -qw bbr /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then
+            echo "BBR: this kernel has no BBR, kept ${cc}"
+            return 0
+        fi
+    fi
+    # What it was, for "Disable BBR".
+    qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
+    if ! grep -qs '^# before x-ui:' "$host_sysctl"; then
+        [[ -f $host_sysctl ]] || printf '# Written by x-ui (install and update); uninstall removes it.\n' >"$host_sysctl"
+        echo "# before x-ui: ${qdisc:-fq_codel}:${cc}" >>"$host_sysctl"
+    fi
+    # fq paces BBR's packets; a container cannot set the host's qdisc, and
+    # one an admin chose stays.
+    if [[ -w /proc/sys/net/core/default_qdisc ]] && ! host_sysctl_admin net.core.default_qdisc; then
+        host_sysctl_set net.core.default_qdisc fq
+    fi
+    host_sysctl_set net.ipv4.tcp_congestion_control bbr
+    if [[ $(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null) == bbr ]]; then
+        echo "BBR: on (was ${cc})"
+    else
+        echo "BBR: could not be turned on here, kept ${cc}"
+    fi
+}
+
+# host_swap adds a 1 GiB swapfile to a small machine that has no swap, so a
+# burst of connections does not get the panel or its core killed for memory.
+host_swap() {
+    local mem_kb free_kb fstype
+    if swapon --show=NAME --noheadings 2>/dev/null | grep -q .; then
+        echo "Swap: already there"
+        return 0
+    fi
+    mem_kb=$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)
+    if [[ -z $mem_kb || $mem_kb -gt 2306867 ]]; then
+        echo "Swap: not needed ($((${mem_kb:-0} / 1024)) MiB of RAM)"
+        return 0
+    fi
+    free_kb=$(df -Pk / | awk 'NR == 2 { print $4 }')
+    fstype=$(findmnt -no FSTYPE / 2>/dev/null)
+    if [[ -e $host_swapfile || ${free_kb:-0} -lt 3145728 || $fstype == btrfs || $fstype == zfs ]]; then
+        echo "Swap: none added (${host_swapfile} exists, under 3 GiB free, or ${fstype:-unknown} filesystem)"
+        return 0
+    fi
+    if ! { fallocate -l 1G "$host_swapfile" 2>/dev/null || dd if=/dev/zero of="$host_swapfile" bs=1M count=1024 status=none 2>/dev/null; }; then
+        rm -f "$host_swapfile"
+        echo "Swap: could not create ${host_swapfile}"
+        return 1
+    fi
+    chmod 600 "$host_swapfile"
+    if ! mkswap "$host_swapfile" >/dev/null 2>&1 || ! swapon "$host_swapfile" 2>/dev/null; then
+        rm -f "$host_swapfile"
+        echo "Swap: could not turn on ${host_swapfile}"
+        return 1
+    fi
+    if ! grep -q "^${host_swapfile}[[:space:]]" /etc/fstab 2>/dev/null; then
+        # a last line without its newline would swallow this one
+        [[ -s /etc/fstab && -n $(tail -c1 /etc/fstab) ]] && echo >>/etc/fstab
+        echo "${host_swapfile} none swap sw 0 0 ${host_fstab_tag}" >>/etc/fstab
+    fi
+    # Swap only when memory is really short: the core's latency comes first.
+    host_sysctl_set vm.swappiness 10
+    echo "Swap: 1 GiB at ${host_swapfile} ($((mem_kb / 1024)) MiB of RAM)"
+}
+
+# host_setup runs the server setup: "install" (BBR and swap) or "update"
+# (BBR only; swap is a fresh install's).
+host_setup() {
+    # (XUI_HOST_SETUP_IN_CONTAINER=1: the tests run it in a container.)
+    if host_container && [[ ${XUI_HOST_SETUP_IN_CONTAINER:-} != 1 ]]; then
+        echo "Server setup: skipped in a container (its kernel and swap are the host's)"
+        return 0
+    fi
+    host_bbr
+    [[ ${1:-} == install ]] && host_swap
+    return 0
+}
+
+# host_revert takes x-ui's server setup away: its sysctl file and the
+# swapfile it added. The kernel keeps the running values until a reboot.
+host_revert() {
+    rm -f "$host_sysctl" "$host_bbr_off"
+    local line="^${host_swapfile}[[:space:]].*${host_fstab_tag}\$"
+    if grep -q "$line" /etc/fstab 2>/dev/null; then
+        swapoff "$host_swapfile" 2>/dev/null
+        if awk 'NR > 1 { print $1 }' /proc/swaps 2>/dev/null | grep -qxF "$host_swapfile"; then
+            echo "Swap: ${host_swapfile} is still in use; it and its fstab line stay (swapoff it later, or reboot and delete them)"
+        else
+            # rewritten in place (its inode, owner and SELinux label stay;
+            # sed -i would rename a new file over it)
+            local tmp
+            tmp=$(mktemp) && grep -v "$line" /etc/fstab >"$tmp"
+            [[ -n $tmp ]] && cat "$tmp" >/etc/fstab && rm -f "$tmp"
+            rm -f "$host_swapfile"
+        fi
+    fi
+}
+
+# DNS cache ("x-ui dns"). Nearly every new connection through the server
+# needs a lookup -- freedom dials the names users visit, and REALITY dials
+# its target -- and without a cache each one waits for a resolver across the
+# network. unbound answers at 127.0.0.1 from its cache and forwards misses to
+# the fastest resolvers this server reaches (measured at setup: often its
+# provider's own, in the same datacenter). /etc/resolv.conf names 127.0.0.1
+# first and two of those resolvers after it, used only if unbound does not
+# answer. Every install and update sets it up unless "x-ui dns off" turned
+# it off; it is left alone where something else manages DNS.
+dns_conf_name="x-ui.conf"
+dns_dropin="/etc/systemd/system/unbound.service.d/90-x-ui.conf"
+dns_state="/etc/x-ui/dns"            # resolv.conf as it was, and what x-ui installed
+dns_off_marker="/etc/x-ui/dns.off"
+dns_header="# Written by \"x-ui dns\""
+dns_public4="1.1.1.1 8.8.8.8 9.9.9.9"
+dns_public6="2606:4700:4700::1111 2001:4860:4860::8888 2620:fe::fe"
+
+# dns_conf_dir prints the directory unbound.conf includes *.conf files from.
+dns_conf_dir() {
+    local d
+    # An include-toplevel line, else the last include (RHEL's first one is
+    # inside its server: clause; conf.d comes at the end).
+    d=$(sed -n 's/^[[:space:]]*include-toplevel:[[:space:]]*"\{0,1\}\([^"]*\)\/\*\.conf"\{0,1\}[[:space:]]*$/\1/p' /etc/unbound/unbound.conf 2>/dev/null | head -1)
+    [[ -n $d ]] || d=$(sed -n 's/^[[:space:]]*include:[[:space:]]*"\{0,1\}\([^"]*\)\/\*\.conf"\{0,1\}[[:space:]]*$/\1/p' /etc/unbound/unbound.conf 2>/dev/null | tail -1)
+    if [[ -n $d ]]; then
+        echo "$d"
+        return 0
+    fi
+    for d in /etc/unbound/unbound.conf.d /etc/unbound/conf.d; do
+        [[ -d $d ]] && grep -qs "$d" /etc/unbound/unbound.conf && { echo "$d"; return 0; }
+    done
+    return 1
+}
+
+dns_conf() {
+    local d
+    d=$(dns_conf_dir) || d=/etc/unbound/unbound.conf.d
+    echo "$d/$dns_conf_name"
+}
+
+# dns_ours says whether /etc/resolv.conf is the one "x-ui dns" wrote.
+dns_ours() {
+    [[ -f /etc/resolv.conf && ! -L /etc/resolv.conf ]] && grep -qF "$dns_header" /etc/resolv.conf
+}
+
+# dns_nameservers FILE... prints the usable nameservers named in the files.
+dns_nameservers() {
+    awk '$1 == "nameserver" { sub(/%.*/, "", $2); print $2 }' "$@" 2>/dev/null |
+        grep -vE '^(127\.|0\.0\.0\.0$|::1?$|fe80:)' | awk '!seen[$0]++'
+}
+
+# dns_candidates prints every resolver worth timing: the ones this server
+# uses now or was given by DHCP, then well-known public ones.
+dns_candidates() {
+    local leases=()
+    [[ -d /run/systemd/netif/leases ]] && leases=(/run/systemd/netif/leases/*)
+    {
+        if dns_ours && [[ -f $dns_state/resolv.conf ]]; then
+            dns_nameservers "$dns_state/resolv.conf"
+        else
+            dns_nameservers /etc/resolv.conf
+        fi
+        dns_nameservers /run/systemd/resolve/resolv.conf
+        ((${#leases[@]})) && sed -n 's/^DNS=//p' "${leases[@]}" 2>/dev/null | tr ' ' '\n'
+        sed -n 's/^[[:space:]]*option domain-name-servers[[:space:]]*\([^;]*\);.*/\1/p' /var/lib/dhcp/dhclient*.leases 2>/dev/null | tr ', ' '\n\n'
+        if ip -4 route show default 2>/dev/null | grep -q .; then
+            printf '%s\n' $dns_public4
+        fi
+        if ip -6 route show default 2>/dev/null | grep -q .; then
+            printf '%s\n' $dns_public6
+        fi
+    } | grep -vE '^(127\.|0\.0\.0\.0$|::1?$|fe80:|$)' | awk '!seen[$0]++'
+}
+
+# dns_query NAME prints a DNS query for NAME's A record (printf escapes). The
+# ID's first byte is ASCII and never 0: dns_time reads one byte, bash skips
+# NULs, and under a UTF-8 locale a lead byte would wait for more.
+dns_query() {
+    local label q
+    q=$(printf '\\x%02x\\x%02x' $((RANDOM % 127 + 1)) $((RANDOM % 256)))
+    q+='\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00'
+    for label in ${1//./ }; do
+        q+=$(printf '\\x%02x' ${#label})$label
+    done
+    printf '%s' "$q"'\x00\x00\x01\x00\x01'
+}
+
+# dns_clock sets now to the time in microseconds (no subshell on bash 5).
+dns_clock() {
+    if [[ -n ${EPOCHREALTIME:-} ]]; then
+        now=${EPOCHREALTIME/[.,]/}
+    else
+        now=$(($(date +%s%N) / 1000))
+    fi
+}
+
+# dns_send FD QUERY sends the query (printf escapes) as one datagram. bash
+# writes its output line by line, and a query with a 0x0a byte (a label of
+# 10 letters, an ID byte) would leave as two packets: a resolver gets a
+# broken query and never answers, and an IDS sees junk on port 53. dd puts
+# the pieces back together into one write.
+dns_send() {
+    printf "$2" | dd bs=512 count=1 iflag=fullblock status=none 1>&"$1" 2>/dev/null
+}
+
+# dns_answers SERVER says whether SERVER answers a recursive query with
+# NOERROR (a resolver that refuses outsiders answers fast too).
+dns_answers() {
+    local fd h
+    exec {fd}<>"/dev/udp/$1/53" 2>/dev/null || return 1
+    dns_send "$fd" "$(dns_query www.google.com)"
+    h=$(timeout 2 head -c 4 <&$fd 2>/dev/null | od -An -tx1 | tr -d ' \n')
+    exec {fd}>&-
+    # flags: QR set, RA set, RCODE 0
+    [[ ${#h} -eq 8 ]] && (((0x${h:4:2} & 0x80) && (0x${h:6:2} & 0x8f) == 0x80))
+}
+
+# dns_time SERVER prints the median time in microseconds of five lookups of
+# names any resolver has cached, or nothing if it does not answer. The clock
+# starts once the query is out: starting dd costs more than a nearby
+# resolver takes to answer.
+dns_time() {
+    local server=$1 name q t0 now fd times=() b LC_ALL=C
+    for name in www.google.com www.youtube.com www.microsoft.com www.wikipedia.org www.google.com www.youtube.com; do
+        q=$(dns_query "$name")
+        exec {fd}<>"/dev/udp/${server}/53" 2>/dev/null || return 1
+        dns_send "$fd" "$q"
+        dns_clock
+        t0=$now
+        if read -r -t 1 -N 1 -u $fd b 2>/dev/null; then
+            dns_clock
+            times+=($((now - t0)))
+        fi
+        exec {fd}>&-
+    done
+    # the first lookup only warms the path up
+    ((${#times[@]} >= 4)) || return 1
+    printf '%s\n' "${times[@]:1}" | sort -n | awk '{ a[NR] = $1 } END { print a[int((NR + 1) / 2)] }'
+}
+
+# dns_pick prints "server microseconds" for the resolvers unbound forwards to:
+# the fastest, those close to it (at most three), and the fastest public one
+# when none of those is public, so one provider's outage is not the end.
+dns_pick() {
+    local s t timed=()
+    for s in $(dns_candidates); do
+        dns_answers "$s" || continue
+        t=$(dns_time "$s") || continue
+        [[ -n $t ]] && timed+=("$t $s")
+    done
+    ((${#timed[@]})) || return 1
+    printf '%s\n' "${timed[@]}" | sort -n | awk -v pub="$dns_public4 $dns_public6" '
+        BEGIN { n = split(pub, p, " "); for (i = 1; i <= n; i++) public[p[i]] = 1 }
+        NR == 1 { best = $1 }
+        {
+            near = ($1 <= 3 * best || $1 <= best + 5000)
+            if (kept < 3 && (NR == 1 || near || kept < 2)) { print $2, $1; kept++; if ($2 in public) havepub = 1; next }
+            if (!havepub && ($2 in public)) { print $2, $1; havepub = 1 }
+        }'
+}
+
+# dns_install installs unbound with the system's package manager.
+dns_install() {
+    case "${release}" in
+    ubuntu | debian | armbian)
+        DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=180 install -y -q unbound >/dev/null 2>&1 ||
+            { apt-get -o DPkg::Lock::Timeout=180 update -q >/dev/null 2>&1 &&
+                DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=180 install -y -q unbound >/dev/null 2>&1; }
+        ;;
+    fedora | amzn | virtuozzo | rhel | almalinux | rocky | ol | centos)
+        dnf -y -q install unbound >/dev/null 2>&1 || yum -y -q install unbound >/dev/null 2>&1
+        ;;
+    arch | manjaro | parch)
+        pacman -S --noconfirm --needed unbound >/dev/null 2>&1
+        ;;
+    opensuse-tumbleweed | opensuse-leap | sles)
+        zypper -n -q install unbound >/dev/null 2>&1
+        ;;
+    *)
+        return 1
+        ;;
+    esac
+    command -v unbound >/dev/null 2>&1
+}
+
+# dns_trust_anchor writes the DNSSEC root key a distribution's own unbound
+# config names (Debian and Ubuntu: /var/lib/unbound/root.key) where it does
+# not exist yet: the service writes it on its first start, and until then
+# unbound-checkconf rejects every config.
+dns_trust_anchor() {
+    local f
+    for f in $(grep -rhoE '^[[:space:]]*auto-trust-anchor-file:[[:space:]]*"?[^"[:space:]]+' /etc/unbound 2>/dev/null | sed -E 's/^[^:]*:[[:space:]]*"?//'); do
+        [[ -s $f ]] && continue
+        mkdir -p "$(dirname "$f")"
+        if [[ -x /usr/libexec/unbound-helper ]]; then
+            /usr/libexec/unbound-helper root_trust_anchor_update >/dev/null 2>&1
+        elif [[ -x /usr/lib/unbound/package-helper ]]; then
+            /usr/lib/unbound/package-helper root_trust_anchor_update >/dev/null 2>&1
+        fi
+        [[ -s $f ]] && continue
+        if [[ -s /usr/share/dns/root.key ]]; then
+            cp /usr/share/dns/root.key "$f"
+        else
+            unbound-anchor -a "$f" >/dev/null 2>&1
+        fi
+        id unbound >/dev/null 2>&1 && chown unbound: "$(dirname "$f")" "$f" 2>/dev/null
+    done
+    return 0
+}
+
+# dns_render UPSTREAM... prints unbound's config. FAST=1 adds the options
+# that send most misses to the fastest two (unbound 1.11 and later).
+dns_render() {
+    local cpus mem_mb threads slabs msg u
+    cpus=$(nproc 2>/dev/null || echo 1)
+    mem_mb=$(($(awk '/^MemTotal:/ { print $2 }' /proc/meminfo) / 1024))
+    # a memory limit smaller than the machine (a container, a slice) counts
+    local limit
+    limit=$(cat /sys/fs/cgroup/memory.max 2>/dev/null)
+    [[ $limit =~ ^[0-9]+$ ]] && ((limit / 1048576 < mem_mb)) && mem_mb=$((limit / 1048576))
+    threads=$((cpus / 8))
+    ((threads < 1)) && threads=1
+    ((threads > 8)) && threads=8
+    slabs=1
+    while ((slabs < threads)); do slabs=$((slabs * 2)); done
+    msg=$((mem_mb / 64))
+    ((msg < 8)) && msg=8
+    ((msg > 256)) && msg=256
+    cat <<EOF
+${dns_header}; "x-ui dns off" removes it.
+# A DNS cache for xray: answers at 127.0.0.1, forwards misses to the
+# fastest resolvers this server reaches (timed when it was set up).
+server:
+    interface: 127.0.0.1
+    port: 53
+    access-control: 127.0.0.0/8 allow
+    num-threads: ${threads}
+    so-reuseport: yes
+    so-rcvbuf: 8m
+    so-sndbuf: 8m
+    msg-cache-slabs: ${slabs}
+    rrset-cache-slabs: ${slabs}
+    infra-cache-slabs: ${slabs}
+    key-cache-slabs: ${slabs}
+    msg-cache-size: ${msg}m
+    rrset-cache-size: $((2 * msg))m
+    outgoing-range: 4096
+    num-queries-per-thread: 2048
+    prefetch: yes
+    serve-expired: yes
+    serve-expired-ttl: 3600
+    # No DNSSEC validation, like the resolvers it replaces.
+    module-config: "iterator"
+    edns-buffer-size: 1232
+    hide-identity: yes
+    hide-version: yes
+EOF
+    if [[ ${FAST:-0} == 1 ]]; then
+        cat <<EOF
+    # An expired answer at once if the resolver is slow (unbound 1.11+).
+    serve-expired-client-timeout: 1500
+    # Nine misses in ten go to the two fastest; the rest keep the others'
+    # times current.
+    fast-server-num: 2
+    fast-server-permil: 900
+EOF
+    fi
+    printf 'forward-zone:\n    name: "."\n'
+    for u in "$@"; do
+        printf '    forward-addr: %s\n' "$u"
+    done
+    # Back in server: for whatever follows where the distribution includes
+    # this file (RHEL includes it inside its own server: clause).
+    printf 'server:\n'
+}
+
+# dns_resolv FALLBACK... prints resolv.conf: unbound, then the fallbacks.
+dns_resolv() {
+    local s
+    echo "${dns_header}; \"x-ui dns off\" puts back the previous file."
+    echo "# The local cache first; the resolvers after it only if it does not answer."
+    echo "nameserver 127.0.0.1"
+    for s in "$@"; do
+        echo "nameserver $s"
+    done
+    echo "options timeout:2 attempts:2"
+}
+
+# dns_skip_reason prints why this server's DNS is left alone, if it is.
+dns_skip_reason() {
+    local s mine=0
+    # x-ui's own unbound (its config carries the header) is not someone
+    # else's DNS server.
+    grep -qsF "$dns_header" "$(dns_conf)" && mine=1
+    if ! command -v systemctl >/dev/null 2>&1 || [[ ! -d /run/systemd/system ]]; then
+        echo "not a systemd server"
+        return 0
+    fi
+    if command -v mountpoint >/dev/null 2>&1 && mountpoint -q /etc/resolv.conf 2>/dev/null; then
+        echo "/etc/resolv.conf is mounted from outside (a container)"
+        return 0
+    fi
+    dns_ours && return 1
+    if [[ -L /etc/resolv.conf ]]; then
+        case "$(readlink -f /etc/resolv.conf)" in
+        /run/systemd/resolve/stub-resolv.conf | /run/systemd/resolve/resolv.conf) ;;
+        *) echo "/etc/resolv.conf is managed by $(readlink -f /etc/resolv.conf)"; return 0 ;;
+        esac
+    elif grep -qiE 'NetworkManager|resolvconf' /etc/resolv.conf 2>/dev/null; then
+        echo "/etc/resolv.conf is written by NetworkManager or resolvconf"
+        return 0
+    fi
+    for s in $(awk '$1 == "nameserver" { print $2 }' /etc/resolv.conf 2>/dev/null); do
+        [[ $mine == 1 && $s == 127.0.0.1 ]] && continue
+        if [[ $s == 127.* && $s != 127.0.0.53 || $s == ::1 ]]; then
+            echo "a DNS server of its own already answers at $s"
+            return 0
+        fi
+    done
+    if [[ $mine == 0 ]] && ss -Hlnu 'sport = :53' 2>/dev/null | awk '{ print $4 }' | grep -qE '^(127\.0\.0\.1|0\.0\.0\.0|\*|\[::\]|\[::1\]):53$'; then
+        echo "another DNS server listens on port 53"
+        return 0
+    fi
+    if [[ $mine == 0 ]] && command -v unbound >/dev/null 2>&1 && [[ ! -f $dns_state/installed ]] &&
+        { systemctl is-enabled --quiet unbound 2>/dev/null || systemctl is-active --quiet unbound 2>/dev/null; }; then
+        echo "unbound is already set up here by someone else"
+        return 0
+    fi
+    return 1
+}
+
+# dns_rollback undoes a dns_on that failed half-way, /etc/resolv.conf being
+# untouched: a cache that already ran gets its previous config back
+# ($conf.prev); otherwise x-ui's files go and unbound is stopped (the skip
+# rules let dns_on near an unbound only when it was x-ui's, or off).
+dns_rollback() {
+    local conf
+    conf=$(dns_conf)
+    rm -f "$conf.new" /etc/resolv.conf.x-ui.new
+    if [[ -f $conf.prev ]]; then
+        mv -f "$conf.prev" "$conf"
+        systemctl restart unbound >/dev/null 2>&1
+        return 0
+    fi
+    rm -f "$conf"
+    if grep -qsF "$dns_header" "$dns_dropin"; then
+        rm -f "$dns_dropin"
+        rmdir "$(dirname "$dns_dropin")" 2>/dev/null
+    fi
+    systemctl daemon-reload 2>/dev/null
+    systemctl disable --now unbound >/dev/null 2>&1
+}
+
+dns_on() {
+    local why picks servers=() s t fallbacks=() conf rc=0
+    rm -f "$dns_off_marker"
+    if why=$(dns_skip_reason); then
+        LOGI "DNS cache not set up: ${why}."
+        return 0
+    fi
+    echo "Timing the resolvers this server can use..."
+    picks=$(dns_pick)
+    if [[ -z $picks ]]; then
+        LOGE "No resolver answers from here; DNS is left as it was."
+        return 1
+    fi
+    while read -r s t; do
+        servers+=("$s")
+        printf '  %-24s %s ms\n' "$s" "$(awk -v t="$t" 'BEGIN { printf "%.1f", t / 1000 }')"
+    done <<<"$picks"
+    fallbacks=("${servers[@]:0:2}")
+
+    mkdir -p "$dns_state"
+    if ! command -v unbound >/dev/null 2>&1; then
+        echo "Installing unbound..."
+        dns_install || { LOGE "Could not install unbound; DNS is left as it was."; return 1; }
+        : >"$dns_state/installed"
+    fi
+    dns_trust_anchor
+    conf=$(dns_conf)
+    mkdir -p "$(dirname "$conf")"
+    rm -f "$conf.prev"
+    grep -qsF "$dns_header" "$conf" && cp -p "$conf" "$conf.prev"
+    FAST=1 dns_render "${servers[@]}" >"$conf.new"
+    if ! unbound-checkconf "$conf.new" >/dev/null 2>&1; then
+        # Older unbound has no fast-server options.
+        dns_render "${servers[@]}" >"$conf.new"
+    fi
+    mv -f "$conf.new" "$conf"
+    if ! unbound-checkconf >/dev/null 2>&1; then
+        LOGE "unbound rejects its configuration: $(unbound-checkconf 2>&1 | tail -1); DNS is left as it was."
+        dns_rollback
+        return 1
+    fi
+    mkdir -p "$(dirname "$dns_dropin")"
+    cat >"$dns_dropin" <<EOF
+${dns_header}; "x-ui dns off" removes it.
+[Service]
+LimitNOFILE=1048576
+Restart=always
+RestartSec=2
+EOF
+    systemctl daemon-reload
+    systemctl enable unbound >/dev/null 2>&1
+    systemctl restart unbound
+    for t in 1 2 3 4 5 6 7 8 9 10; do
+        dns_answers 127.0.0.1 && break
+        sleep 1
+    done
+    if ! dns_answers 127.0.0.1; then
+        LOGE "unbound does not answer at 127.0.0.1 (see: journalctl -u unbound); DNS is left as it was."
+        dns_rollback
+        return 1
+    fi
+    # The previous resolv.conf (a file or a link) is kept once, for "off".
+    if ! dns_ours; then
+        rm -rf "$dns_state/resolv.conf"
+        cp -P /etc/resolv.conf "$dns_state/resolv.conf" 2>/dev/null
+    fi
+    if ! { dns_resolv "${fallbacks[@]}" >/etc/resolv.conf.x-ui.new && chmod 644 /etc/resolv.conf.x-ui.new &&
+        mv -f /etc/resolv.conf.x-ui.new /etc/resolv.conf; }; then
+        LOGE "Could not write /etc/resolv.conf (immutable? lsattr /etc/resolv.conf); DNS is left as it was."
+        dns_rollback
+        return 1
+    fi
+    # Debian's unbound would otherwise hand itself to resolvconf.
+    if [[ -f /etc/default/unbound ]] && grep -q '^RESOLVCONF=' /etc/default/unbound; then
+        sed -i 's/^RESOLVCONF=.*/RESOLVCONF=false/' /etc/default/unbound
+    elif [[ -d /etc/default ]]; then
+        echo 'RESOLVCONF=false' >>/etc/default/unbound
+    fi
+    systemctl disable --now unbound-resolvconf.service >/dev/null 2>&1
+    # Anti-abuse lets the resolvers through when they are private addresses.
+    [[ -f $anti_abuse_unit && -f $anti_abuse_nft ]] && anti_abuse_reload
+    rm -f "$conf.prev"
+    LOGI "DNS cache on: unbound at 127.0.0.1, forwarding to ${servers[*]}."
+    return $rc
+}
+
+# dns_auto is the installer's: on, unless "x-ui dns off" turned it off or it
+# is already on.
+dns_auto() {
+    if [[ -f $dns_off_marker ]]; then
+        echo "DNS cache: kept off (x-ui dns on turns it on)"
+        return 0
+    fi
+    if dns_ours && systemctl is-active --quiet unbound; then
+        echo "DNS cache: already on"
+        return 0
+    fi
+    if grep -qsF "$dns_header" "$(dns_conf)" && ! dns_ours && [[ -e $dns_state/resolv.conf || -L $dns_state/resolv.conf ]]; then
+        echo "DNS cache: kept as it is (/etc/resolv.conf was changed after x-ui set it up)"
+        return 0
+    fi
+    dns_on
+}
+
+dns_status() {
+    local conf
+    conf=$(dns_conf)
+    if [[ -f $dns_off_marker ]]; then
+        echo -e "DNS cache: ${red}off${plain} (turned off; on: x-ui dns on)"
+        return 1
+    fi
+    if ! grep -qsF "$dns_header" "$conf"; then
+        local why
+        why=$(dns_skip_reason) && { echo -e "DNS cache: ${yellow}not set up${plain} (${why})"; return 1; }
+        echo -e "DNS cache: ${red}off${plain} (on: x-ui dns on)"
+        return 1
+    fi
+    if systemctl is-active --quiet unbound && dns_answers 127.0.0.1; then
+        if dns_ours; then
+            echo -e "DNS cache: ${green}on${plain} (unbound at 127.0.0.1)"
+        else
+            echo -e "DNS cache: ${yellow}running but not used${plain} (/etc/resolv.conf was changed after x-ui set it up; use it again: x-ui dns on)"
+        fi
+    else
+        echo -e "DNS cache: ${red}not answering${plain} (unbound $(systemctl is-active unbound 2>/dev/null); see: systemctl status unbound)"
+    fi
+    echo "  Forwards to: $(awk '$1 == "forward-addr:" { printf "%s%s", sep, $2; sep = ", " }' "$conf")"
+    if dns_ours; then
+        echo "  resolv.conf: $(awk '$1 == "nameserver" { printf "%s%s", sep, $2; sep = ", " }' /etc/resolv.conf)"
+    else
+        echo -e "  resolv.conf: ${yellow}changed since x-ui wrote it${plain} ($(awk '$1 == "nameserver" { printf "%s%s", sep, $2; sep = ", " }' /etc/resolv.conf 2>/dev/null))"
+    fi
+    if command -v unbound-control >/dev/null 2>&1; then
+        unbound-control stats_noreset 2>/dev/null | awk -F= '
+            $1 == "total.num.queries" { q = $2 } $1 == "total.num.cachehits" { h = $2 }
+            END { if (q != "") printf "  Lookups: %d, %d%% from the cache\n", q, (q ? 100 * h / q : 0) }'
+    fi
+}
+
+# dns_off puts back the previous resolv.conf (unless it was changed since)
+# and stops x-ui's unbound. With "keep" it is not remembered as turned off
+# (uninstall).
+dns_off() {
+    local conf
+    conf=$(dns_conf)
+    if dns_ours; then
+        if [[ -e $dns_state/resolv.conf || -L $dns_state/resolv.conf ]]; then
+            rm -f /etc/resolv.conf && cp -P "$dns_state/resolv.conf" /etc/resolv.conf
+        else
+            printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' >/etc/resolv.conf
+        fi
+    fi
+    if grep -qsF "$dns_header" "$conf"; then
+        rm -f "$conf"
+        systemctl disable --now unbound >/dev/null 2>&1
+    fi
+    if grep -qsF "$dns_header" "$dns_dropin"; then
+        rm -f "$dns_dropin"
+        rmdir "$(dirname "$dns_dropin")" 2>/dev/null
+    fi
+    systemctl daemon-reload 2>/dev/null
+    rm -rf "$dns_state"
+    if [[ ${1:-} != keep ]]; then
+        mkdir -p "$(dirname "$dns_off_marker")" && : >"$dns_off_marker"
+    fi
+    # Anti-abuse lets through the private resolvers resolv.conf names again.
+    [[ -f $anti_abuse_unit && -f $anti_abuse_nft ]] && anti_abuse_reload
+    LOGI "DNS cache off; /etc/resolv.conf: $(awk '$1 == "nameserver" { printf "%s%s", sep, $2; sep = ", " }' /etc/resolv.conf 2>/dev/null)."
+}
+
+# dns runs "x-ui dns [on|status|off]" (auto is the installer's).
+dns() {
+    case "${1:-status}" in
+    on) dns_on ;;
+    status) dns_status ;;
+    off) dns_off ;;
+    auto) dns_auto ;;
+    *)
+        echo "Usage: x-ui dns [on|status|off]"
+        return 1
+        ;;
+    esac
+}
+
+dns_menu() {
+    echo -e "${green}\t1.${plain} Show status"
+    echo -e "${green}\t2.${plain} Turn on (times the resolvers again)"
+    echo -e "${green}\t3.${plain} Turn off"
+    echo -e "${green}\t0.${plain} Back to Main Menu"
+    read -rp "Choose an option: " choice
+    case "$choice" in
+    0)
+        show_menu
+        ;;
+    1)
+        dns_status
+        before_show_menu
+        ;;
+    2)
+        dns_on
+        before_show_menu
+        ;;
+    3)
+        dns_off
+        before_show_menu
+        ;;
+    *)
+        echo -e "${red}Invalid option. Please select a valid number.${plain}\n"
+        dns_menu
+        ;;
+    esac
+}
+
+# Anti-abuse keeps the server's IPs out of abuse reports. An nftables table
+# refuses outgoing connections to the ports brute-force bots and spammers
+# use, to private networks through the uplink (a hoster's "netscan"), and to
+# new destinations faster than real users reach them (port and net scans),
+# and, for a while, to hosts that do not answer this server at all. fail2ban
+# bans an IP after 2 failed SSH logins. Nothing here uses conntrack, so it
+# costs nothing on a busy server. Every install and update turns it on;
+# "x-ui anti-abuse off" undoes it all, and later updates keep it off.
+anti_abuse_nft="/etc/x-ui/anti-abuse.nft"
+anti_abuse_unit="/etc/systemd/system/x-ui-anti-abuse.service"
+anti_abuse_check_unit="/etc/systemd/system/x-ui-anti-abuse-check.service"
+anti_abuse_check_timer="/etc/systemd/system/x-ui-anti-abuse-check.timer"
+# 00-: read first, so an admin's own jail.d settings for sshd win.
+anti_abuse_jail="/etc/fail2ban/jail.d/00-x-ui-anti-abuse.conf"
+anti_abuse_jail_old="/etc/fail2ban/jail.d/x-ui-anti-abuse.conf"
+anti_abuse_table="xui_anti_abuse"
+# SSH, Telnet, SMTP, MS-RPC, NetBIOS, SMB, MSSQL, Telnet, RDP, VNC
+anti_abuse_tcp_ports="22, 23, 25, 135, 139, 445, 1433, 2323, 3389, 5900"
+# NetBIOS, SNMP, SSDP, memcached
+anti_abuse_udp_ports="137, 138, 161, 1900, 11211"
+# New destinations per second: hosts per outgoing IP and port, and ports
+# per host (TCP). Measured on busy servers, real users peak at about 5 and 2.
+# A scan uses up the allowance for everyone on its IP and port, so it is
+# kept at ten times what users need: only fast scanners reach it.
+anti_abuse_wide="50/second burst 1000 packets"
+anti_abuse_deep="30/second burst 300 packets"
+# A host with this many connection attempts waiting and not one working
+# connection is refused for a while (checked every minute): users' apps fail
+# at once and try another address instead of waiting out a timeout, and a
+# flood at an unanswering target stops. Busy hosts keep working connections
+# (Telegram's had 700 waiting and 3,900 working), so they are never refused.
+anti_abuse_dead_waiting=100
+anti_abuse_dead_for="10m"
+# Written by "x-ui anti-abuse off": installs and updates then leave it off.
+anti_abuse_off_marker="/etc/x-ui/anti-abuse.off"
+
+# anti_abuse_uplinks prints the interfaces the default routes leave through.
+anti_abuse_uplinks() {
+    { ip -4 route show default; ip -6 route show default; } 2>/dev/null |
+        awk '{ for (i = 1; i < NF; i++) if ($i == "dev") print $(i + 1) }' | sort -u
+}
+
+# anti_abuse_allowed prints what stays reachable among private addresses
+# (family 4 or 6): the uplinks' own subnets and routes, and the DNS servers.
+anti_abuse_allowed() {
+    local fam=$1 dev re
+    if [[ $fam == 4 ]]; then
+        re='^(0|10|172\.(1[6-9]|2[0-9]|3[01])|192\.168|192\.0\.[02]|198\.1[89]|198\.51\.100|203\.0\.113|2(4[0-9]|5[0-5]))\.[0-9.]+(/([89]|[1-3][0-9]))?$'
+        echo "255.255.255.255"
+    else
+        re='^(f[cd][0-9a-f]{2}|fe[c-f][0-9a-f]|2001:0?db8):[0-9a-f:]*(/([89]|[1-9][0-9]|1[0-2][0-9]))?$'
+    fi
+    {
+        for dev in $(anti_abuse_uplinks); do
+            ip -"$fam" route show table all dev "$dev" 2>/dev/null |
+                awk '{ d = $1; if (d ~ /^(unicast|local|broadcast|multicast|anycast|throw|unreachable|prohibit|blackhole|nat)$/) d = $2; print d }'
+        done
+        awk '$1 == "nameserver" { sub(/%.*/, "", $2); print $2 }' /etc/resolv.conf /run/systemd/resolve/resolv.conf 2>/dev/null
+        # the resolvers x-ui's DNS cache forwards to
+        awk '$1 == "forward-addr:" { sub(/@.*/, "", $2); print $2 }' "$(dns_conf)" 2>/dev/null
+    } | tr 'A-F' 'a-f' | grep -E "$re" | sort -u
+}
+
+# anti_abuse_rules prints the nftables rules "x-ui anti-abuse" loads.
+anti_abuse_rules() {
+    local uplinks allowed4 allowed6 private=""
+    uplinks=$(anti_abuse_uplinks | awk '{ printf "%s\"%s\"", (NR > 1 ? ", " : ""), $1 }')
+    allowed4=$(anti_abuse_allowed 4 | paste -sd, - | sed 's/,/, /g')
+    allowed6=$(anti_abuse_allowed 6 | paste -sd, - | sed 's/,/, /g')
+    if [[ -n $uplinks ]]; then
+        uplinks="elements = { ${uplinks} }"
+        private="
+		oifname @uplinks ip daddr @private4 ip daddr != @allowed4 counter name private_nets reject with icmpx admin-prohibited
+		oifname @uplinks ip6 daddr @private6 ip6 daddr != @allowed6 counter name private_nets reject with icmpx admin-prohibited"
+    fi
+    [[ -n $allowed6 ]] && allowed6="elements = { ${allowed6} }"
+    cat <<EOF
+#!/usr/sbin/nft -f
+# Written by "x-ui anti-abuse"; "x-ui anti-abuse off" removes it.
+
+table inet ${anti_abuse_table}
+delete table inet ${anti_abuse_table}
+
+table inet ${anti_abuse_table} {
+	set tcp_ports {
+		type inet_service
+		counter
+		elements = { ${anti_abuse_tcp_ports} }
+	}
+	set udp_ports {
+		type inet_service
+		counter
+		elements = { ${anti_abuse_udp_ports} }
+	}
+	set uplinks {
+		type ifname
+		${uplinks}
+	}
+	set private4 {
+		type ipv4_addr
+		flags interval
+		elements = { 0.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.0.0.0/24, 192.0.2.0/24, 192.168.0.0/16,
+			     198.18.0.0/15, 198.51.100.0/24, 203.0.113.0/24, 240.0.0.0/4 }
+	}
+	set private6 {
+		type ipv6_addr
+		flags interval
+		elements = { 2001:db8::/32, fc00::/7, fec0::/10 }
+	}
+	set allowed4 {
+		type ipv4_addr
+		flags interval
+		auto-merge
+		elements = { ${allowed4} }
+	}
+	set allowed6 {
+		type ipv6_addr
+		flags interval
+		auto-merge
+		${allowed6}
+	}
+	set seen4 { type ipv4_addr . inet_service; flags dynamic, timeout; timeout 10m; size 262144; }
+	set seen6 { type ipv6_addr . inet_service; flags dynamic, timeout; timeout 10m; size 262144; }
+	set wide4 { type ipv4_addr . inet_service; flags dynamic, timeout; timeout 5m; size 65536; }
+	set wide6 { type ipv6_addr . inet_service; flags dynamic, timeout; timeout 5m; size 65536; }
+	set deep4 { type ipv4_addr; flags dynamic, timeout; timeout 5m; size 65536; }
+	set deep6 { type ipv6_addr; flags dynamic, timeout; timeout 5m; size 65536; }
+	set dead4 { type ipv4_addr; flags timeout; timeout ${anti_abuse_dead_for}; size 65536; }
+	set dead6 { type ipv6_addr; flags timeout; timeout ${anti_abuse_dead_for}; size 65536; }
+	counter private_nets { }
+	counter scan_wide { }
+	counter scan_deep { }
+	counter dead_hosts { }
+
+	chain output {
+		type filter hook output priority filter; policy accept;
+		oifname "lo" accept
+		tcp flags & (syn | ack) == syn ip daddr @dead4 counter name dead_hosts reject with tcp reset
+		tcp flags & (syn | ack) == syn ip6 daddr @dead6 counter name dead_hosts reject with tcp reset
+		tcp flags & (syn | ack) == syn tcp dport @tcp_ports reject with tcp reset
+		udp dport @udp_ports reject${private}
+		tcp flags & (syn | ack) == syn tcp dport != { 80, 443 } jump scan
+		udp dport 1-1023 udp dport != 443 jump scan
+	}
+	# A destination (address and port) seen in the last 10 minutes passes;
+	# a new one counts against the scan limits.
+	chain scan {
+		meta nfproto ipv4 goto scan4
+		meta nfproto ipv6 goto scan6
+	}
+	chain scan4 {
+		ip daddr . th dport @seen4 update @seen4 { ip daddr . th dport } return
+		update @wide4 { ip saddr . th dport limit rate over ${anti_abuse_wide} } counter name scan_wide goto refuse
+		meta l4proto tcp update @deep4 { ip daddr limit rate over ${anti_abuse_deep} } counter name scan_deep goto refuse
+		add @seen4 { ip daddr . th dport }
+	}
+	chain scan6 {
+		ip6 daddr . th dport @seen6 update @seen6 { ip6 daddr . th dport } return
+		update @wide6 { ip6 saddr . th dport limit rate over ${anti_abuse_wide} } counter name scan_wide goto refuse
+		meta l4proto tcp update @deep6 { ip6 daddr limit rate over ${anti_abuse_deep} } counter name scan_deep goto refuse
+		add @seen6 { ip6 daddr . th dport }
+	}
+	chain refuse {
+		meta l4proto tcp reject with tcp reset
+		reject
+	}
+}
+EOF
+}
+
+# anti_abuse_install installs a package with the system's package manager.
+anti_abuse_install() {
+    case "${release}" in
+    ubuntu | debian | armbian)
+        DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=180 install -y -q "$1" >/dev/null 2>&1 ||
+            { apt-get -o DPkg::Lock::Timeout=180 update -q >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=180 install -y -q "$1" >/dev/null; }
+        ;;
+    fedora | amzn | virtuozzo | rhel | almalinux | rocky | ol | centos)
+        dnf -y install "$1" || yum -y install "$1"
+        ;;
+    arch | manjaro | parch)
+        pacman -S --noconfirm "$1"
+        ;;
+    opensuse-tumbleweed | opensuse-leap | sles)
+        zypper -n install "$1"
+        ;;
+    *)
+        return 1
+        ;;
+    esac
+}
+
+# anti_abuse_ssh_jail bans an IP after 2 failed SSH logins in 10 minutes:
+# for 1 hour, longer each time it comes back (up to a week). The address
+# this is run from is never banned.
+# anti_abuse_ssh_client prints the address of the SSH session this runs in,
+# also under sudo (which drops SSH_CLIENT): from the parents' environment.
+anti_abuse_ssh_client() {
+    local pid=$$ e
+    e=${SSH_CLIENT:-${SSH_CONNECTION:-}}
+    while [[ -z $e && $pid -gt 1 ]]; do
+        e=$(tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null | sed -n 's/^SSH_CLIENT=//p; s/^SSH_CONNECTION=//p' | head -1)
+        pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+        [[ -n $pid ]] || break
+    done
+    [[ -n $e ]] && echo "${e%% *}"
+}
+
+# anti_abuse_ignoreip prints the ignoreip values of the [DEFAULT] and [sshd]
+# sections (continuation lines too) of fail2ban's config, x-ui's own jail
+# included: the SSH jail's own list replaces [DEFAULT]'s, so it carries those.
+anti_abuse_ignoreip() {
+    local f
+    for f in /etc/fail2ban/jail.conf /etc/fail2ban/jail.d/*.conf /etc/fail2ban/jail.local /etc/fail2ban/jail.d/*.local; do
+        [[ -f $f ]] || continue
+        awk '
+            /^[[:space:]]*\[/ { sec = $0; gsub(/[][[:space:]]/, "", sec); cont = 0; next }
+            /^[[:space:]]*[#;]/ { next }
+            cont && /^[[:space:]]+[^[:space:]]/ { print; next }
+            { cont = 0 }
+            (sec == "DEFAULT" || sec == "sshd") && /^[[:space:]]*ignoreip[[:space:]]*=/ { sub(/^[^=]*=/, ""); print; cont = 1 }
+        ' "$f"
+    done
+}
+
+anti_abuse_ssh_jail() {
+    local ports unit client="" ignore backend="" had=0
+    if ! command -v sshd >/dev/null 2>&1 && [[ ! -x /usr/sbin/sshd ]]; then
+        LOGI "No SSH server here, so no SSH ban is needed."
+        return 0
+    fi
+    command -v fail2ban-client >/dev/null 2>&1 && had=1
+    # An install or update leaves a fail2ban the admin turned off alone.
+    if [[ ${ANTI_ABUSE_AUTO:-0} == 1 && $had == 1 ]]; then
+        case "$(systemctl is-enabled fail2ban 2>/dev/null)" in
+        disabled | masked)
+            LOGI "SSH bans left off: fail2ban is turned off here (x-ui anti-abuse on turns them on)."
+            return 0
+            ;;
+        esac
+    fi
+    install_fail2ban || return 1
+    ports=$( (sshd -T 2>/dev/null || /usr/sbin/sshd -T 2>/dev/null) | awk '$1 == "port" { print $2 }' | sort -un | paste -sd, -)
+    [[ -n $ports ]] || ports=ssh
+    # Never banned: loopback, what the admin lists for all jails or for SSH
+    # (and what was added to this jail by hand), and the address this is run
+    # from.
+    client=$(anti_abuse_ssh_client)
+    ignore=$(
+        {
+            echo "127.0.0.1/8 ::1 ${client}"
+            anti_abuse_ignoreip
+        } | tr ' ,' '\n\n' | grep -v '^$' | grep -vF '%(' | awk '!seen[$0]++' | paste -sd' ' -
+    )
+    # Without a log file sshd only logs to the journal, as sshd or (OpenSSH
+    # 9.8+) sshd-session.
+    if command -v journalctl >/dev/null 2>&1 && [[ ! -s /var/log/auth.log && ! -s /var/log/secure ]]; then
+        unit=sshd
+        systemctl cat ssh.service >/dev/null 2>&1 && unit=ssh
+        backend="backend = systemd
+journalmatch = _SYSTEMD_UNIT=${unit}.service + _COMM=sshd + _COMM=sshd-session"
+    fi
+    mkdir -p "$(dirname "$anti_abuse_jail")"
+    rm -f "$anti_abuse_jail_old"
+    cat >"$anti_abuse_jail" <<EOF
+# Written by "x-ui anti-abuse"; "x-ui anti-abuse off" removes it. Addresses
+# added to ignoreip here stay through updates; settings for [sshd] in other
+# jail.d files or jail.local win over these.
+[sshd]
+enabled = true
+port = ${ports}
+maxretry = 2
+findtime = 10m
+bantime = 1h
+bantime.increment = true
+bantime.maxtime = 1w
+ignoreip = ${ignore}
+${backend}
+EOF
+    if ! fail2ban-client -t >/dev/null 2>&1; then
+        rm -f "$anti_abuse_jail"
+        LOGE "fail2ban rejected the SSH jail (see: fail2ban-client -t); SSH bans are not on."
+        return 1
+    fi
+    systemctl enable fail2ban >/dev/null 2>&1
+    if systemctl is-active --quiet fail2ban; then
+        if ! fail2ban-client reload >/dev/null 2>&1; then
+            rm -f "$anti_abuse_jail"
+            fail2ban-client reload >/dev/null 2>&1
+            LOGE "fail2ban could not load the SSH jail; SSH bans are not on."
+            return 1
+        fi
+    else
+        systemctl restart fail2ban
+    fi
+    local i
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        fail2ban-client status sshd >/dev/null 2>&1 && return 0
+        sleep 1
+    done
+    LOGE "fail2ban's SSH jail did not start (see: journalctl -u fail2ban)."
+    return 1
+}
+
+anti_abuse_on() {
+    local nft rc=0
+    rm -f "$anti_abuse_off_marker"
+    if ! command -v systemctl >/dev/null 2>&1; then
+        LOGE "Anti-abuse needs systemd."
+        return 1
+    fi
+    if ! command -v nft >/dev/null 2>&1; then
+        anti_abuse_install nftables
+    fi
+    nft=$(command -v nft) || { LOGE "Could not install nftables."; return 1; }
+    mkdir -p "$(dirname "$anti_abuse_nft")"
+    anti_abuse_rules >"${anti_abuse_nft}.new"
+    if ! "$nft" -c -f "${anti_abuse_nft}.new"; then
+        rm -f "${anti_abuse_nft}.new"
+        LOGE "nftables rejected the rules; nothing changed."
+        return 1
+    fi
+    mv -f "${anti_abuse_nft}.new" "$anti_abuse_nft"
+    # After nftables.service and firewalld, whose start may flush the
+    # ruleset; before the network and x-ui come up.
+    cat >"$anti_abuse_unit" <<EOF
+[Unit]
+Description=x-ui anti-abuse (outgoing brute-force ports, private networks, scans)
+DefaultDependencies=no
+Wants=network-pre.target
+Before=network-pre.target shutdown.target x-ui.service
+After=local-fs.target nftables.service firewalld.service
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=${nft} -f ${anti_abuse_nft}
+ExecReload=${nft} -f ${anti_abuse_nft}
+ExecStop=${nft} delete table inet ${anti_abuse_table}
+
+[Install]
+WantedBy=sysinit.target
+EOF
+    # The check for hosts that do not answer, every minute.
+    cat >"$anti_abuse_check_unit" <<EOF
+[Unit]
+Description=x-ui anti-abuse: refuse hosts that do not answer for a while
+After=x-ui-anti-abuse.service
+
+[Service]
+Type=oneshot
+Nice=10
+ExecStart=$(command -v x-ui || echo /usr/bin/x-ui) anti-abuse check
+EOF
+    cat >"$anti_abuse_check_timer" <<EOF
+[Unit]
+Description=x-ui anti-abuse: look for hosts that do not answer, every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl daemon-reload
+    systemctl enable x-ui-anti-abuse >/dev/null 2>&1
+    systemctl restart x-ui-anti-abuse || { LOGE "x-ui-anti-abuse did not start (see: systemctl status x-ui-anti-abuse)."; return 1; }
+    systemctl enable --now x-ui-anti-abuse-check.timer >/dev/null 2>&1 || rc=1
+    anti_abuse_ssh_jail || rc=1
+
+    echo -e "${green}Anti-abuse is on:${plain}
+  Refused: outgoing TCP ${anti_abuse_tcp_ports} and UDP ${anti_abuse_udp_ports}
+  Refused: private networks through $(anti_abuse_uplinks | paste -sd, -)
+  Scans refused: over ${anti_abuse_wide%%/*} new hosts/s on a port, ${anti_abuse_deep%%/*} new ports/s on a host
+  Dead hosts: refused for ${anti_abuse_dead_for} when ${anti_abuse_dead_waiting}+ connection attempts wait and none works
+  SSH: 2 failed logins in 10 minutes = 1 hour ban, longer when the IP comes back
+  Status: x-ui anti-abuse status   Off: x-ui anti-abuse off"
+    return $rc
+}
+
+# anti_abuse_check refuses, for anti_abuse_dead_for, each host with at
+# least anti_abuse_dead_waiting connection attempts waiting (SYN sent, no
+# answer) and not one established connection. It runs every minute from
+# x-ui-anti-abuse-check.timer; ss asks the kernel by state, so it is quick
+# with hundreds of thousands of connections.
+anti_abuse_check() {
+    nft list set inet "$anti_abuse_table" dead4 >/dev/null 2>&1 || return 0
+    local waiting ip set q out
+    ss -Htn state syn-sent 2>/dev/null | awk '{ print $4 }' |
+        sed -E 's/:[0-9]+$//; s/^\[(::ffff:)?//; s/\]$//' | sort | uniq -c |
+        awk -v n="$anti_abuse_dead_waiting" '$1 >= n { print $1, $2 }' |
+        while read -r waiting ip; do
+            # One working connection means it answers: busy, not dead. (ss
+            # takes IPv6 in brackets; when it fails, nothing is refused.)
+            q=$ip
+            [[ $ip == *:* ]] && q="[$ip]"
+            out=$(ss -Htn state established dst "$q" 2>/dev/null) || continue
+            [[ -n $out ]] && continue
+            set=dead4
+            [[ $ip == *:* ]] && set=dead6
+            if nft add element inet "$anti_abuse_table" "$set" "{ $ip }" 2>/dev/null; then
+                logger -t x-ui-anti-abuse "refusing $ip for ${anti_abuse_dead_for}: $waiting connection attempts waiting, none working"
+            fi
+        done
+    return 0
+}
+
+# anti_abuse_counter prints a named counter's packets.
+anti_abuse_counter() {
+    nft list counter inet "$anti_abuse_table" "$1" 2>/dev/null | awk '/packets/ { print $2 }'
+}
+
+# anti_abuse_hits prints "tcp/22 15, tcp/3389 2" for a port set's elements hit.
+anti_abuse_hits() {
+    nft list set inet "$anti_abuse_table" "$1" 2>/dev/null | grep -oE '[0-9]+ counter packets [0-9]+' |
+        awk -v p="$2" '$4 > 0 { printf "%s%s/%s %s", (n++ ? ", " : ""), p, $1, $4 }'
+}
+
+anti_abuse_status() {
+    if [[ ! -f $anti_abuse_unit ]]; then
+        if [[ -f $anti_abuse_off_marker ]]; then
+            echo -e "Anti-abuse: ${red}off${plain} (turned off; updates keep it off; on: x-ui anti-abuse on)"
+        else
+            echo -e "Anti-abuse: ${red}off${plain} (turn it on: x-ui anti-abuse)"
+        fi
+        return 1
+    fi
+    local state ports
+    state=$(systemctl is-active x-ui-anti-abuse 2>/dev/null)
+    if [[ $state != active ]] || ! nft list table inet "$anti_abuse_table" >/dev/null 2>&1; then
+        echo -e "Anti-abuse: ${red}not loaded${plain} (${state}; load it again: x-ui anti-abuse)"
+        return 1
+    fi
+    ports=$(printf '%s, %s' "$(anti_abuse_hits tcp_ports tcp)" "$(anti_abuse_hits udp_ports udp)" | sed 's/^, //; s/, $//')
+    echo -e "Anti-abuse: ${green}on${plain} since $(systemctl show -p ActiveEnterTimestamp --value x-ui-anti-abuse)"
+    echo "  Refused ports:    ${ports:-none yet}"
+    echo "  Private networks: $(anti_abuse_counter private_nets)"
+    echo "  Scans refused:    $(anti_abuse_counter scan_wide) wide, $(anti_abuse_counter scan_deep) deep"
+    local dead
+    dead=$({ nft list set inet "$anti_abuse_table" dead4; nft list set inet "$anti_abuse_table" dead6; } 2>/dev/null |
+        grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}|[0-9a-f]*:[0-9a-f:]+' | paste -sd' ' -)
+    echo "  Dead hosts:       $(anti_abuse_counter dead_hosts) attempts refused; now: ${dead:-none}"
+    if [[ -f $anti_abuse_jail || -f $anti_abuse_jail_old ]] && command -v fail2ban-client >/dev/null 2>&1; then
+        fail2ban-client status sshd 2>/dev/null | awk -F':\t' '
+            /Currently banned/ { now = $2 } /Total banned/ { total = $2 } /Total failed/ { failed = $2 }
+            END { printf "  SSH bans:         %s now, %s in total (%s failed logins)\n", now, total, failed }'
+    else
+        echo "  SSH bans:         off"
+    fi
+}
+
+# anti_abuse_reload writes the rules again (the uplinks or the resolvers
+# may have changed) and loads them in one go.
+anti_abuse_reload() {
+    local nft
+    nft=$(command -v nft) || return 1
+    anti_abuse_rules >"${anti_abuse_nft}.new"
+    if ! "$nft" -c -f "${anti_abuse_nft}.new" >/dev/null 2>&1; then
+        rm -f "${anti_abuse_nft}.new"
+        return 1
+    fi
+    mv -f "${anti_abuse_nft}.new" "$anti_abuse_nft"
+    systemctl reload-or-restart x-ui-anti-abuse >/dev/null 2>&1
+}
+
+# anti_abuse_auto is the installer's: on, unless "x-ui anti-abuse off"
+# turned it off.
+anti_abuse_auto() {
+    if [[ -f $anti_abuse_off_marker ]]; then
+        echo "Anti-abuse: kept off (x-ui anti-abuse on turns it on)"
+        return 0
+    fi
+    ANTI_ABUSE_AUTO=1 anti_abuse_on
+}
+
+# anti_abuse_off takes it all away. With "keep" it is not remembered as
+# turned off (uninstall).
+anti_abuse_off() {
+    if [[ ${1:-} != keep ]]; then
+        mkdir -p "$(dirname "$anti_abuse_off_marker")" && : >"$anti_abuse_off_marker"
+    fi
+    if [[ -f $anti_abuse_check_timer ]]; then
+        systemctl disable --now x-ui-anti-abuse-check.timer >/dev/null 2>&1
+        rm -f "$anti_abuse_check_timer" "$anti_abuse_check_unit"
+    fi
+    if [[ -f $anti_abuse_unit ]]; then
+        systemctl disable --now x-ui-anti-abuse >/dev/null 2>&1
+        rm -f "$anti_abuse_unit"
+    fi
+    systemctl daemon-reload 2>/dev/null
+    command -v nft >/dev/null 2>&1 && nft delete table inet "$anti_abuse_table" 2>/dev/null
+    rm -f "$anti_abuse_nft"
+    if [[ -f $anti_abuse_jail || -f $anti_abuse_jail_old ]]; then
+        rm -f "$anti_abuse_jail" "$anti_abuse_jail_old"
+        if systemctl is-active --quiet fail2ban; then
+            # Without this jail's journal settings the distribution's own SSH
+            # jail may find no log file (Debian 12 has none): fail2ban would
+            # then fail on every start. It is stopped instead.
+            if ! fail2ban-client -t >/dev/null 2>&1; then
+                systemctl disable --now fail2ban >/dev/null 2>&1
+                LOGI "fail2ban stopped: its remaining configuration does not load here."
+            else
+                fail2ban-client reload >/dev/null
+            fi
+        fi
+    fi
+    LOGI "Anti-abuse is off."
+}
+
+# anti_abuse runs "x-ui anti-abuse [on|status|off|rules|check]" (check is
+# the timer's).
+anti_abuse() {
+    case "${1:-on}" in
+    on) anti_abuse_on ;;
+    status) anti_abuse_status ;;
+    off) anti_abuse_off ;;
+    rules) anti_abuse_rules ;;
+    check) anti_abuse_check ;;
+    auto) anti_abuse_auto ;;
+    *)
+        echo "Usage: x-ui anti-abuse [on|status|off|rules]"
+        return 1
+        ;;
+    esac
+}
+
+anti_abuse_menu() {
+    echo -e "${green}\t1.${plain} Show status"
+    echo -e "${green}\t2.${plain} Turn on (or apply again)"
+    echo -e "${green}\t3.${plain} Turn off"
+    echo -e "${green}\t0.${plain} Back to Main Menu"
+    read -rp "Choose an option: " choice
+    case "$choice" in
+    0)
+        show_menu
+        ;;
+    1)
+        anti_abuse_status
+        before_show_menu
+        ;;
+    2)
+        anti_abuse_on
+        before_show_menu
+        ;;
+    3)
+        anti_abuse_off
+        before_show_menu
+        ;;
+    *)
+        echo -e "${red}Invalid option. Please select a valid number.${plain}\n"
+        anti_abuse_menu
+        ;;
+    esac
+}
+
+# Protection is set up by every install and update ("x-ui protect off" is
+# remembered: updates then leave the guard off):
+#  - The direct guard. The panel marks every connection the cores' freedom
+#    ("direct") outbounds make (web/service/xray_direct_mark.go, directMark),
+#    and an nftables table refuses marked packets to this server's loopback
+#    and to private networks. Freedom resolves an allowed name itself and
+#    dials whatever comes back, which routing never sees: a name pointing at
+#    127.0.0.1 would reach what listens only there -- the cores' API takes
+#    commands without a password. The server's public addresses stay open:
+#    what listens there is open to the internet anyway, and VPN apps test the
+#    configs of the server they are connected to through it -- all but its
+#    SSH and panel ports.
+#  - Speed-test servers (iperf3) are stopped and kept from starting: they let
+#    anyone on the internet pull the uplink's whole bandwidth.
+# "x-ui protect off" takes the guard away; speed-test servers stay stopped.
+protect_nft="/etc/x-ui/direct-guard.nft"
+protect_unit="/etc/systemd/system/x-ui-direct-guard.service"
+protect_table="xui_direct_guard"
+protect_mark=4242
+protect_speedtest_units="iperf3.service iperf.service"
+protect_dropin="x-ui-protect.conf"
+# Written by "x-ui protect off": installs and updates then leave the guard off.
+protect_off_marker="/etc/x-ui/protect.off"
+
+# protect_own_ports prints this server's SSH and panel ports: reached
+# through the VPN they would come from the server itself, where fail2ban
+# never bans and an admin's "only my IP" firewall rules do not apply.
+protect_own_ports() {
+    {
+        echo 22
+        (sshd -T 2>/dev/null || /usr/sbin/sshd -T 2>/dev/null) | awk '$1 == "port" { print $2 }'
+        [[ -x ${xui_folder}/x-ui ]] && ${xui_folder}/x-ui setting -show true 2>/dev/null | grep -Eo 'port: [0-9]+' | awk '{ print $2 }' | head -1
+    } | grep -E '^[0-9]+$' | sort -un | paste -sd, - | sed 's/,/, /g'
+}
+
+# protect_rules prints the direct guard's nftables rules.
+protect_rules() {
+    local own
+    own=$(protect_own_ports)
+    cat <<EOF
+#!/usr/sbin/nft -f
+# Written by "x-ui protect"; "x-ui protect off" removes it.
+
+table inet ${protect_table}
+delete table inet ${protect_table}
+
+table inet ${protect_table} {
+	set private4 {
+		type ipv4_addr
+		flags interval
+		elements = { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12,
+			     192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/3 }
+	}
+	set private6 {
+		type ipv6_addr
+		flags interval
+		elements = { ::/128, fc00::/7, fe80::/10, ff00::/8 }
+	}
+	counter local { }
+	counter private { }
+	counter self { }
+
+	chain output {
+		type filter hook output priority filter - 1; policy accept;
+		meta mark != ${protect_mark} return
+		ip daddr 127.0.0.0/8 counter name local goto refuse
+		ip6 daddr ::1 counter name local goto refuse
+		ip daddr @private4 counter name private goto refuse
+		ip6 daddr @private6 counter name private goto refuse
+		# This server's own public addresses: open, counted -- but for its
+		# SSH and panel ports.
+		oifname "lo" tcp dport { ${own:-22} } counter name local goto refuse
+		oifname "lo" counter name self
+	}
+	chain refuse {
+		meta l4proto tcp reject with tcp reset
+		reject with icmpx admin-prohibited
+	}
+}
+EOF
+}
+
+# protect_speedtest_held says whether a speed-test server is kept from
+# starting for good: masked, or (a unit file in /etc/systemd/system cannot be
+# masked) held back by our drop-in. A runtime mask goes at the next boot.
+protect_speedtest_held() {
+    [[ $(systemctl is-enabled "$1" 2>/dev/null) == masked ]] || [[ -f /etc/systemd/system/$1.d/$protect_dropin ]]
+}
+
+# protect_speedtest_stopped says whether a speed-test server is held and not
+# running: a plain "systemctl mask" leaves a running one running.
+protect_speedtest_stopped() {
+    protect_speedtest_held "$1" || return 1
+    case "$(systemctl is-active "$1" 2>/dev/null)" in
+    active | activating | reloading | deactivating) return 1 ;;
+    esac
+    return 0
+}
+
+# protect_speedtest_stop stops the speed-test servers and keeps them from
+# starting again.
+protect_speedtest_stop() {
+    local u en
+    for u in $protect_speedtest_units; do
+        en=$(systemctl is-enabled "$u" 2>/dev/null) || true
+        [[ -z $en || $en == not-found ]] && continue
+        protect_speedtest_stopped "$u" && continue
+        systemctl disable --now "$u" >/dev/null 2>&1 || true
+        systemctl stop "$u" >/dev/null 2>&1 || true
+        systemctl unmask --runtime "$u" >/dev/null 2>&1 || true
+        systemctl mask "$u" >/dev/null 2>&1 || true
+        if ! protect_speedtest_held "$u"; then
+            mkdir -p "/etc/systemd/system/$u.d"
+            cat >"/etc/systemd/system/$u.d/$protect_dropin" <<EOF
+# Written by "x-ui protect": speed-test servers stay off. To start it again:
+# delete this file, then systemctl daemon-reload && systemctl enable --now $u
+[Unit]
+ConditionPathExists=/nonexistent/x-ui-protect
+EOF
+            systemctl daemon-reload
+        fi
+        LOGI "Stopped the speed-test server ${u%.service}; it stays off."
+    done
+    return 0
+}
+
+# protect_speedtest_summary prints what became of the speed-test servers.
+protect_speedtest_summary() {
+    local u out=""
+    for u in $protect_speedtest_units; do
+        case "$(systemctl is-enabled "$u" 2>/dev/null)" in
+        "" | not-found) continue ;;
+        esac
+        if protect_speedtest_stopped "$u"; then
+            out+="${out:+, }${u%.service} stopped"
+        elif protect_speedtest_held "$u"; then
+            out+="${out:+, }${u%.service} held but RUNNING"
+        else
+            out+="${out:+, }${u%.service} $(systemctl is-active "$u" 2>/dev/null)"
+        fi
+    done
+    echo "${out:-none here}"
+}
+
+protect_on() {
+    local nft rc=0
+    rm -f "$protect_off_marker"
+    if ! command -v systemctl >/dev/null 2>&1; then
+        LOGE "Protection needs systemd; it is not set up."
+        return 1
+    fi
+    protect_speedtest_stop
+    if ! command -v nft >/dev/null 2>&1; then
+        anti_abuse_install nftables >/dev/null 2>&1
+    fi
+    nft=$(command -v nft) || { LOGE "Could not install nftables; the direct guard is not set up."; return 1; }
+    mkdir -p "$(dirname "$protect_nft")"
+    protect_rules >"${protect_nft}.new"
+    if ! "$nft" -c -f "${protect_nft}.new"; then
+        rm -f "${protect_nft}.new"
+        LOGE "nftables rejected the direct guard (no permission here?); it is not set up."
+        return 1
+    fi
+    mv -f "${protect_nft}.new" "$protect_nft"
+    cat >"$protect_unit" <<EOF
+[Unit]
+Description=x-ui direct guard (the cores' direct connections never reach this server's loopback or private networks)
+DefaultDependencies=no
+Wants=network-pre.target
+Before=network-pre.target shutdown.target x-ui.service
+After=local-fs.target nftables.service firewalld.service
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=${nft} -f ${protect_nft}
+ExecReload=${nft} -f ${protect_nft}
+ExecStop=${nft} delete table inet ${protect_table}
+
+[Install]
+WantedBy=sysinit.target
+EOF
+    systemctl daemon-reload
+    systemctl enable x-ui-direct-guard >/dev/null 2>&1
+    # A reload swaps the table in one go: no moment without the guard.
+    systemctl reload-or-restart x-ui-direct-guard || { LOGE "x-ui-direct-guard did not start (see: systemctl status x-ui-direct-guard)."; rc=1; }
+    nft list table inet "$protect_table" >/dev/null 2>&1 || rc=1
+    [[ $rc == 0 ]] && LOGI "Direct guard on; speed-test servers: $(protect_speedtest_summary)."
+    return $rc
+}
+
+protect_counter() {
+    nft list counter inet "$protect_table" "$1" 2>/dev/null | awk '/packets/ { print $2 }'
+}
+
+protect_status() {
+    if nft list table inet "$protect_table" >/dev/null 2>&1; then
+        echo -e "Direct guard: ${green}on${plain}"
+        echo "  Refused: $(protect_counter local) packets to this server's loopback, $(protect_counter private) to private networks"
+        echo "  Passed:  $(protect_counter self) packets to this server's public addresses"
+    else
+        echo -e "Direct guard: ${red}off${plain} (turn it on: x-ui protect)"
+    fi
+    echo "Speed-test servers: $(protect_speedtest_summary)"
+}
+
+# protect_auto is the installer's: speed-test servers stopped, and the guard
+# on unless "x-ui protect off" turned it off.
+protect_auto() {
+    if [[ -f $protect_off_marker ]]; then
+        protect_speedtest_stop
+        echo "Direct guard: kept off (x-ui protect on turns it on); speed-test servers: $(protect_speedtest_summary)."
+        return 0
+    fi
+    protect_on
+}
+
+# protect_off takes the guard away. With "keep" it is not remembered as
+# turned off (uninstall).
+protect_off() {
+    if [[ ${1:-} != keep ]]; then
+        mkdir -p "$(dirname "$protect_off_marker")" && : >"$protect_off_marker"
+    fi
+    if [[ -f $protect_unit ]]; then
+        systemctl disable --now x-ui-direct-guard >/dev/null 2>&1
+        rm -f "$protect_unit"
+        systemctl daemon-reload 2>/dev/null
+    fi
+    command -v nft >/dev/null 2>&1 && nft delete table inet "$protect_table" 2>/dev/null
+    rm -f "$protect_nft"
+    LOGI "Direct guard off (updates keep it off; x-ui protect on turns it on). Speed-test servers stay stopped; to start iperf3 again: systemctl unmask iperf3 && systemctl enable --now iperf3 (if it was held by /etc/systemd/system/iperf3.service.d/${protect_dropin}: delete that, systemctl daemon-reload, then enable --now)."
+}
+
+# protect runs "x-ui protect [on|status|off|rules]".
+protect() {
+    case "${1:-on}" in
+    on) protect_on ;;
+    status) protect_status ;;
+    off) protect_off ;;
+    rules) protect_rules ;;
+    auto) protect_auto ;;
+    *)
+        echo "Usage: x-ui protect [on|status|off|rules]"
+        return 1
+        ;;
+    esac
+}
+
 update_shell() {
-    curl -fLRo /usr/bin/x-ui -z /usr/bin/x-ui https://github.com/F4RD1N/x-ui/raw/main/x-ui.sh
-    if [[ $? != 0 ]]; then
+    if ! fetch_menu_script; then
         echo ""
         LOGE "Failed to download script, Please check whether the machine can connect Github"
         before_show_menu
     else
-        chmod +x /usr/bin/x-ui
         LOGI "Upgrade script succeeded, Please rerun the script"
         before_show_menu
     fi
@@ -771,6 +2359,22 @@ firewall_menu() {
     esac
 }
 
+# panel_ports lists the TCP ports the panel and its cores listen on (the web
+# and subscription ports, every inbound and sub-inbound), plus sshd's; ports
+# bound to loopback only (the cores' API) need no rule.
+panel_ports() {
+    local ports=() p
+    if command -v ss >/dev/null 2>&1; then
+        while read -r p; do
+            [[ -n "$p" ]] && ports+=("$p")
+        done < <(ss -Hltnp 2>/dev/null | grep -E '"(x-ui|xray-linux-[a-z0-9]+|sshd)"' \
+            | awk '$4 !~ /^(127\.|\[::1\]:)/ {print $4}' | sed -E 's/.*:([0-9]+)$/\1/' | sort -un)
+    fi
+    p=$(${xui_folder}/x-ui setting -show true 2>/dev/null | grep -Eo 'port: [0-9]+' | awk '{print $2}' | head -1)
+    [[ -n "$p" ]] && ports+=("$p")
+    printf '%s\n' "${ports[@]}" | sort -un
+}
+
 install_firewall() {
     if ! command -v ufw &>/dev/null; then
         echo "ufw firewall is not installed. Installing now..."
@@ -784,13 +2388,17 @@ install_firewall() {
     if ufw status | grep -q "Status: active"; then
         echo "Firewall is already active"
     else
-        echo "Activating firewall..."
-        # Open the necessary ports
+        # Everything this server listens on for the panel, its inbounds
+        # and SSH stays reachable; enabling ufw blocks all other ports.
+        local ports p
+        ports=$(panel_ports)
+        echo "These TCP ports stay open (panel, inbounds, SSH): $(echo $ports | tr ' ' ',')"
+        echo "UDP inbounds and ports of other programs must be opened with option 3."
+        confirm "Enable the firewall now?" "n" || return 0
         ufw allow ssh
-        ufw allow http
-        ufw allow https
-        ufw allow 2053/tcp #webPort
-        ufw allow 2096/tcp #subport
+        for p in $ports; do
+            ufw allow "$p"
+        done
 
         # Enable the firewall
         ufw --force enable
@@ -913,13 +2521,13 @@ delete_ports() {
     fi
 }
 
-update_all_geofiles() {
-    update_geofiles "main"
-    update_geofiles "IR"
-    update_geofiles "RU"
-}
-
+# update_geofiles downloads one set of geo files. Each file is fetched next
+# to the live one and only moved over it when the download completed, so a
+# dropped connection cannot leave a truncated file for the cores to load.
+# It sets geo_changed when a file was replaced, and returns 1 if any failed.
+geo_changed=0
 update_geofiles() {
+    local dat_files dat_source dat remote_file live tmp failed=0
     case "${1}" in
       "main") dat_files=(geoip geosite); dat_source="Loyalsoldier/v2ray-rules-dat";;
         "IR") dat_files=(geoip_IR geosite_IR); dat_source="chocolate4u/Iran-v2ray-rules" ;;
@@ -928,9 +2536,49 @@ update_geofiles() {
     for dat in "${dat_files[@]}"; do
         # Remove suffix for remote filename (e.g., geoip_IR -> geoip)
         remote_file="${dat%%_*}"
-        curl -fLRo ${xui_folder}/bin/${dat}.dat -z ${xui_folder}/bin/${dat}.dat \
-            https://github.com/${dat_source}/releases/latest/download/${remote_file}.dat
+        live="${xui_folder}/bin/${dat}.dat"
+        tmp="${live}.download"
+        rm -f "$tmp"
+        if [[ -f "$live" ]]; then
+            curl -fsSLR -o "$tmp" -z "$live" "https://github.com/${dat_source}/releases/latest/download/${remote_file}.dat"
+        else
+            curl -fsSLR -o "$tmp" "https://github.com/${dat_source}/releases/latest/download/${remote_file}.dat"
+        fi
+        if [[ $? -ne 0 ]]; then
+            rm -f "$tmp"
+            LOGE "Download of ${dat}.dat failed; the current file is kept."
+            failed=1
+        elif [[ -s "$tmp" ]]; then
+            mv -f "$tmp" "$live" && geo_changed=1 && echo "Updated ${dat}.dat"
+        else
+            rm -f "$tmp" # not modified since the last download
+            echo "${dat}.dat is up to date"
+        fi
     done
+    return $failed
+}
+
+update_all_geofiles() {
+    local failed=0
+    update_geofiles "main" || failed=1
+    update_geofiles "IR" || failed=1
+    update_geofiles "RU" || failed=1
+    return $failed
+}
+
+# geo_done reports the outcome and restarts the panel only when a file was
+# actually replaced.
+geo_done() {
+    local failed=$1
+    if [[ $failed -ne 0 ]]; then
+        LOGE "Some geo files could not be updated."
+    fi
+    if [[ $geo_changed -eq 1 ]]; then
+        LOGI "Geo files updated; restarting the panel."
+        restart 0
+    elif [[ $failed -eq 0 ]]; then
+        LOGI "Geo files are already up to date."
+    fi
 }
 
 update_geo() {
@@ -941,29 +2589,26 @@ update_geo() {
     echo -e "${green}\t0.${plain} Back to Main Menu"
     read -rp "Choose an option: " choice
 
+    geo_changed=0
     case "$choice" in
     0)
         show_menu
         ;;
     1)
         update_geofiles "main"
-        echo -e "${green}Loyalsoldier datasets have been updated successfully!${plain}"
-        restart
+        geo_done $?
         ;;
     2)
         update_geofiles "IR"
-        echo -e "${green}chocolate4u datasets have been updated successfully!${plain}"
-        restart
+        geo_done $?
         ;;
     3)
         update_geofiles "RU"
-        echo -e "${green}runetfreedom datasets have been updated successfully!${plain}"
-        restart
+        geo_done $?
         ;;
     4)
         update_all_geofiles
-        echo -e "${green}All geo files have been updated successfully!${plain}"
-        restart
+        geo_done $?
         ;;
     *)
         echo -e "${red}Invalid option. Please select a valid number.${plain}\n"
@@ -1790,61 +3435,64 @@ iplimit_main() {
     esac
 }
 
-install_iplimit() {
-    if ! command -v fail2ban-client &>/dev/null; then
-        echo -e "${green}Fail2ban is not installed. Installing now...!${plain}\n"
+# install_fail2ban installs fail2ban if it is missing (IP Limit and
+# anti-abuse both use it).
+install_fail2ban() {
+    command -v fail2ban-client &>/dev/null && return 0
+    echo -e "${green}Fail2ban is not installed. Installing now...!${plain}\n"
 
-        # Check the OS and install necessary packages
-        case "${release}" in
-        ubuntu)
-            apt-get update
-            if [[ "${os_version}" -ge 24 ]]; then
-                apt-get install python3-pip -y
-                python3 -m pip install pyasynchat --break-system-packages
-            fi
-            apt-get install fail2ban -y
-            ;;
-        debian)
-            apt-get update
-            if [ "$os_version" -ge 12 ]; then
-                apt-get install -y python3-systemd
-            fi
-            apt-get install -y fail2ban
-            ;;
-        armbian)
-            apt-get update && apt-get install fail2ban -y
-            ;;
-        fedora | amzn | virtuozzo | rhel | almalinux | rocky | ol)
-            dnf -y update && dnf -y install fail2ban
-            ;;
-        centos)
-            if [[ "${VERSION_ID}" =~ ^7 ]]; then
-                yum update -y && yum install epel-release -y
-                yum -y install fail2ban
-            else
-                dnf -y update && dnf -y install fail2ban
-            fi
-            ;;
-        arch | manjaro | parch)
-            pacman -Syu --noconfirm fail2ban
-            ;;
-        alpine)
-            apk add fail2ban
-            ;;
-        *)
-            echo -e "${red}Unsupported operating system. Please check the script and install the necessary packages manually.${plain}\n"
-            exit 1
-            ;;
-        esac
-
-        if ! command -v fail2ban-client &>/dev/null; then
-            echo -e "${red}Fail2ban installation failed.${plain}\n"
-            exit 1
+    # Check the OS and install necessary packages
+    case "${release}" in
+    ubuntu | debian | armbian)
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get -o DPkg::Lock::Timeout=180 update -q >/dev/null
+        if [[ ${release} == debian && "${os_version}" -ge 12 ]]; then
+            apt-get -o DPkg::Lock::Timeout=180 install -y -q python3-systemd >/dev/null
         fi
+        apt-get -o DPkg::Lock::Timeout=180 install -y -q fail2ban >/dev/null || return 1
+        # Python 3.12 dropped asynchat, which some fail2ban builds still
+        # import: add it only where this one does.
+        if ! python3 -c 'import fail2ban.server.asyncserver' 2>/dev/null; then
+            apt-get -o DPkg::Lock::Timeout=180 install -y -q python3-pyasynchat >/dev/null 2>&1 ||
+                { apt-get -o DPkg::Lock::Timeout=180 install -y -q python3-pip >/dev/null && python3 -m pip install -q pyasynchat --break-system-packages; }
+        fi
+        ;;
+    fedora | amzn | virtuozzo | rhel | almalinux | rocky | ol)
+        dnf -y install fail2ban
+        ;;
+    centos)
+        if [[ "${VERSION_ID}" =~ ^7 ]]; then
+            yum install epel-release -y
+            yum -y install fail2ban
+        else
+            dnf -y install fail2ban
+        fi
+        ;;
+    arch | manjaro | parch)
+        pacman -S --noconfirm --needed fail2ban
+        ;;
+    alpine)
+        apk add fail2ban
+        ;;
+    *)
+        echo -e "${red}Unsupported operating system. Please check the script and install the necessary packages manually.${plain}\n"
+        return 1
+        ;;
+    esac
 
-        echo -e "${green}Fail2ban installed successfully!${plain}\n"
-    else
+    if ! command -v fail2ban-client &>/dev/null; then
+        echo -e "${red}Fail2ban installation failed.${plain}\n"
+        return 1
+    fi
+
+    echo -e "${green}Fail2ban installed successfully!${plain}\n"
+}
+
+install_iplimit() {
+    if command -v fail2ban-client &>/dev/null; then
         echo -e "${yellow}Fail2ban is already installed.${plain}\n"
+    else
+        install_fail2ban || exit 1
     fi
 
     echo -e "${green}Configuring IP Limit...${plain}\n"
@@ -2164,9 +3812,10 @@ SSH_port_forwarding() {
     esac
 }
 
-# import_db replaces the panel database with one downloaded from a URL, then
-# restarts the panel so it opens the new file. The binary does the download,
-# validation and the swap; this only handles the restart.
+# import_db replaces the panel database with one downloaded from a URL. The
+# binary does the download, the checks and the swap, which it refuses while the
+# panel has the database open; so the panel is stopped around it and started
+# again whether or not the import worked.
 import_db() {
     local url="$1"
     if [[ -z "$url" ]]; then
@@ -2174,17 +3823,35 @@ import_db() {
         return 1
     fi
 
-    /usr/local/x-ui/x-ui "db=${url}" || return 1
+    echo -e "${yellow}Stopping the panel for the import...${plain}"
+    if [[ $release == "alpine" ]]; then
+        rc-service x-ui stop >/dev/null 2>&1
+    else
+        systemctl stop x-ui
+    fi
 
-    echo -e "${green}Restarting the panel so the new database takes effect...${plain}"
-    systemctl restart x-ui
+    local ok=0
+    /usr/local/x-ui/x-ui "db=${url}" || ok=1
+
+    if [[ $ok == 0 ]]; then
+        echo -e "${green}Starting the panel on the new database...${plain}"
+    else
+        echo -e "${red}The import failed; starting the panel on its old database...${plain}"
+    fi
+    if [[ $release == "alpine" ]]; then
+        rc-service x-ui start >/dev/null 2>&1
+    else
+        systemctl start x-ui
+    fi
     sleep 2
-    if systemctl is-active --quiet x-ui; then
-        echo -e "${green}Panel restarted.${plain}"
+    check_status
+    if [[ $? == 0 ]]; then
+        echo -e "${green}Panel started.${plain}"
     else
         echo -e "${red}The panel did not come back up. Check: x-ui log${plain}"
         return 1
     fi
+    return $ok
 }
 
 show_usage() {
@@ -2195,16 +3862,20 @@ show_usage() {
 │  ${blue}x-ui start${plain}                 - Start                            │
 │  ${blue}x-ui stop${plain}                  - Stop                             │
 │  ${blue}x-ui restart${plain}               - Restart                          │
-|  ${blue}x-ui restart-xray${plain}          - Restart Xray                     │
+│  ${blue}x-ui restart-xray${plain}          - Restart Xray                     │
 │  ${blue}x-ui status${plain}                - Current Status                   │
 │  ${blue}x-ui settings${plain}              - Current Settings                 │
+│  ${blue}x-ui setting -h${plain}            - Change settings (the binary)     │
 │  ${blue}x-ui enable${plain}                - Enable Autostart on OS Startup   │
 │  ${blue}x-ui disable${plain}               - Disable Autostart on OS Startup  │
 │  ${blue}x-ui log${plain}                   - Check logs                       │
 │  ${blue}x-ui banlog${plain}                - Check Fail2ban ban logs          │
 │  ${blue}x-ui update${plain}                - Update                           │
 │  ${blue}x-ui update-all-geofiles${plain}   - Update all geo files             │
-│  ${blue}x-ui db="<url>"${plain}            - Replace database from a URL      │
+│  ${blue}x-ui anti-abuse${plain}            - Anti-abuse (on, status, off)     │
+│  ${blue}x-ui protect${plain}               - Direct guard, speed tests        │
+│  ${blue}x-ui dns${plain}                   - DNS cache (on, status, off)      │
+│  ${blue}x-ui db=\"<url>\"${plain}            - Replace database from a URL      │
 │  ${blue}x-ui install${plain}               - Install                          │
 │  ${blue}x-ui uninstall${plain}             - Uninstall                        │
 └────────────────────────────────────────────────────────────────┘"
@@ -2247,10 +3918,12 @@ show_menu() {
 │  ${green}24.${plain} Enable BBR                                │
 │  ${green}25.${plain} Update Geo Files                          │
 │  ${green}26.${plain} Speedtest by Ookla                        │
+│  ${green}27.${plain} Anti-Abuse                                │
+│  ${green}28.${plain} DNS Cache                                 │
 ╚────────────────────────────────────────────────╝
 "
     show_status
-    echo && read -rp "Please enter your selection [0-26]: " num
+    echo && read -rp "Please enter your selection [0-28]: " num
 
     case "${num}" in
     0)
@@ -2334,13 +4007,19 @@ show_menu() {
     26)
         run_speedtest
         ;;
+    27)
+        anti_abuse_menu
+        ;;
+    28)
+        dns_menu
+        ;;
     *)
-        LOGE "Please enter the correct number [0-26]"
+        LOGE "Please enter the correct number [0-28]"
         ;;
     esac
 }
 
-if [[ $# > 0 ]]; then
+if [[ $# -gt 0 ]]; then
     case $1 in
     "start")
         check_install 0 && start 0
@@ -2385,7 +4064,34 @@ if [[ $# > 0 ]]; then
         check_install 0 && uninstall 0
         ;;
     "update-all-geofiles")
-        check_install 0 && update_all_geofiles 0 && restart 0
+        if check_install 0; then
+            geo_changed=0
+            update_all_geofiles
+            rc=$?
+            geo_done $rc
+            exit $rc
+        fi
+        ;;
+    "dns")
+        dns "${2:-}"
+        exit $?
+        ;;
+    "host-setup")
+        # The installer's: BBR (install and update) and swap (install).
+        host_setup "${2:-update}"
+        exit $?
+        ;;
+    "anti-abuse")
+        anti_abuse "${2:-}"
+        exit $?
+        ;;
+    "protect")
+        protect "${2:-}"
+        exit $?
+        ;;
+    "setting" | "migrate" | "cert")
+        # Passed straight to the panel binary (x-ui setting -show true ...).
+        check_install 0 && { ${xui_folder}/x-ui "$@"; exit $?; }
         ;;
     "db="*)
         check_install 0 && import_db "${1#db=}"

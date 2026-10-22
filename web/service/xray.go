@@ -113,6 +113,7 @@ func (s *XrayService) buildXrayConfig(templateConfig string) (*xray.Config, erro
 	if err != nil {
 		return nil, err
 	}
+	xrayConfig.OutboundConfigs = withDirectMark(xrayConfig.OutboundConfigs)
 
 	s.inboundService.AddTraffic(nil, nil)
 
@@ -239,6 +240,9 @@ func (s *XrayService) RestartXray(isForce bool) error {
 	if err != nil {
 		return err
 	}
+	// Keep every port the panel and its core listen on out of the kernel's
+	// ephemeral range before the core (re)starts.
+	syncReservedPorts(s.panelReservedPorts(xrayConfig))
 
 	if s.IsXrayRunning() {
 		if !isForce && p.GetConfig().Equals(xrayConfig) && !isNeedXrayRestart.Load() {

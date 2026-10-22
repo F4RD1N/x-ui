@@ -63,6 +63,37 @@ bash <(curl -Ls https://raw.githubusercontent.com/F4RD1N/x-ui/main/install.sh) d
 Any default can be overridden the same way (`port=`, `user=`, `pass=`, `path=`)
 or through the matching `XUI_*` environment variables.
 
+Run on a server that already has the panel (and without `db=`, `user=`, `pass=`,
+`port=` or `path=`), the same command updates it and keeps its login, port and
+path.
+
+### What every install and update sets up
+
+| | |
+|---|---|
+| `x-ui protect` | The core's direct connections never reach this server's loopback (the core's API, its metrics, the DNS cache), its SSH and panel ports, or private networks; speed-test servers (iperf3) stay stopped. |
+| `x-ui anti-abuse` | Outgoing connections to brute-force and spam ports (SSH, Telnet, SMTP, RDP, SMB, VNC, ...), to private networks through the uplink, and port/net scans are refused; a host that never answers is refused for 10 minutes (the dead-host check, every minute); fail2ban bans an IP after 2 failed SSH logins. `x-ui anti-abuse status` shows what it refused. |
+| `x-ui dns` | A local DNS cache (unbound at 127.0.0.1). It forwards to the fastest resolvers the server reaches, timed at setup -- often its provider's own, a fraction of a millisecond away. `/etc/resolv.conf` keeps two of them after 127.0.0.1 in case the cache does not answer. Left alone where something else manages DNS. |
+| BBR | BBR with fq, unless another congestion control was chosen on the server. |
+| Swap | On a fresh install of a machine with 2 GiB of RAM or less and no swap: a 1 GiB `/swapfile`. |
+| Ports | The panel keeps every port it and the core listen on out of the kernel's range for outgoing connections (`ip_local_reserved_ports`), so a restart never finds one taken. |
+
+`x-ui protect off`, `x-ui anti-abuse off`, `x-ui dns off` and the menu's
+**Disable BBR** undo them and are remembered: later updates leave them off until
+they are turned on again. A congestion control, qdisc or fail2ban setting the
+admin chose is kept, and a fail2ban the admin turned off stays off.
+`anti-abuse=off` and `dns=off` skip those two for one run of the installer.
+Uninstall removes all of it and puts `/etc/resolv.conf` back.
+
+### Default routing
+
+A fresh install's Xray template is an allow-list: SMTP, speed tests, IP-lookup
+sites and tunnel/DDNS services are blocked first, then known apps, sites and
+games are let through; anything else goes nowhere. An update keeps the template
+the panel already runs (a panel that never saved one keeps the old built-in
+default). The release build checks that the template loads with the geo files it
+ships.
+
 ## Updating
 
 The **x-ui** card on the overview page has an **Update** button. It checks this

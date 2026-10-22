@@ -395,6 +395,24 @@ func GetListenIP(getListen bool) {
 }
 
 // migrateDb performs database migration operations for the 3x-ui panel.
+// keepPreviousXrayTemplate stores, for a panel being updated, the built-in
+// xray template it has been running on when it never saved one (install.sh
+// runs it in update mode before the new version starts).
+func keepPreviousXrayTemplate() {
+	if err := database.InitDB(config.GetDBPath()); err != nil {
+		fmt.Println("Failed to open the database:", err)
+		os.Exit(1)
+	}
+	stored, err := (&service.SettingService{}).KeepPreviousXrayTemplate()
+	if err != nil {
+		fmt.Println("Failed to keep the xray template:", err)
+		os.Exit(1)
+	}
+	if stored {
+		fmt.Println("Kept the xray template this panel ran on (it never saved one).")
+	}
+}
+
 func migrateDb() {
 	inboundService := service.InboundService{}
 
@@ -528,6 +546,7 @@ func main() {
 	var show bool
 	var getCert bool
 	var resetTwoFactor bool
+	var keepXrayTemplate bool
 	settingCmd.BoolVar(&reset, "reset", false, "Reset all settings")
 	settingCmd.BoolVar(&show, "show", false, "Display current settings")
 	settingCmd.IntVar(&port, "port", 0, "Set panel port number")
@@ -544,6 +563,7 @@ func main() {
 	settingCmd.StringVar(&tgbotRuntime, "tgbotRuntime", "", "Set cron time for Telegram bot notifications")
 	settingCmd.StringVar(&tgbotchatid, "tgbotchatid", "", "Set chat ID for Telegram bot notifications")
 	settingCmd.BoolVar(&enabletgbot, "enabletgbot", false, "Enable notifications via Telegram bot")
+	settingCmd.BoolVar(&keepXrayTemplate, "keepXrayTemplate", false, "On an update: store the xray template this panel ran on when it never saved one, so a newer default does not change it")
 
 	oldUsage := flag.Usage
 	flag.Usage = func() {
@@ -615,6 +635,9 @@ func main() {
 		}
 		if enabletgbot {
 			updateTgbotEnableSts(enabletgbot)
+		}
+		if keepXrayTemplate {
+			keepPreviousXrayTemplate()
 		}
 	case "cert":
 		err := settingCmd.Parse(os.Args[2:])

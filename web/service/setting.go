@@ -24,6 +24,14 @@ import (
 //go:embed config.json
 var xrayTemplateConfig string
 
+// previousXrayTemplateConfig is the built-in template of the versions before
+// 2.9.0-dialect.6 (a plain direct/blocked pair, no allow-list). A panel that
+// never saved a template ran on it, and an update stores it for that panel
+// (KeepPreviousXrayTemplate) so the new default only reaches fresh installs.
+//
+//go:embed config_previous.json
+var previousXrayTemplateConfig string
+
 var defaultValueMap = map[string]string{
 	"xrayTemplateConfig":          xrayTemplateConfig,
 	"webListen":                   "",
@@ -282,8 +290,44 @@ func (s *SettingService) setInt(key string, value int) error {
 	return s.setString(key, strconv.Itoa(value))
 }
 
+// GetXrayConfigTemplate returns the stored template. A panel that has none
+// yet stores one the first time, so a later version with another default
+// leaves its routing as it is. Which one: a database that already has
+// inbounds comes from a panel that ran before 2.9.0-dialect.6 on the old
+// built-in template (an update, a reinstall over it, "x-ui db=" with an older
+// database) and keeps that one; a new panel, whose core starts before it has
+// any inbound, gets the current default.
 func (s *SettingService) GetXrayConfigTemplate() (string, error) {
-	return s.getString("xrayTemplateConfig")
+	setting, err := s.getSetting("xrayTemplateConfig")
+	if database.IsNotFound(err) {
+		tpl := xrayTemplateConfig
+		var inbounds int64
+		if err := database.GetDB().Model(model.Inbound{}).Count(&inbounds).Error; err == nil && inbounds > 0 {
+			tpl = previousXrayTemplateConfig
+		}
+		if err := s.saveSetting("xrayTemplateConfig", tpl); err != nil {
+			logger.Warning("store the xray template:", err)
+		}
+		return tpl, nil
+	} else if err != nil {
+		return "", err
+	}
+	return setting.Value, nil
+}
+
+// KeepPreviousXrayTemplate is run by the installer when it updates a panel,
+// before the new version starts. A panel that never saved a template has run
+// on the built-in default of its version; that is stored now, so the update
+// does not change its routing. It reports whether anything was stored.
+func (s *SettingService) KeepPreviousXrayTemplate() (bool, error) {
+	_, err := s.getSetting("xrayTemplateConfig")
+	if err == nil {
+		return false, nil
+	}
+	if !database.IsNotFound(err) {
+		return false, err
+	}
+	return true, s.saveSetting("xrayTemplateConfig", previousXrayTemplateConfig)
 }
 
 // GetXrayConfigUrl returns the URL the Xray config template is fetched from,
