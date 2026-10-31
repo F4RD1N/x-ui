@@ -17,11 +17,15 @@
 #     are on; the panel's ports are reserved; swap is skipped in a container;
 #   - through a VLESS inbound: an allowed site loads and its name is in
 #     unbound's cache; a site not on the allow-list and a speed test do not;
+#   - the core's memory limit (GOMEMLIMIT) is sized for the container's 1 GiB;
 #   - BBR replaces cubic (host setup forced on in the container);
 #   - "x-ui update" keeps a changed login; anti-abuse and the DNS cache turned
 #     off stay off through an update and come back with "on";
 #   - a panel from before this version (no saved template) keeps its old
 #     template through an update run as the old menus run it (no "update");
+#   - a snapshot booted with more memory: GOMEMLIMIT=449MiB and GOGC=off left
+#     in the unit, the container restarted with 2 GiB; the core gets the
+#     2 GiB limit and no GOGC=off;
 #   - uninstall puts resolv.conf back as it was and removes the rest.
 #
 # Every container and test image is removed at the end.
@@ -120,6 +124,27 @@ exit 1
 SH
 }
 
+# core_limit prints the GOMEMLIMIT entries of the panel's core (not the test
+# client, which runs the same binary).
+core_limit() {
+    in_c 'for p in /proc/[0-9]*; do
+        tr "\0" " " <$p/cmdline 2>/dev/null | grep -q "xray-linux-[a-z0-9]* -c bin/config.json" || continue
+        tr "\0" "\n" <$p/environ | grep "^GOMEMLIMIT="
+    done'
+}
+
+# core_limit_is waits up to 30 s for the core to run with this GOMEMLIMIT
+# (the panel answers before it starts the core).
+core_limit_is() {
+    local i
+    for i in $(seq 1 30); do
+        [[ $(core_limit) == "$1" ]] && return 0
+        sleep 1
+    done
+    echo "    core: $(core_limit)"
+    return 1
+}
+
 via_vpn() { # url -> the HTTP code through the VPN (000 when refused)
     in_c "curl -s -o /dev/null -m 15 -w '%{http_code}' --socks5-hostname 127.0.0.1:10808 '$1'"
 }
@@ -183,6 +208,8 @@ run_distro() {
     check "the previous resolv.conf is kept" in_c 'if [[ -L /root/resolv.conf.before ]]; then [[ $(readlink /etc/x-ui/dns/resolv.conf) == $(readlink /root/resolv.conf.before) ]]; else cmp -s /etc/x-ui/dns/resolv.conf /root/resolv.conf.before; fi'
     check "swap skipped in a container" in_c 'grep -q "skipped in a container" /root/install1.log && [[ ! -e /swapfile ]]'
     check "panel ports reserved (60000, 62789, 11111)" in_c 'p=$(cat /proc/sys/net/ipv4/ip_local_reserved_ports); for x in 60000 62789 11111; do echo ",$p," | grep -q ",$x," || exit 1; done'
+    check "core's GOMEMLIMIT sized for the 1 GiB container (504MiB)" core_limit_is GOMEMLIMIT=504MiB
+    check "the panel logs the same limit" in_c 'journalctl -b -u x-ui --no-pager | grep -q "Memory limit: GOMEMLIMIT=504MiB for the panel and Xray (memory limit 1.0 GiB of "'
 
     # ---- through the VPN -----------------------------------------------------
     check "inbound added, the core listens on 8443" add_inbound
@@ -233,6 +260,23 @@ import sqlite3; c = sqlite3.connect('/etc/x-ui/x-ui.db'); c.execute(\\\"delete f
     check "re-run without 'update' (as old menus do) is an update" in_c 'XUI_LOCAL_TARBALL=/x-ui.tar.gz bash /install.sh >/root/install2.log 2>&1 && grep -q "A panel is installed here: updating it" /root/install2.log'
     check "old panel keeps the old template" in_c 'grep -q "Kept the xray template" /root/install2.log && ! grep -q speedtest-block /usr/local/x-ui/bin/config.json'
     check "login still kept" login 61000 secretpath bob S3cret
+
+    # ---- a snapshot of this server booted with more memory -------------------
+    # The 1 GiB server's unit carries GOMEMLIMIT=449MiB (as a hand-made
+    # drop-in did), here with GOGC=off; the copy boots with 2 GiB.
+    in_c 'mkdir -p /etc/systemd/system/x-ui.service.d &&
+        printf "[Service]\nEnvironment=GOMEMLIMIT=449MiB GOGC=off\n" >/etc/systemd/system/x-ui.service.d/60-host.conf && systemctl daemon-reload'
+    if docker update --memory 2g --memory-swap 2g "$C" >/dev/null && docker restart -t 30 "$C" >/dev/null; then
+        in_c 'for _ in $(seq 1 60); do s=$(systemctl is-system-running 2>/dev/null); [[ $s == running || $s == degraded ]] && exit 0; sleep 1; done; exit 0'
+        in_c 'umount /etc/resolv.conf 2>/dev/null; true' # Docker's bind mount is back
+        check "panel back after the reboot" wait_panel 61000 secretpath
+        check "core's GOMEMLIMIT now for 2 GiB (1200MiB), not 449MiB" core_limit_is GOMEMLIMIT=1200MiB
+        check "  and no GOGC=off" in_c 'for p in /proc/[0-9]*; do tr "\0" " " <$p/cmdline 2>/dev/null | grep -q "xray-linux-[a-z0-9]* -c bin/config.json" || continue; ! tr "\0" "\n" <$p/environ | grep -q "^GOGC="; exit; done; exit 1'
+        check "the panel says the old values are not used" in_c 'j=$(journalctl -b -u x-ui --no-pager); grep -q "Memory limit: GOMEMLIMIT=1200MiB for the panel and Xray (memory limit 2.0 GiB of " <<<"$j" && grep -q "GOMEMLIMIT=449MiB from the service environment is not used" <<<"$j" && grep -q "GOGC=off from the service environment is not used" <<<"$j"'
+    else
+        bad "container restart with 2 GiB"
+    fi
+    in_c 'rm -f /etc/systemd/system/x-ui.service.d/60-host.conf; rmdir /etc/systemd/system/x-ui.service.d 2>/dev/null; systemctl daemon-reload'
 
     # ---- uninstall -------------------------------------------------------------
     check "uninstall" in_c 'echo y | x-ui uninstall >/root/uninstall.log 2>&1; true'

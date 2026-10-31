@@ -10,13 +10,18 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/mhsanaei/3x-ui/v2/config"
 	"github.com/mhsanaei/3x-ui/v2/logger"
 	"github.com/mhsanaei/3x-ui/v2/util/common"
+	"github.com/mhsanaei/3x-ui/v2/util/memlimit"
 )
+
+// lastCoreLimit is the core memory limit last written to the log.
+var lastCoreLimit atomic.Int64
 
 // GetBinaryName returns the Xray binary filename for the current OS and architecture.
 func GetBinaryName() string {
@@ -277,7 +282,15 @@ func (p *process) Start() (err error) {
 	}
 
 	cmd := exec.Command(GetBinaryPath(), "-c", configPath)
-	p.cmd = cmd
+
+	// The core's Go memory limit, from the memory the server has now, in
+	// place of any GOMEMLIMIT the panel was started with (see util/memlimit).
+	mem := memlimit.Detect()
+	limit := memlimit.Limit(mem)
+	cmd.Env = memlimit.Environ(os.Environ(), limit)
+	if limit > 0 && limit != lastCoreLimit.Swap(limit) {
+		logger.Infof("Xray memory limit: GOMEMLIMIT=%dMiB (%s)", limit/memlimit.MiB, mem)
+	}
 
 	cmd.Stdout = p.logWriter
 	cmd.Stderr = p.logWriter
@@ -287,8 +300,16 @@ func (p *process) Start() (err error) {
 	// orphaned core holding the inbound ports.
 	setSysProcAttr(cmd)
 
+	// Started here rather than in the goroutine below, so cmd.Process is set
+	// before anyone else can see p.cmd: IsRunning and Stop read it.
+	if err = cmd.Start(); err != nil {
+		close(p.done)
+		return err
+	}
+	p.cmd = cmd
+
 	go func() {
-		err := cmd.Run()
+		err := cmd.Wait()
 		close(p.done)
 		if err != nil {
 			// On Windows, killing the process results in "exit status 1" which isn't an error for us

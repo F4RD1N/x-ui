@@ -77,6 +77,7 @@ path.
 | BBR | BBR with fq, unless another congestion control was chosen on the server. |
 | Swap | On a fresh install of a machine with 2 GiB of RAM or less and no swap: a 1 GiB `/swapfile`. |
 | Ports | The panel keeps every port it and the core listen on out of the kernel's range for outgoing connections (`ip_local_reserved_ports`), so a restart never finds one taken. |
+| Memory limit | The Go memory limit (`GOMEMLIMIT`) of the panel and the core comes from the memory the server has, worked out again at every start (so at every boot) and saved nowhere: 3/4 of what is left after the kernel's TCP buffers and a reserve for the system -- about 440 MiB on a 1 GB server, 15 GiB on a 24 GB one. A server made from a snapshot of a smaller one gets the limit for its own memory. A `GOMEMLIMIT` (or `GOGC=off`) in the service's environment is not used; to give x-ui less memory, set `MemoryMax=` in a drop-in (`systemctl edit x-ui`; updates rewrite `x-ui.service` itself) and the limit follows it. The panel's log shows the value. |
 
 `x-ui protect off`, `x-ui anti-abuse off`, `x-ui dns off` and the menu's
 **Disable BBR** undo them and are remembered: later updates leave them off until

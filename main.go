@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/logger"
 	"github.com/mhsanaei/3x-ui/v2/sub"
 	"github.com/mhsanaei/3x-ui/v2/util/crypto"
+	"github.com/mhsanaei/3x-ui/v2/util/memlimit"
 	"github.com/mhsanaei/3x-ui/v2/util/sys"
 	"github.com/mhsanaei/3x-ui/v2/web"
 	"github.com/mhsanaei/3x-ui/v2/web/global"
@@ -30,6 +32,29 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/op/go-logging"
 )
+
+// applyMemoryLimit sets the panel's Go memory limit from the memory the server
+// has now, at every start, in place of any GOMEMLIMIT from the environment
+// (one copied with a snapshot of a smaller server would be far too small).
+// The core gets the same limit when it starts (see util/memlimit).
+func applyMemoryLimit() {
+	mem := memlimit.Detect()
+	limit := memlimit.Limit(mem)
+	if limit == 0 {
+		return
+	}
+	debug.SetMemoryLimit(limit)
+	logger.Infof("Memory limit: GOMEMLIMIT=%dMiB for the panel and Xray (%s)", limit/memlimit.MiB, mem)
+	if v := os.Getenv("GOMEMLIMIT"); v != "" {
+		logger.Infof("GOMEMLIMIT=%s from the service environment is not used", v)
+	}
+	// GOGC=off went with the admin's own limit: with ours, panel and core
+	// would each grow to all of it
+	if v := os.Getenv("GOGC"); memlimit.GCOff(v) {
+		debug.SetGCPercent(100)
+		logger.Infof("GOGC=%s from the service environment is not used", v)
+	}
+}
 
 // runWebServer initializes and starts the web server for the 3x-ui panel.
 func runWebServer() {
@@ -51,6 +76,7 @@ func runWebServer() {
 	}
 
 	godotenv.Load()
+	applyMemoryLimit()
 
 	err := database.InitDB(config.GetDBPath())
 	if err != nil {
