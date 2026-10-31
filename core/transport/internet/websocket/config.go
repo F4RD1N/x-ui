@@ -19,6 +19,12 @@ func (c *Config) GetNormalizedPath() string {
 	return path
 }
 
+// AnyPath tells whether this server takes every path: its path is "*" (or
+// "/*"). A client with that path sends "/*", which such a server takes too.
+func (c *Config) AnyPath() bool {
+	return c.GetNormalizedPath() == "/*"
+}
+
 func (c *Config) GetRequestHeader() http.Header {
 	header := http.Header{}
 	for k, v := range c.Header {

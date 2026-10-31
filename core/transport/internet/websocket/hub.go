@@ -23,6 +23,7 @@ import (
 type requestHandler struct {
 	host           string
 	path           string
+	anyPath        bool // path "*": every path is taken
 	ln             *Listener
 	socketSettings *internet.SocketConfig
 }
@@ -44,7 +45,7 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 		writer.WriteHeader(http.StatusNotFound)
 		return
 	}
-	if request.URL.Path != h.path {
+	if !h.anyPath && request.URL.Path != h.path {
 		errors.LogInfo(context.Background(), "failed to validate path, request:", request.URL.Path, ", config:", h.path)
 		writer.WriteHeader(http.StatusNotFound)
 		return
@@ -149,6 +150,7 @@ func ListenWS(ctx context.Context, address net.Address, port net.Port, streamSet
 		Handler: &requestHandler{
 			host:           wsSettings.Host,
 			path:           wsSettings.GetNormalizedPath(),
+			anyPath:        wsSettings.AnyPath(),
 			ln:             l,
 			socketSettings: streamSettings.SocketSettings,
 		},

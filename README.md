@@ -155,6 +155,16 @@ settings and an inbound's TLS certificates — you may enter an
 `http(s)://` link instead. On save the file is downloaded to `/etc/x-ui/certs`
 and the field is replaced with the local path.
 
+## Any path on WebSocket and HTTPUpgrade
+
+An inbound whose WebSocket or HTTPUpgrade path is `*` takes every path, so
+each client can use a path of its own (`/feed/966695/assets/recent/media`,
+`/a/b?ed=2560`, ...). Early data (`?ed=`) still works. Any other path must
+still match exactly. Only the server needs this; clients are unchanged (a
+client given `*` sends `/*`). The path then no longer hides the inbound:
+anyone who opens a WebSocket on that port reaches VLESS, which still refuses
+unknown users.
+
 ## Other changes
 
 - **Restarting Xray no longer races itself.** Stopping the core now waits for it

@@ -55,7 +55,7 @@ func (s *server) upgrade(conn net.Conn) (stat.Connection, error) {
 			return nil, errors.New("bad host: ", host)
 		}
 		path := s.config.GetNormalizedPath()
-		if req.URL.Path != path {
+		if !s.config.AnyPath() && req.URL.Path != path {
 			return nil, errors.New("bad path: ", req.URL.Path)
 		}
 	}

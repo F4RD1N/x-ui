@@ -17,6 +17,8 @@
 #     are on; the panel's ports are reserved; swap is skipped in a container;
 #   - through a VLESS inbound: an allowed site loads and its name is in
 #     unbound's cache; a site not on the allow-list and a speed test do not;
+#   - a WebSocket inbound with path "*" takes clients with any path, early
+#     data (?ed=) included;
 #   - the core's memory limit (GOMEMLIMIT) is sized for the container's 1 GiB;
 #   - BBR replaces cubic (host setup forced on in the container);
 #   - "x-ui update" keeps a changed login; anti-abuse and the DNS cache turned
@@ -124,6 +126,42 @@ exit 1
 SH
 }
 
+# add_ws_any_inbound creates a VLESS+WebSocket inbound on 8444 with path "*"
+# (every path is taken) through the panel's API.
+add_ws_any_inbound() {
+    docker exec -i "$C" bash -s <<'SH'
+set -e
+B=http://127.0.0.1:60000/hetzner
+curl -fsS -m 10 -c /root/jar -d 'username=fardin&password=fardin' $B/login >/dev/null
+curl -fsS -m 30 -b /root/jar $B/panel/api/inbounds/add \
+  -d up=0 -d down=0 -d total=0 -d remark=ws-any -d enable=true -d expiryTime=0 \
+  -d listen= -d port=8444 -d protocol=vless \
+  --data-urlencode 'settings={"clients":[{"id":"6c0f6f3e-2b1d-4f4e-9d55-0d2f6a9b7e21","email":"ws1","flow":"","limitIp":0,"totalGB":0,"expiryTime":0,"enable":true,"tgId":"","subId":"wsany0000wsany00","reset":0}],"decryption":"none","fallbacks":[]}' \
+  --data-urlencode 'streamSettings={"network":"ws","security":"none","wsSettings":{"acceptProxyProtocol":false,"path":"*","host":"","headers":{},"heartbeatPeriod":0}}' \
+  --data-urlencode 'sniffing={"enabled":false}' | grep -q '"success":true'
+for _ in $(seq 1 20); do ss -ltn | grep -q ':8444 ' && exit 0; sleep 1; done
+exit 1
+SH
+}
+
+# ws_any_via <socks port> <client path>: a client core with that WebSocket
+# path on 127.0.0.1:<socks port>, then the HTTP code of google's 204 through it.
+ws_any_via() {
+    docker exec -i "$C" bash -s "$1" "$2" <<'SH'
+port=$1 path=$2
+cat >/root/client-$port.json <<J
+{"log":{"loglevel":"warning"},
+ "inbounds":[{"listen":"127.0.0.1","port":$port,"protocol":"socks","settings":{"udp":true}}],
+ "outbounds":[{"protocol":"vless","settings":{"vnext":[{"address":"127.0.0.1","port":8444,
+   "users":[{"id":"6c0f6f3e-2b1d-4f4e-9d55-0d2f6a9b7e21","encryption":"none"}]}]},
+   "streamSettings":{"network":"ws","wsSettings":{"path":"$path"}}}]}
+J
+nohup /usr/local/x-ui/bin/xray-linux-amd64 run -c /root/client-$port.json >/root/client-$port.log 2>&1 &
+for _ in $(seq 1 10); do ss -ltn | grep -q ":$port " && break; sleep 1; done
+curl -s -o /dev/null -m 15 -w '%{http_code}' --socks5-hostname 127.0.0.1:$port https://www.google.com/generate_204
+SH
+}
+
 # core_limit prints the GOMEMLIMIT entries of the panel's core (not the test
 # client, which runs the same binary).
 core_limit() {
@@ -222,6 +260,9 @@ run_distro() {
     else
         bad "client core did not start"; in_c 'tail -5 /root/client.log'
     fi
+    check "WebSocket inbound with path \"*\" added, the core listens on 8444" add_ws_any_inbound
+    check "  a client with path /feed/966695/assets/recent/media gets through" test "$(ws_any_via 10811 /feed/966695/assets/recent/media)" = 204
+    check "  a client with another path and early data (?ed=2560) too" test "$(ws_any_via 10812 '/x/y/z?ed=2560')" = 204
 
     # ---- BBR (host setup forced on in the container) -------------------------
     check "BBR replaces cubic" in_c 'XUI_HOST_SETUP_IN_CONTAINER=1 x-ui host-setup update | grep -q "BBR: on (was cubic)" && [[ $(sysctl -n net.ipv4.tcp_congestion_control) == bbr ]] && grep -q "tcp_congestion_control = bbr" /etc/sysctl.d/60-x-ui.conf'
