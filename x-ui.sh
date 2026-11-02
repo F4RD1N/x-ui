@@ -1394,8 +1394,9 @@ anti_abuse_check_timer="/etc/systemd/system/x-ui-anti-abuse-check.timer"
 anti_abuse_jail="/etc/fail2ban/jail.d/00-x-ui-anti-abuse.conf"
 anti_abuse_jail_old="/etc/fail2ban/jail.d/x-ui-anti-abuse.conf"
 anti_abuse_table="xui_anti_abuse"
-# SSH, Telnet, SMTP, MS-RPC, NetBIOS, SMB, MSSQL, Telnet, RDP, VNC
-anti_abuse_tcp_ports="22, 23, 25, 135, 139, 445, 1433, 2323, 3389, 5900"
+# SSH, Telnet, SMTP, MS-RPC, NetBIOS, SMB, MSSQL, Telnet, RDP, VNC, and mail
+# submission (465, 587, 2525), which spam bots log in to with stolen accounts
+anti_abuse_tcp_ports="22, 23, 25, 135, 139, 445, 465, 587, 1433, 2323, 2525, 3389, 5900"
 # NetBIOS, SNMP, SSDP, memcached
 anti_abuse_udp_ports="137, 138, 161, 1900, 11211"
 # New destinations per second: hosts per outgoing IP and port, and ports
@@ -1413,6 +1414,19 @@ anti_abuse_dead_waiting=100
 anti_abuse_dead_for="10m"
 # Written by "x-ui anti-abuse off": installs and updates then leave it off.
 anti_abuse_off_marker="/etc/x-ui/anti-abuse.off"
+# Networks that serve nothing but abuse: Spamhaus DROP (hijacked networks and
+# ones run by criminals, botnet command servers among them). What connects to
+# them is malware on a user's device calling home, and that gets the server's
+# IP onto blocklists (Spamhaus XBL). New connections to them are refused from
+# boot on (the last copy is kept here); the lists are fetched every 6 hours.
+anti_abuse_lists_dir="${XUI_THREAT_DIR:-/etc/x-ui/anti-abuse-lists}"
+anti_abuse_threats="${anti_abuse_lists_dir}/threats.nft"
+anti_abuse_lists_unit="/etc/systemd/system/x-ui-anti-abuse-lists.service"
+anti_abuse_lists_timer="/etc/systemd/system/x-ui-anti-abuse-lists.timer"
+# Name, URL, and the fewest entries a good copy has (one with fewer is not
+# taken: the last copy stays).
+anti_abuse_sources="${XUI_THREAT_SOURCES:-drop4 https://www.spamhaus.org/drop/drop_v4.json 500
+drop6 https://www.spamhaus.org/drop/drop_v6.json 10}"
 
 # anti_abuse_uplinks prints the interfaces the default routes leave through.
 anti_abuse_uplinks() {
@@ -1507,14 +1521,22 @@ table inet ${anti_abuse_table} {
 	set deep6 { type ipv6_addr; flags dynamic, timeout; timeout 5m; size 65536; }
 	set dead4 { type ipv4_addr; flags timeout; timeout ${anti_abuse_dead_for}; size 65536; }
 	set dead6 { type ipv6_addr; flags timeout; timeout ${anti_abuse_dead_for}; size 65536; }
+	# filled from ${anti_abuse_threats}
+	set threats4 { type ipv4_addr; flags interval; auto-merge; }
+	set threats6 { type ipv6_addr; flags interval; auto-merge; }
 	counter private_nets { }
 	counter scan_wide { }
 	counter scan_deep { }
 	counter dead_hosts { }
+	counter threats { }
 
 	chain output {
 		type filter hook output priority filter; policy accept;
 		oifname "lo" accept
+		tcp flags & (syn | ack) == syn ip daddr @threats4 counter name threats reject with tcp reset
+		tcp flags & (syn | ack) == syn ip6 daddr @threats6 counter name threats reject with tcp reset
+		meta l4proto udp ip daddr @threats4 counter name threats reject
+		meta l4proto udp ip6 daddr @threats6 counter name threats reject
 		tcp flags & (syn | ack) == syn ip daddr @dead4 counter name dead_hosts reject with tcp reset
 		tcp flags & (syn | ack) == syn ip6 daddr @dead6 counter name dead_hosts reject with tcp reset
 		tcp flags & (syn | ack) == syn tcp dport @tcp_ports reject with tcp reset
@@ -1716,7 +1738,9 @@ Conflicts=shutdown.target
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=${nft} -f ${anti_abuse_nft}
+ExecStart=-/bin/sh -c '[ ! -f ${anti_abuse_threats} ] || ${nft} -f ${anti_abuse_threats}'
 ExecReload=${nft} -f ${anti_abuse_nft}
+ExecReload=-/bin/sh -c '[ ! -f ${anti_abuse_threats} ] || ${nft} -f ${anti_abuse_threats}'
 ExecStop=${nft} delete table inet ${anti_abuse_table}
 
 [Install]
@@ -1745,14 +1769,45 @@ AccuracySec=5s
 [Install]
 WantedBy=timers.target
 EOF
+    # The threat lists, every 6 hours.
+    cat >"$anti_abuse_lists_unit" <<EOF
+[Unit]
+Description=x-ui anti-abuse: fetch the threat lists again, check Spamhaus
+After=x-ui-anti-abuse.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Nice=10
+ExecStart=$(command -v x-ui || echo /usr/bin/x-ui) anti-abuse lists timer
+EOF
+    cat >"$anti_abuse_lists_timer" <<EOF
+[Unit]
+Description=x-ui anti-abuse: fetch the threat lists again, every 6 hours
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=6h
+RandomizedDelaySec=30min
+
+[Install]
+WantedBy=timers.target
+EOF
     systemctl daemon-reload
     systemctl enable x-ui-anti-abuse >/dev/null 2>&1
     systemctl restart x-ui-anti-abuse || { LOGE "x-ui-anti-abuse did not start (see: systemctl status x-ui-anti-abuse)."; return 1; }
     systemctl enable --now x-ui-anti-abuse-check.timer >/dev/null 2>&1 || rc=1
+    anti_abuse_lists fetch || LOGE "Could not load the threat lists (see: journalctl -t x-ui-anti-abuse)."
+    systemctl enable --now x-ui-anti-abuse-lists.timer >/dev/null 2>&1 || rc=1
+    # dig asks Spamhaus whether it lists the server (x-ui anti-abuse status).
+    if ! command -v dig >/dev/null 2>&1; then
+        anti_abuse_install dnsutils >/dev/null 2>&1 || anti_abuse_install bind-utils >/dev/null 2>&1 || anti_abuse_install bind >/dev/null 2>&1
+    fi
     anti_abuse_ssh_jail || rc=1
 
     echo -e "${green}Anti-abuse is on:${plain}
   Refused: outgoing TCP ${anti_abuse_tcp_ports} and UDP ${anti_abuse_udp_ports}
+  Refused: $(anti_abuse_threat_count) botnet and criminal networks (Spamhaus DROP), fetched again every 6 hours
   Refused: private networks through $(anti_abuse_uplinks | paste -sd, -)
   Scans refused: over ${anti_abuse_wide%%/*} new hosts/s on a port, ${anti_abuse_deep%%/*} new ports/s on a host
   Dead hosts: refused for ${anti_abuse_dead_for} when ${anti_abuse_dead_waiting}+ connection attempts wait and none works
@@ -1785,6 +1840,110 @@ anti_abuse_check() {
                 logger -t x-ui-anti-abuse "refusing $ip for ${anti_abuse_dead_for}: $waiting connection attempts waiting, none working"
             fi
         done
+    return 0
+}
+
+# anti_abuse_entries prints the addresses and networks of a threat list, one
+# per line: the "cidr" values of Spamhaus's JSON, or the lines of a plain
+# list. Private, reserved and multicast addresses, and networks too wide to
+# be real (shorter than /8, or /16 for IPv6), are left out.
+anti_abuse_entries() {
+    local list
+    list=$(cat "$1" 2>/dev/null) || return 0
+    {
+        grep -oE '"cidr" *: *"[^"]+"' <<<"$list" | sed -E 's/.*"([^"]+)"$/\1/'
+        grep -vE '^[[:space:]]*([#;{]|$)' <<<"$list" | awk '{ print $1 }'
+    } | tr -d '\r' | tr 'A-F' 'a-f' |
+        grep -E '^(([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?|[0-9a-f]{1,4}:[0-9a-f:]*(/[0-9]{1,3})?)$' |
+        awk -F'[./]' '
+            /:/ {
+                n = split($0, p, "/")
+                if (n > 1 && (p[2] < 16 || p[2] > 128)) next
+                if (p[1] ~ /^(f[c-f]|ff|2001:0?db8:)/) next
+                print; next
+            }
+            $1 > 255 || $2 > 255 || $3 > 255 || $4 > 255 { next }
+            NF > 4 && ($5 < 8 || $5 > 32) { next }
+            $1 == 0 || $1 == 10 || $1 == 127 || $1 >= 224 { next }
+            ($1 == 100 && $2 >= 64 && $2 < 128) || ($1 == 169 && $2 == 254) { next }
+            ($1 == 172 && $2 >= 16 && $2 < 32) || ($1 == 192 && $2 == 168) { next }
+            { print }'
+}
+
+# anti_abuse_threat_count prints how many networks the threat lists refuse.
+anti_abuse_threat_count() {
+    sed -n 's/^# networks: //p' "$anti_abuse_threats" 2>/dev/null | grep . || echo 0
+}
+
+# anti_abuse_lists [fetch|timer|load] fetches the threat lists again and
+# loads them into the running rules ("load" only loads the copies kept). A
+# source that cannot be fetched, or sends fewer entries than a good copy
+# has, keeps its last copy. The timer's run (every 6 hours) also checks
+# Spamhaus and logs a listing.
+anti_abuse_lists() {
+    nft list set inet "$anti_abuse_table" threats4 >/dev/null 2>&1 || return 0
+    local name url least got entries v4 v6 n4 n6 listed
+    mkdir -p "$anti_abuse_lists_dir" || return 1
+    if [[ ${1:-fetch} != load ]]; then
+        while read -r name url least; do
+            [[ -n $name && -n $url ]] || continue
+            if curl -fsSL --connect-timeout 10 --max-time 60 -o "${anti_abuse_lists_dir}/${name}.new" "$url" 2>/dev/null &&
+                got=$(anti_abuse_entries "${anti_abuse_lists_dir}/${name}.new" | wc -l) && ((got >= ${least:-0})); then
+                mv -f "${anti_abuse_lists_dir}/${name}.new" "${anti_abuse_lists_dir}/${name}"
+            else
+                rm -f "${anti_abuse_lists_dir}/${name}.new"
+                logger -t x-ui-anti-abuse "threat list ${name}: could not fetch a good copy of ${url}; the last copy stays"
+            fi
+        done <<<"$anti_abuse_sources"
+    fi
+    entries=$(while read -r name _; do
+        [[ -n $name && -f ${anti_abuse_lists_dir}/${name} ]] && anti_abuse_entries "${anti_abuse_lists_dir}/${name}"
+    done <<<"$anti_abuse_sources" | sort -u)
+    v4=$(grep -v : <<<"$entries" | grep . | paste -sd, - | sed 's/,/, /g')
+    v6=$(grep : <<<"$entries" | paste -sd, - | sed 's/,/, /g')
+    n4=$(grep -vc : <<<"$entries")
+    n6=$(grep -c : <<<"$entries")
+    [[ -n $v4 ]] || n4=0
+    {
+        echo "# Written by \"x-ui anti-abuse lists\" from the copies next to it; loaded after ${anti_abuse_nft}."
+        echo "# networks: $((n4 + n6))"
+        echo "flush set inet ${anti_abuse_table} threats4"
+        echo "flush set inet ${anti_abuse_table} threats6"
+        [[ -n $v4 ]] && echo "add element inet ${anti_abuse_table} threats4 { ${v4} }"
+        [[ -n $v6 ]] && echo "add element inet ${anti_abuse_table} threats6 { ${v6} }"
+    } >"${anti_abuse_threats}.new"
+    if ! nft -f "${anti_abuse_threats}.new" 2>/dev/null; then
+        rm -f "${anti_abuse_threats}.new"
+        logger -t x-ui-anti-abuse "nftables rejected the threat lists; the ones loaded before stay"
+        return 1
+    fi
+    mv -f "${anti_abuse_threats}.new" "$anti_abuse_threats"
+    if [[ ${1:-} == timer ]]; then
+        anti_abuse_spamhaus | while read -r ip listed; do
+            logger -t x-ui-anti-abuse "${ip} is on Spamhaus ${listed}: https://check.spamhaus.org/results/?query=${ip}"
+        done
+    fi
+    return 0
+}
+
+# anti_abuse_spamhaus prints the address the server's traffic leaves from
+# (the default route's) with the Spamhaus lists it is on ("2.29.134.171
+# XBL"), or nothing when it is on none. It asks Spamhaus's own name servers,
+# which do not answer through big public resolvers. Without dig it returns 1;
+# when Spamhaus does not answer, 2.
+anti_abuse_spamhaus() {
+    command -v dig >/dev/null 2>&1 || return 1
+    local ip q codes lists
+    for ip in $(ip -4 route get 1.1.1.1 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "src") print $(i + 1) }'); do
+        [[ -n $(anti_abuse_entries <(echo "$ip")) ]] || continue
+        q="$(awk -F. '{ print $4"."$3"."$2"."$1 }' <<<"$ip").zen.spamhaus.org"
+        codes=$(dig -4 +short +time=3 +tries=1 "$q" A @a.gns.spamhaus.org 2>/dev/null) ||
+            codes=$(dig -4 +short +time=3 +tries=1 "$q" A @b.gns.spamhaus.org 2>/dev/null) || return 2
+        lists=$(grep -E '^127\.0\.0\.[0-9]+$' <<<"$codes" | awk -F. '
+            { n = $4; print (n == 2 ? "SBL" : n == 3 ? "CSS" : n >= 4 && n <= 7 ? "XBL" : n == 9 ? "DROP" : "PBL") }' |
+            sort -u | paste -sd, -)
+        [[ -n $lists ]] && echo "$ip $lists"
+    done
     return 0
 }
 
@@ -1823,6 +1982,22 @@ anti_abuse_status() {
     dead=$({ nft list set inet "$anti_abuse_table" dead4; nft list set inet "$anti_abuse_table" dead6; } 2>/dev/null |
         grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}|[0-9a-f]*:[0-9a-f:]+' | paste -sd' ' -)
     echo "  Dead hosts:       $(anti_abuse_counter dead_hosts) attempts refused; now: ${dead:-none}"
+    echo "  Threat lists:     $(anti_abuse_threat_count) networks ($(date -r "$anti_abuse_threats" '+%F %R' 2>/dev/null || echo "not fetched yet")); $(anti_abuse_counter threats) packets refused"
+    local listed src
+    listed=$(anti_abuse_spamhaus)
+    case $? in
+    0)
+        if [[ -n $listed ]]; then
+            echo -e "  Spamhaus:         ${red}listed${plain}: ${listed}"
+            echo "                    see https://check.spamhaus.org/results/?query=${listed%% *} (XBL: malware on a user's device; ask for removal there)"
+        else
+            src=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "src") print $(i + 1) }')
+            echo "  Spamhaus:         ${src:-the server} not listed"
+        fi
+        ;;
+    1) echo "  Spamhaus:         not checked (needs dig: dnsutils or bind-utils)" ;;
+    *) echo "  Spamhaus:         not checked (Spamhaus's name servers did not answer)" ;;
+    esac
     if [[ -f $anti_abuse_jail || -f $anti_abuse_jail_old ]] && command -v fail2ban-client >/dev/null 2>&1; then
         fail2ban-client status sshd 2>/dev/null | awk -F':\t' '
             /Currently banned/ { now = $2 } /Total banned/ { total = $2 } /Total failed/ { failed = $2 }
@@ -1866,6 +2041,11 @@ anti_abuse_off() {
         systemctl disable --now x-ui-anti-abuse-check.timer >/dev/null 2>&1
         rm -f "$anti_abuse_check_timer" "$anti_abuse_check_unit"
     fi
+    if [[ -f $anti_abuse_lists_timer ]]; then
+        systemctl disable --now x-ui-anti-abuse-lists.timer >/dev/null 2>&1
+        rm -f "$anti_abuse_lists_timer" "$anti_abuse_lists_unit"
+    fi
+    rm -rf "$anti_abuse_lists_dir"
     if [[ -f $anti_abuse_unit ]]; then
         systemctl disable --now x-ui-anti-abuse >/dev/null 2>&1
         rm -f "$anti_abuse_unit"
@@ -1890,18 +2070,19 @@ anti_abuse_off() {
     LOGI "Anti-abuse is off."
 }
 
-# anti_abuse runs "x-ui anti-abuse [on|status|off|rules|check]" (check is
-# the timer's).
+# anti_abuse runs "x-ui anti-abuse [on|status|off|rules|lists|check]"
+# (check and "lists timer" are the timers').
 anti_abuse() {
     case "${1:-on}" in
     on) anti_abuse_on ;;
     status) anti_abuse_status ;;
     off) anti_abuse_off ;;
     rules) anti_abuse_rules ;;
+    lists) anti_abuse_lists "${2:-fetch}" ;;
     check) anti_abuse_check ;;
     auto) anti_abuse_auto ;;
     *)
-        echo "Usage: x-ui anti-abuse [on|status|off|rules]"
+        echo "Usage: x-ui anti-abuse [on|status|off|rules|lists]"
         return 1
         ;;
     esac
@@ -4082,7 +4263,7 @@ if [[ $# -gt 0 ]]; then
         exit $?
         ;;
     "anti-abuse")
-        anti_abuse "${2:-}"
+        anti_abuse "${2:-}" "${3:-}"
         exit $?
         ;;
     "protect")

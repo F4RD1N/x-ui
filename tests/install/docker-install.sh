@@ -236,6 +236,10 @@ run_distro() {
     check "direct guard loaded" in_c 'systemctl is-active --quiet x-ui-direct-guard && nft list table inet xui_direct_guard >/dev/null'
     check "anti-abuse loaded" in_c 'systemctl is-active --quiet x-ui-anti-abuse && nft list table inet xui_anti_abuse >/dev/null'
     check "dead-host timer on" in_c 'systemctl is-active --quiet x-ui-anti-abuse-check.timer'
+    check "threat lists fetched and loaded (Spamhaus DROP)" in_c 'n=$(sed -n "s/^# networks: //p" /etc/x-ui/anti-abuse-lists/threats.nft) && ((n > 1000)) && nft get element inet xui_anti_abuse threats4 "{ $(grep -oE "\"cidr\":\"[0-9.]+" /etc/x-ui/anti-abuse-lists/drop4 | head -1 | cut -d\" -f4) }" >/dev/null'
+    check "threat lists timer on" in_c 'systemctl is-active --quiet x-ui-anti-abuse-lists.timer'
+    check "threat lists back after a reload" in_c 'systemctl reload x-ui-anti-abuse && nft list set inet xui_anti_abuse threats4 | grep -q "/"'
+    check "mail submission 587 refused" in_c 'nft list set inet xui_anti_abuse tcp_ports | grep -q 587'
     check "fail2ban SSH jail, maxretry 2" in_c '[[ $(fail2ban-client get sshd maxretry 2>/dev/null) == 2 ]]'
     check "summary: anti-abuse on" in_c 'grep -q "Anti-abuse: on" /root/install1.log'
     check "unbound answers at 127.0.0.1" in_c 'systemctl is-active --quiet unbound && x-ui dns status | grep -q "on"'
@@ -274,6 +278,7 @@ run_distro() {
     wait_panel 61000 secretpath
     in_c 'x-ui anti-abuse off >/dev/null; x-ui dns off >/dev/null'
     check "anti-abuse off: table gone" in_c '! nft list table inet xui_anti_abuse >/dev/null 2>&1 && [[ ! -e /etc/fail2ban/jail.d/x-ui-anti-abuse.conf ]]'
+    check "anti-abuse off: threat lists and their timer gone" in_c '[[ ! -e /etc/x-ui/anti-abuse-lists && ! -e /etc/systemd/system/x-ui-anti-abuse-lists.timer ]]'
     check "dns off: resolv.conf back as it was" in_c 'diff <(readlink /etc/resolv.conf; cat /etc/resolv.conf) <(readlink /root/resolv.conf.before; cat /root/resolv.conf.before) >/dev/null && ! systemctl is-active --quiet unbound'
     in_c 'cat > /usr/local/bin/curl <<"SH"
 #!/bin/bash

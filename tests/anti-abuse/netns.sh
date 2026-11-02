@@ -61,7 +61,7 @@ N
 in_net python3 - >"$work/listener.log" 2>&1 <<'P' &
 import socket, selectors
 sel = selectors.DefaultSelector()
-for p in [22, 443, 8080, 7001] + list(range(6000, 6400)):
+for p in [22, 443, 587, 8080, 7001] + list(range(6000, 6400)):
     s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.setsockopt(socket.SOL_IP, 19, 1)  # IP_TRANSPARENT: answer for every local address
     s.bind(("0.0.0.0", p)); s.listen(4096); s.setblocking(False); sel.register(s, selectors.EVENT_READ, "tcp")
@@ -147,6 +147,7 @@ def counter(name):
 
 check("tcp 443 on the internet is open", tcp("11.0.0.1", 443) == "open")
 check("tcp 22 (SSH) is refused", tcp("11.0.0.1", 22) == "refused")
+check("tcp 587 (mail submission) is refused", tcp("11.0.0.1", 587) == "refused")
 check("a private address through the uplink is refused", tcp("192.168.77.7", 443).startswith(("refused", "error")))
 check("  ...and counted", counter("private_nets") >= 1)
 check("the uplink's own private subnet stays open", tcp("10.5.0.1", 443) == "open")
@@ -222,6 +223,94 @@ if [[ $ok == 3000 && $(counters) == "$before" ]]; then
 else
     echo "FAIL 100 users testing 30 configs at once: $ok of 3000 connect, counters $( [[ $(counters) == "$before" ]] && echo unchanged || echo changed)"; rc=1
 fi
+# Threat lists, from local copies of the sources. 10.0.0.0/8 (private) and
+# 11.0.0.0/4 (too wide) are left out; 11.0.50.9 lies inside 11.0.50.0/24.
+mkdir -p "$work/feeds" "$work/bin"
+cat >"$work/feeds/drop4.json" <<'J'
+{"cidr":"11.0.50.0/24","sblid":"SBL1","rir":"ripencc"}
+{"cidr":"10.0.0.0/8","sblid":"SBL2","rir":"ripencc"}
+{"cidr":"11.0.0.0/4","sblid":"SBL3","rir":"ripencc"}
+{"type":"metadata","timestamp":1,"size":1,"records":3}
+J
+printf '{"cidr":"2001:db9::/32","sblid":"SBL4","rir":"ripencc"}\n{"type":"metadata"}\n' >"$work/feeds/drop6.json"
+printf '# Feodo Tracker\r\n11.0.51.7\r\n11.0.50.9\r\n' >"$work/feeds/feodo.txt"
+sources() { printf 'drop4 %s 1\ndrop6 file://%s/feeds/drop6.json 0\nfeodo file://%s/feeds/feodo.txt 0\n' "$1" "$work" "$work"; }
+lists() { XUI_LOG_FOLDER=$work XUI_THREAT_DIR=$work/lists XUI_THREAT_SOURCES=$1 in_srv bash "$SCRIPT" anti-abuse lists "${2:-fetch}"; }
+threat_checks() {
+    in_srv python3 - "$1" <<'P4'
+import socket, subprocess, sys
+def tcp(ip, port):
+    s = socket.socket(); s.settimeout(2)
+    try: s.connect((ip, port)); return "open"
+    except ConnectionRefusedError: return "refused"
+    except OSError as e: return "error %d" % e.errno
+    finally: s.close()
+def udp(ip, port):
+    u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); u.settimeout(1)
+    try: u.sendto(b"x", (ip, port))
+    except OSError: u.close(); return "refused"
+    try: u.recvfrom(10); return "answer"
+    except OSError: return "no answer"
+    finally: u.close()
+# 11.0.50.20 is only in drop4, 11.0.51.7 only in feodo
+got = (tcp("11.0.50.9", 443), tcp("11.0.50.20", 443), tcp("11.0.51.7", 443), tcp("11.0.51.8", 443), tcp("11.0.60.1", 443),
+       udp("11.0.50.20", 443) != "answer", udp("11.0.51.8", 443))
+ok = got == ("refused", "refused", "refused", "open", "open", True, "answer")
+print(("ok   " if ok else "FAIL ") + sys.argv[1] + ": listed refused, others open %s" % (got,))
+sys.exit(0 if ok else 1)
+P4
+}
+lists "$(sources "file://$work/feeds/drop4.json")" || { echo "FAIL anti-abuse lists"; rc=1; }
+threat_checks "threat lists loaded" || rc=1
+set4=$(in_srv nft list set inet xui_anti_abuse threats4)
+set6=$(in_srv nft list set inet xui_anti_abuse threats6)
+if [[ $set4 != *10.0.0.0* && $set4 != *11.0.0.0/4* && $set6 == *2001:db9::/32* && $(grep -c . <<<"$(grep '^# networks: 4$' "$work/lists/threats.nft")") == 1 ]]; then
+    echo "ok   private and too-wide entries left out; 4 networks"
+else
+    echo "FAIL threat sets: $set4 $set6 $(grep '^# networks' "$work/lists/threats.nft")"; rc=1
+fi
+# Only connections the server opens are refused: a user on a listed network
+# still reaches the server.
+in_srv python3 - >"$work/in.log" 2>&1 <<'P5' &
+import socket
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("0.0.0.0", 20900)); s.listen(8)
+print("ready", flush=True)
+while True: s.accept()[0].close()
+P5
+in_listener=$!
+for _ in $(seq 1 50); do grep -q ready "$work/in.log" 2>/dev/null && break; sleep 0.1; done
+if in_net python3 -c '
+import socket; s = socket.socket(); s.setsockopt(socket.SOL_IP, 19, 1); s.bind(("11.0.50.20", 0)); s.settimeout(3); s.connect(("11.0.0.2", 20900))'; then
+    echo "ok   a user on a listed network still connects to the server"
+else
+    echo "FAIL a user on a listed network cannot connect to the server"; rc=1
+fi
+kill "$in_listener" 2>/dev/null
+threats=$(in_srv nft list counter inet xui_anti_abuse threats | grep -oE 'packets [0-9]+' | cut -d' ' -f2)
+if ((threats >= 2)); then echo "ok   refused attempts counted ($threats)"; else echo "FAIL threats counter $threats"; rc=1; fi
+lists "$(sources file:///nonexistent/drop4.json)" || { echo "FAIL anti-abuse lists (a source down)"; rc=1; }
+threat_checks "a source that cannot be fetched keeps its last copy" || rc=1
+printf '{"cidr":"11.0.60.0/24"}\n' >"$work/feeds/short.json"
+lists "$(sources "file://$work/feeds/short.json" | sed '1s/ 1$/ 500/')" || { echo "FAIL anti-abuse lists (a short copy)"; rc=1; }
+threat_checks "a copy with too few entries is not taken" || rc=1
+in_srv nft -f "$work/rules.nft"
+in_srv sh -c "[ ! -f $work/lists/threats.nft ] || nft -f $work/lists/threats.nft"
+threat_checks "reloading the rules (the unit's ExecReload) loads them again" || rc=1
+
+# Spamhaus: a dig that lists 11.0.0.2 on XBL; 10.5.0.2 is private, not asked.
+cat >"$work/bin/dig" <<'D'
+#!/bin/sh
+echo "$*" >>"$(dirname "$0")/asked"
+case "$*" in *2.0.0.11.zen.spamhaus.org*@a.gns.spamhaus.org*) echo 127.0.0.4 ;; esac
+D
+chmod +x "$work/bin/dig"
+got=$(in_srv env PATH="$work/bin:$PATH" bash -c 'eval "$(sed -n "/^anti_abuse_entries() {/,/^}/p; /^anti_abuse_spamhaus() {/,/^}/p" "$1")"; anti_abuse_spamhaus' _ "$SCRIPT")
+if [[ $got == "11.0.0.2 XBL" ]] && ! grep -q 2.5.10 "$work/bin/asked"; then
+    echo "ok   Spamhaus: 11.0.0.2 XBL found, the private address not asked"
+else
+    echo "FAIL Spamhaus check: '$got'; asked: $(cat "$work/bin/asked" 2>/dev/null)"; rc=1
+fi
+
 host_after=$(nft list tables 2>/dev/null | sort | sha256sum)
 if [[ $host_before == "$host_after" ]]; then echo "ok   the host's own nftables tables are unchanged"; else echo "FAIL the host's nftables tables changed"; rc=1; fi
 exit $rc
