@@ -123,7 +123,13 @@ type Config struct {
 	// [0, 4] while old and new clients are both in the field, then drop to [4]
 	// once every client speaks the new dialect. Only from that last step does an
 	// extracted config stop working in a stock client.
-	Dialects      []uint32 `protobuf:"varint,8,rep,packed,name=dialects,proto3" json:"dialects,omitempty"`
+	Dialects []uint32 `protobuf:"varint,8,rep,packed,name=dialects,proto3" json:"dialects,omitempty"`
+	// The client core versions this inbound accepts, 3 bytes each (x, y, z),
+	// read from the request's sealed Addons.ClientVer. Empty = no limit; with
+	// neither set every client is served as before. A request outside the
+	// limits is refused like an unknown user id.
+	MinClientVer  []byte `protobuf:"bytes,9,opt,name=min_client_ver,json=minClientVer,proto3" json:"min_client_ver,omitempty"`
+	MaxClientVer  []byte `protobuf:"bytes,10,opt,name=max_client_ver,json=maxClientVer,proto3" json:"max_client_ver,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -214,6 +220,20 @@ func (x *Config) GetDialects() []uint32 {
 	return nil
 }
 
+func (x *Config) GetMinClientVer() []byte {
+	if x != nil {
+		return x.MinClientVer
+	}
+	return nil
+}
+
+func (x *Config) GetMaxClientVer() []byte {
+	if x != nil {
+		return x.MaxClientVer
+	}
+	return nil
+}
+
 var File_proxy_vless_inbound_config_proto protoreflect.FileDescriptor
 
 const file_proxy_vless_inbound_config_proto_rawDesc = "" +
@@ -225,7 +245,7 @@ const file_proxy_vless_inbound_config_proto_rawDesc = "" +
 	"\x04path\x18\x03 \x01(\tR\x04path\x12\x12\n" +
 	"\x04type\x18\x04 \x01(\tR\x04type\x12\x12\n" +
 	"\x04dest\x18\x05 \x01(\tR\x04dest\x12\x12\n" +
-	"\x04xver\x18\x06 \x01(\x04R\x04xver\"\xb2\x02\n" +
+	"\x04xver\x18\x06 \x01(\x04R\x04xver\"\xfe\x02\n" +
 	"\x06Config\x124\n" +
 	"\aclients\x18\x01 \x03(\v2\x1a.xray.common.protocol.UserR\aclients\x12@\n" +
 	"\tfallbacks\x18\x02 \x03(\v2\".xray.proxy.vless.inbound.FallbackR\tfallbacks\x12\x1e\n" +
@@ -237,7 +257,10 @@ const file_proxy_vless_inbound_config_proto_rawDesc = "" +
 	"\n" +
 	"seconds_to\x18\x06 \x01(\x03R\tsecondsTo\x12\x18\n" +
 	"\apadding\x18\a \x01(\tR\apadding\x12\x1a\n" +
-	"\bdialects\x18\b \x03(\rR\bdialectsBj\n" +
+	"\bdialects\x18\b \x03(\rR\bdialects\x12$\n" +
+	"\x0emin_client_ver\x18\t \x01(\fR\fminClientVer\x12$\n" +
+	"\x0emax_client_ver\x18\n" +
+	" \x01(\fR\fmaxClientVerBj\n" +
 	"\x1ccom.xray.proxy.vless.inboundP\x01Z-github.com/xtls/xray-core/proxy/vless/inbound\xaa\x02\x18Xray.Proxy.Vless.Inboundb\x06proto3"
 
 var (

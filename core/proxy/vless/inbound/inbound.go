@@ -87,6 +87,10 @@ type Handler struct {
 	// nil meaning stock VLESS only. See Config.dialects in config.proto.
 	dialects  []byte
 	fallbacks map[string]map[string]map[string]*Fallback // or nil
+	// minClientVer and maxClientVer are 3-byte client core versions, nil
+	// meaning no limit. See Config.min_client_ver in config.proto.
+	minClientVer []byte
+	maxClientVer []byte
 	// regexps               map[string]*regexp.Regexp       // or nil
 }
 
@@ -113,6 +117,9 @@ func New(ctx context.Context, config *Config, dc dns.Client, validator vless.Val
 		}
 		handler.dialects = append(handler.dialects, byte(d))
 	}
+
+	handler.minClientVer = config.MinClientVer
+	handler.maxClientVer = config.MaxClientVer
 
 	if config.Decryption != "" && config.Decryption != "none" {
 		s := strings.Split(config.Decryption, ".")
@@ -188,6 +195,25 @@ func New(ctx context.Context, config *Config, dc dns.Client, validator vless.Val
 	}
 
 	return handler, nil
+}
+
+// clientVerCheck returns the minClientVer/maxClientVer check for one
+// connection, or nil when this inbound sets neither.
+func (h *Handler) clientVerCheck(ctx context.Context) encoding.ClientVerCheck {
+	if len(h.minClientVer) == 0 && len(h.maxClientVer) == 0 {
+		return nil
+	}
+	return func(user *protocol.MemoryUser, addons *encoding.Addons) bool {
+		account, ok := user.Account.(*vless.MemoryAccount)
+		if !ok {
+			return false
+		}
+		allowed, why := encoding.ClientVerAllowed(account.ID.Bytes(), addons.ClientVer, h.minClientVer, h.maxClientVer)
+		if !allowed {
+			errors.LogDebug(ctx, "VLESS user ", user.Email, " refused: ", why)
+		}
+		return allowed
+	}
 }
 
 func isMuxAndNotXUDP(request *protocol.RequestHeader, first *buf.Buffer) bool {
@@ -320,7 +346,7 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 	if isfb && firstLen < 18 {
 		err = errors.New("fallback directly")
 	} else {
-		userSentID, request, requestAddons, isfb, err = encoding.DecodeRequestHeader(isfb, first, reader, h.validator, h.dialects...)
+		userSentID, request, requestAddons, isfb, err = encoding.DecodeRequestHeaderChecked(isfb, first, reader, h.validator, h.clientVerCheck(ctx), h.dialects...)
 	}
 
 	if err != nil {

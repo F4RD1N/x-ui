@@ -9,4 +9,9 @@ option java_multiple_files = true;
 message Addons {
   string Flow = 1;
   bytes Seed = 2;
+
+  // ClientVer is the client's core version, sealed under the user id (see
+  // clientver.go). A field number far from upstream's so that stock servers
+  // skip it as unknown and future upstream fields never collide with it.
+  bytes ClientVer = 1000;
 }

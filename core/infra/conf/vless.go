@@ -36,6 +36,30 @@ type VLessInboundConfig struct {
 	Flow       string                  `json:"flow"`
 	Testseed   []uint32                `json:"testseed"`
 	Dialects   []uint32                `json:"dialects"`
+
+	// The client core versions served, "x.y.z" as in REALITY's settings.
+	MinClientVer string `json:"minClientVer"`
+	MaxClientVer string `json:"maxClientVer"`
+}
+
+// parseClientVer reads "x.y.z" into 3 bytes the way REALITY's minClientVer
+// does ("25.9" is 25.9.0); "" is no limit.
+func parseClientVer(name, s string) ([]byte, error) {
+	if s = strings.TrimSpace(s); s == "" {
+		return nil, nil
+	}
+	ver := make([]byte, 3)
+	for i, p := range strings.Split(s, ".") {
+		if i == 3 {
+			return nil, errors.New(`VLESS settings: invalid "`, name, `": `, s)
+		}
+		u, err := strconv.ParseUint(p, 10, 8)
+		if err != nil {
+			return nil, errors.New(`VLESS settings: "`, name, `[`, i, `]" should be a number less than 256`)
+		}
+		ver[i] = byte(u)
+	}
+	return ver, nil
 }
 
 // Build implements Buildable
@@ -100,6 +124,14 @@ func (c *VLessInboundConfig) Build() (proto.Message, error) {
 		}
 	}
 	config.Dialects = c.Dialects
+
+	var err error
+	if config.MinClientVer, err = parseClientVer("minClientVer", c.MinClientVer); err != nil {
+		return nil, err
+	}
+	if config.MaxClientVer, err = parseClientVer("maxClientVer", c.MaxClientVer); err != nil {
+		return nil, err
+	}
 
 	config.Decryption = c.Decryption
 	if !func() bool {

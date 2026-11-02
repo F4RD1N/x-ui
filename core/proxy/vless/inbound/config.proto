@@ -36,4 +36,11 @@ message Config {
   // once every client speaks the new dialect. Only from that last step does an
   // extracted config stop working in a stock client.
   repeated uint32 dialects = 8;
+
+  // The client core versions this inbound accepts, 3 bytes each (x, y, z),
+  // read from the request's sealed Addons.ClientVer. Empty = no limit; with
+  // neither set every client is served as before. A request outside the
+  // limits is refused like an unknown user id.
+  bytes min_client_ver = 9;
+  bytes max_client_ver = 10;
 }

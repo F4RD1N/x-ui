@@ -13,6 +13,7 @@ import (
 	"github.com/xtls/xray-core/common/uuid"
 	"github.com/xtls/xray-core/proxy"
 	"github.com/xtls/xray-core/proxy/vless"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -86,6 +87,26 @@ func DialectAccepted(version byte, accepted []byte) bool {
 // serves. It is variadic so that a caller with no opinion keeps the stock
 // behaviour of accepting version 0 only.
 func DecodeRequestHeader(isfb bool, first *buf.Buffer, reader io.Reader, validator vless.Validator, accepted ...byte) ([]byte, *protocol.RequestHeader, *Addons, bool, error) {
+	return DecodeRequestHeaderChecked(isfb, first, reader, validator, nil, accepted...)
+}
+
+// ClientVerCheck is run on the addons of a request whose user id is known. A
+// false result refuses the request exactly as an unknown user id is refused.
+type ClientVerCheck func(user *protocol.MemoryUser, addons *Addons) bool
+
+// errRefusedUser is what a request refused by a ClientVerCheck returns. The
+// reason is the check's to log.
+var errRefusedUser = errors.New("refused request user")
+
+// DecodeRequestHeaderChecked is DecodeRequestHeader with a ClientVerCheck; nil
+// checks nothing.
+//
+// On a fallback-capable inbound the addons are checked while still in the
+// first read, before it is consumed, so that a refused request goes to the
+// fallback with all its bytes, as one with an unknown user id does. A request
+// whose addons are not all in the first read is checked once they are read,
+// and is closed if refused.
+func DecodeRequestHeaderChecked(isfb bool, first *buf.Buffer, reader io.Reader, validator vless.Validator, check ClientVerCheck, accepted ...byte) ([]byte, *protocol.RequestHeader, *Addons, bool, error) {
 	buffer := buf.StackNew()
 	defer buffer.Release()
 
@@ -126,6 +147,20 @@ func DecodeRequestHeader(isfb bool, first *buf.Buffer, reader io.Reader, validat
 			return nil, nil, nil, isfb, errors.New("invalid request user id: " + u.String())
 		}
 
+		checked := check == nil
+		if !checked && isfb && first.Len() > 17 {
+			if l := int32(first.Byte(17)); first.Len() >= 18+l {
+				peek := new(Addons)
+				if l != 0 && proto.Unmarshal(first.BytesRange(18, 18+l), peek) != nil {
+					peek = new(Addons)
+				}
+				if !check(request.User, peek) {
+					return nil, nil, nil, isfb, errRefusedUser
+				}
+				checked = true
+			}
+		}
+
 		if isfb {
 			first.Advance(17)
 		}
@@ -133,6 +168,10 @@ func DecodeRequestHeader(isfb bool, first *buf.Buffer, reader io.Reader, validat
 		requestAddons, err := DecodeHeaderAddons(&buffer, reader)
 		if err != nil {
 			return nil, nil, nil, false, errors.New("failed to decode request header addons").Base(err)
+		}
+
+		if !checked && !check(request.User, requestAddons) {
+			return nil, nil, nil, false, errRefusedUser
 		}
 
 		buffer.Clear()

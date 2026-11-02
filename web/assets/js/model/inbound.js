@@ -2176,6 +2176,8 @@ Inbound.VLESSSettings = class extends Inbound.Settings {
         selectedAuth = undefined,
         testseed = [900, 500, 900, 256],
         dialects = "",
+        minClientVer = "",
+        maxClientVer = "",
     ) {
         super(protocol);
         this.vlesses = vlesses;
@@ -2189,6 +2191,8 @@ Inbound.VLESSSettings = class extends Inbound.Settings {
         // entered. It becomes an array of numbers only on the way out, in
         // toJson().
         this.dialects = dialects;
+        this.minClientVer = minClientVer;
+        this.maxClientVer = maxClientVer;
     }
 
     // dialectList is the parsed form of this.dialects, used for the config and
@@ -2226,7 +2230,9 @@ Inbound.VLESSSettings = class extends Inbound.Settings {
             Inbound.VLESSSettings.Fallback.fromJson(json.fallbacks || []),
             json.selectedAuth,
             testseed,
-            (json.dialects || []).join(",")
+            (json.dialects || []).join(","),
+            json.minClientVer || "",
+            json.maxClientVer || "",
         );
         return obj;
     }
@@ -2264,6 +2270,15 @@ Inbound.VLESSSettings = class extends Inbound.Settings {
         const dialects = this.dialectList;
         if (dialects.length > 0) {
             json.dialects = dialects;
+        }
+
+        // Left out when empty, like dialects, so that unlimited inbounds keep
+        // the config they had.
+        if (this.minClientVer) {
+            json.minClientVer = this.minClientVer;
+        }
+        if (this.maxClientVer) {
+            json.maxClientVer = this.maxClientVer;
         }
 
         return json;

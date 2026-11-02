@@ -15,8 +15,14 @@ import (
 )
 
 func EncodeHeaderAddons(buffer *buf.Buffer, addons *Addons) error {
-	switch addons.Flow {
-	case vless.XRV:
+	// Upstream sends addons only for Vision. A ClientVer goes out with every
+	// flow, alone when the flow is not Vision, so that nothing else on the
+	// wire changes.
+	if addons.Flow != vless.XRV && len(addons.ClientVer) != 0 {
+		addons = &Addons{ClientVer: addons.ClientVer}
+	}
+	switch {
+	case addons.Flow == vless.XRV || len(addons.ClientVer) != 0:
 		bytes, err := proto.Marshal(addons)
 		if err != nil {
 			return errors.New("failed to marshal addons protobuf value").Base(err)

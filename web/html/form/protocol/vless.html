@@ -40,6 +40,12 @@
       <a-form-item label="dialects">
         <a-input v-model="inbound.settings.dialects" placeholder="4,5"></a-input>
       </a-form-item>
+      <a-form-item label="Min Client Ver">
+        <a-input v-model.trim="inbound.settings.minClientVer" placeholder="25.3.6"></a-input>
+      </a-form-item>
+      <a-form-item label="Max Client Ver">
+        <a-input v-model.trim="inbound.settings.maxClientVer" placeholder="25.3.6"></a-input>
+      </a-form-item>
       <a-form-item label=" ">
         <a-space>
           <a-button type="primary" icon="import" @click="getNewVlessEnc">Get New
