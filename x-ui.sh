@@ -1382,7 +1382,8 @@ dns_menu() {
 # refuses outgoing connections to the ports brute-force bots and spammers
 # use, to private networks through the uplink (a hoster's "netscan"), and to
 # new destinations faster than real users reach them (port and net scans),
-# and, for a while, to hosts that do not answer this server at all. fail2ban
+# to a server's login port faster than people log in (brute force), and,
+# for a while, to hosts that do not answer this server at all. fail2ban
 # bans an IP after 2 failed SSH logins. Nothing here uses conntrack, so it
 # costs nothing on a busy server. Every install and update turns it on;
 # "x-ui anti-abuse off" undoes it all, and later updates keep it off.
@@ -1412,6 +1413,19 @@ anti_abuse_deep="30/second burst 300 packets"
 # (Telegram's had 700 waiting and 3,900 working), so they are never refused.
 anti_abuse_dead_waiting=100
 anti_abuse_dead_for="10m"
+# Logins anywhere (brute force): a host and port that gets more new
+# connections than people make is refused for an hour, as long as they keep
+# coming. FTP, databases, alternative SSH, SIP, WinRM, MikroTik, Webmin:
+anti_abuse_login_ports="21, 1521, 2222, 3306, 5038, 5060, 5061, 5432, 5984, 5985, 5986, 6379, 8291, 8728, 8729, 9200, 10000, 27017"
+# A developer's connection pool opens a few at once, a page load one more.
+anti_abuse_login_rate="30/minute burst 30 packets"
+# SIP over UDP, in packets: a phone sends a few a second at most.
+anti_abuse_sip_rate="20/second burst 200 packets"
+anti_abuse_brute_for="1h"
+# Mail logins (POP3, IMAP) are only slowed down, never refused for an hour:
+# many users' mail apps share the big providers' few addresses.
+anti_abuse_mail_ports="110, 143, 993, 995"
+anti_abuse_mail_rate="60/minute burst 120 packets"
 # Written by "x-ui anti-abuse off": installs and updates then leave it off.
 anti_abuse_off_marker="/etc/x-ui/anti-abuse.off"
 # Networks that serve nothing but abuse: Spamhaus DROP (hijacked networks and
@@ -1486,6 +1500,14 @@ table inet ${anti_abuse_table} {
 		counter
 		elements = { ${anti_abuse_udp_ports} }
 	}
+	set login_ports {
+		type inet_service
+		elements = { ${anti_abuse_login_ports} }
+	}
+	set mail_ports {
+		type inet_service
+		elements = { ${anti_abuse_mail_ports} }
+	}
 	set uplinks {
 		type ifname
 		${uplinks}
@@ -1524,11 +1546,20 @@ table inet ${anti_abuse_table} {
 	# filled from ${anti_abuse_threats}
 	set threats4 { type ipv4_addr; flags interval; auto-merge; }
 	set threats6 { type ipv6_addr; flags interval; auto-merge; }
+	set login4 { type ipv4_addr . inet_service; flags dynamic, timeout; timeout 10m; size 65536; }
+	set login6 { type ipv6_addr . inet_service; flags dynamic, timeout; timeout 10m; size 65536; }
+	set sip4 { type ipv4_addr . inet_service; flags dynamic, timeout; timeout 10m; size 65536; }
+	set sip6 { type ipv6_addr . inet_service; flags dynamic, timeout; timeout 10m; size 65536; }
+	set mail4 { type ipv4_addr . inet_service; flags dynamic, timeout; timeout 10m; size 65536; }
+	set mail6 { type ipv6_addr . inet_service; flags dynamic, timeout; timeout 10m; size 65536; }
+	set barred4 { type ipv4_addr . inet_service; flags dynamic, timeout; timeout ${anti_abuse_brute_for}; size 65536; }
+	set barred6 { type ipv6_addr . inet_service; flags dynamic, timeout; timeout ${anti_abuse_brute_for}; size 65536; }
 	counter private_nets { }
 	counter scan_wide { }
 	counter scan_deep { }
 	counter dead_hosts { }
 	counter threats { }
+	counter brute_force { }
 
 	chain output {
 		type filter hook output priority filter; policy accept;
@@ -1541,8 +1572,33 @@ table inet ${anti_abuse_table} {
 		tcp flags & (syn | ack) == syn ip6 daddr @dead6 counter name dead_hosts reject with tcp reset
 		tcp flags & (syn | ack) == syn tcp dport @tcp_ports reject with tcp reset
 		udp dport @udp_ports reject${private}
+		tcp flags & (syn | ack) == syn tcp dport @login_ports jump brute
+		udp dport { 5060, 5061 } jump brute
+		tcp flags & (syn | ack) == syn tcp dport @mail_ports jump mail
 		tcp flags & (syn | ack) == syn tcp dport != { 80, 443 } jump scan
-		udp dport 1-1023 udp dport != 443 jump scan
+		udp dport { 1-1023, 5060-5061 } udp dport != 443 jump scan
+	}
+	# Logins: a host and port with more new connections (SIP over UDP: more
+	# packets) than people make is refused for a while, longer while they
+	# keep coming.
+	chain brute {
+		meta nfproto ipv4 goto brute4
+		meta nfproto ipv6 goto brute6
+	}
+	chain brute4 {
+		ip daddr . th dport @barred4 update @barred4 { ip daddr . th dport } counter name brute_force goto refuse
+		meta l4proto tcp update @login4 { ip daddr . th dport limit rate over ${anti_abuse_login_rate} } add @barred4 { ip daddr . th dport } counter name brute_force goto refuse
+		meta l4proto udp update @sip4 { ip daddr . th dport limit rate over ${anti_abuse_sip_rate} } add @barred4 { ip daddr . th dport } counter name brute_force goto refuse
+	}
+	chain brute6 {
+		ip6 daddr . th dport @barred6 update @barred6 { ip6 daddr . th dport } counter name brute_force goto refuse
+		meta l4proto tcp update @login6 { ip6 daddr . th dport limit rate over ${anti_abuse_login_rate} } add @barred6 { ip6 daddr . th dport } counter name brute_force goto refuse
+		meta l4proto udp update @sip6 { ip6 daddr . th dport limit rate over ${anti_abuse_sip_rate} } add @barred6 { ip6 daddr . th dport } counter name brute_force goto refuse
+	}
+	# Mail logins: only what is over the limit is refused.
+	chain mail {
+		meta nfproto ipv4 update @mail4 { ip daddr . th dport limit rate over ${anti_abuse_mail_rate} } counter name brute_force goto refuse
+		meta nfproto ipv6 update @mail6 { ip6 daddr . th dport limit rate over ${anti_abuse_mail_rate} } counter name brute_force goto refuse
 	}
 	# A destination (address and port) seen in the last 10 minutes passes;
 	# a new one counts against the scan limits.
@@ -1811,6 +1867,7 @@ EOF
   Refused: private networks through $(anti_abuse_uplinks | paste -sd, -)
   Scans refused: over ${anti_abuse_wide%%/*} new hosts/s on a port, ${anti_abuse_deep%%/*} new ports/s on a host
   Dead hosts: refused for ${anti_abuse_dead_for} when ${anti_abuse_dead_waiting}+ connection attempts wait and none works
+  Brute force: a host's FTP, database, SIP, WinRM, ... port with over ${anti_abuse_login_rate%%/*} new connections a minute is refused for ${anti_abuse_brute_for}; mail logins (POP3, IMAP) over ${anti_abuse_mail_rate%%/*} a minute are refused
   SSH: 2 failed logins in 10 minutes = 1 hour ban, longer when the IP comes back
   Status: x-ui anti-abuse status   Off: x-ui anti-abuse off"
     return $rc
@@ -1982,6 +2039,10 @@ anti_abuse_status() {
     dead=$({ nft list set inet "$anti_abuse_table" dead4; nft list set inet "$anti_abuse_table" dead6; } 2>/dev/null |
         grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}|[0-9a-f]*:[0-9a-f:]+' | paste -sd' ' -)
     echo "  Dead hosts:       $(anti_abuse_counter dead_hosts) attempts refused; now: ${dead:-none}"
+    local barred
+    barred=$({ nft list set inet "$anti_abuse_table" barred4; nft list set inet "$anti_abuse_table" barred6; } 2>/dev/null |
+        grep -oE '[0-9a-f.:]+ \. [0-9]+' | sed 's/ \. /:/' | paste -sd' ' -)
+    echo "  Brute force:      $(anti_abuse_counter brute_force) attempts refused; refused for ${anti_abuse_brute_for} now: ${barred:-none}"
     echo "  Threat lists:     $(anti_abuse_threat_count) networks ($(date -r "$anti_abuse_threats" '+%F %R' 2>/dev/null || echo "not fetched yet")); $(anti_abuse_counter threats) packets refused"
     local listed src
     listed=$(anti_abuse_spamhaus)

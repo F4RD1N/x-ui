@@ -240,6 +240,7 @@ run_distro() {
     check "threat lists timer on" in_c 'systemctl is-active --quiet x-ui-anti-abuse-lists.timer'
     check "threat lists back after a reload" in_c 'systemctl reload x-ui-anti-abuse && nft list set inet xui_anti_abuse threats4 | grep -q "/"'
     check "mail submission 587 refused" in_c 'nft list set inet xui_anti_abuse tcp_ports | grep -q 587'
+    check "brute-force limits loaded (databases, mail logins)" in_c 'nft list set inet xui_anti_abuse login_ports | grep -q 3306 && nft list set inet xui_anti_abuse mail_ports | grep -q 993 && nft list chain inet xui_anti_abuse brute4 | grep -q barred4'
     check "fail2ban SSH jail, maxretry 2" in_c '[[ $(fail2ban-client get sshd maxretry 2>/dev/null) == 2 ]]'
     check "summary: anti-abuse on" in_c 'grep -q "Anti-abuse: on" /root/install1.log'
     check "unbound answers at 127.0.0.1" in_c 'systemctl is-active --quiet unbound && x-ui dns status | grep -q "on"'

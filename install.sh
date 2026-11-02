@@ -23,7 +23,8 @@
 #     loopback or private networks; speed-test servers (iperf3) stay stopped.
 #   - "x-ui anti-abuse": outgoing brute-force and mail ports, botnet and
 #     criminal networks (Spamhaus DROP, fetched every 6 hours),
-#     private networks, scans and hosts that do not answer are refused;
+#     private networks, scans, brute force on other logins (FTP,
+#     databases, SIP, mail, ...) and hosts that do not answer are refused;
 #     2 failed SSH logins = a ban.
 #   - "x-ui dns": a local DNS cache (unbound) in front of the fastest
 #     resolvers this server reaches.

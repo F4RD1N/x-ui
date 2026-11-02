@@ -61,11 +61,11 @@ N
 in_net python3 - >"$work/listener.log" 2>&1 <<'P' &
 import socket, selectors
 sel = selectors.DefaultSelector()
-for p in [22, 443, 587, 8080, 7001] + list(range(6000, 6400)):
+for p in [22, 443, 587, 993, 3306, 8080, 7001] + list(range(6000, 6400)):
     s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.setsockopt(socket.SOL_IP, 19, 1)  # IP_TRANSPARENT: answer for every local address
     s.bind(("0.0.0.0", p)); s.listen(4096); s.setblocking(False); sel.register(s, selectors.EVENT_READ, "tcp")
-for p in (53, 443):
+for p in (53, 443, 5060):
     u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); u.bind(("0.0.0.0", p)); u.setblocking(False); sel.register(u, selectors.EVENT_READ, "udp")
 print("ready", flush=True)
 keep = []
@@ -173,6 +173,30 @@ el = time.time() - t; answered = res.count("answer")
 check("UDP 53: about 1000 + 50/s new servers answer (%d of 1200 in %.1fs)" % (answered, el), 1000 <= answered <= 1000 + 50 * el + 25)
 check("  ...a server already used still answers", udp("11.0.20.1", 53) == "answer")
 check("QUIC (udp 443) is never limited", all(udp("11.0.%d.%d" % (30 + i // 250, 1 + i % 250), 443) == "answer" for i in range(1200)))
+
+# Brute force: 45 logins to one database server, as fast as possible. About
+# 30 get through, then that server's port is refused for an hour; other
+# servers are not affected.
+res = [tcp("11.0.40.1", 3306) for i in range(45)]; opened = res.count("open")
+check("database brute force: about 30 get through (%d of 45)" % opened, 30 <= opened <= 32)
+time.sleep(2.5)
+check("  ...then the server's port stays refused", tcp("11.0.40.1", 3306) == "refused")
+check("  ...and is listed and counted", "11.0.40.1 . 3306" in subprocess.run(["nft", "list", "set", "inet", "xui_anti_abuse", "barred4"], capture_output=True, text=True).stdout and counter("brute_force") >= 13)
+check("  ...another database server still opens", tcp("11.0.40.2", 3306) == "open")
+check("  ...a developer's pool of 20 at once to a third opens", [tcp("11.0.40.3", 3306) for i in range(20)].count("open") == 20)
+# Mail logins: about 120 at once, then 1 a second; never refused for long.
+res = [tcp("11.0.41.1", 993) for i in range(150)]; opened = res.count("open")
+check("IMAP brute force: about 120 get through (%d of 150)" % opened, 120 <= opened <= 123)
+time.sleep(1.2)
+check("  ...a second later a login opens again", tcp("11.0.41.1", 993) == "open")
+# SIP over UDP: 400 packets at one server, then it is refused.
+u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+for i in range(400):
+    try: u.sendto(b"REGISTER", ("11.0.42.1", 5060))
+    except OSError: pass
+u.close()
+check("SIP flood over UDP: the server is refused", "11.0.42.1 . 5060" in subprocess.run(["nft", "list", "set", "inet", "xui_anti_abuse", "barred4"], capture_output=True, text=True).stdout and udp("11.0.42.1", 5060) != "answer")
+check("  ...a phone's few packets to another SIP server get answers", all(udp("11.0.42.2", 5060) == "answer" for i in range(5)))
 
 # Loopback: the panel talks to every core's API port.
 ls = []
