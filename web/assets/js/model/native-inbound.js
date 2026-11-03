@@ -3,6 +3,16 @@
     const clone = value => JSON.parse(JSON.stringify(value));
     const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
     const uuid = value => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value || '');
+    const nativeTelegramId = value => {
+        if (value === undefined || value === null || (typeof value === 'string' && value.trim() === '')) return 0;
+        if (typeof value === 'string') {
+            const text = value.trim();
+            if (!/^[+-]?\d+$/.test(text)) throw new Error('Telegram ID must be a whole number.');
+            value = Number(text);
+        }
+        if (typeof value !== 'number' || !Number.isSafeInteger(value)) throw new Error('Telegram ID must be a safe whole number.');
+        return value;
+    };
     const field = (path, label, type = 'text', extra = {}) => ({path, label, type, ...extra});
     const number = (path, label, min, max) => field(path, label, 'number', {min, max});
     const select = (path, label, options) => field(path, label, 'select', {options});
@@ -169,6 +179,7 @@
         }
         get validationErrors() {
             const errors = this.fieldError ? [this.fieldError] : [];
+            try { nativeTelegramId(this.tgId); } catch (error) { errors.push(error.message); }
             const data = this.data;
             if (typeof this.email !== 'string' || !this.email.trim()) errors.push('A unique client email is required');
             this.fields.forEach(descriptor => {
@@ -198,7 +209,15 @@
         toJson() {
             const data = clone(this.data);
             if (this.protocol === 'openvpn' && object(data.clientProof) && !Object.keys(data.clientProof).length) delete data.clientProof;
-            return {...data, ...this._clientBaseToJson()};
+            let tgId;
+            try { tgId = nativeTelegramId(this.tgId); }
+            catch (_) {
+                // Keep invalid input visible to validation without breaking
+                // Vue's JSON preview. A string cannot pass the server's int64
+                // decoder if a caller bypasses the form's save guard.
+                tgId = typeof this.tgId === 'string' ? this.tgId : String(this.tgId);
+            }
+            return {...data, ...this._clientBaseToJson(), tgId};
         }
     };
     Inbound.NativeSettings = class extends Inbound.Settings {
