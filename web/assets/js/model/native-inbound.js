@@ -190,6 +190,7 @@
             if (['anytls', 'mieru'].includes(this.protocol) || (this.protocol === 'shadowtls' && this.shadowVersion === 3)) require('password', 'Password');
             if (this.protocol === 'mieru') { require('username', 'Username'); if (data.uuidMetadataTrailer && !uuid(data.username)) errors.push('UUID metadata compatibility requires a UUID username'); }
             if (this.protocol === 'shadowtls' && this.shadowVersion === 3 && data.requireUuidSessionId && !uuid(data.password)) errors.push('UUID session ID compatibility requires a UUID password');
+            if (this.protocol === 'shadowtls' && this.innerProtocol === 'socks') require('innerUsername', 'Inner SOCKS username');
             if (this.protocol === 'dnstt') {
                 if (this.innerProtocol === 'socks') { require('username', 'SOCKS username'); require('password', 'SOCKS password'); }
                 else if (!uuid(data.id) || /^0{8}-0{4}-0{4}-0{4}-0{12}$/.test(data.id)) errors.push('A nonzero VLESS UUID is required');
