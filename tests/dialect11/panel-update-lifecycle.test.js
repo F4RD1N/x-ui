@@ -113,7 +113,10 @@ test('malformed status envelopes are bounded and cannot cause false success',asy
   const f=fixture({get:()=>({data:{success:true,obj:{state:'unknown'}}})});await f.start();await f.drain();assert.equal(f.calls.filter(x=>x.method==='get').length,12);assert.equal(f.reloads,0);assert.ok(!f.messages.some(x=>x.kind==='success'));
 });
 test('running job reaches absolute monitoring deadline with no endless busy',async()=>{
-  const f=fixture({get:()=>status()});await f.start();f.advance(15*60*1000);await f.tick();await f.drain();assert.equal(f.methods.panelUpdate.busy,false);assert.equal(f.reloads,0);assert.ok(f.messages.some(x=>x.kind==='warning'&&x.text.includes('timed out')));
+  const f=fixture({get:()=>status()});await f.start();f.advance(60*60*1000);await f.tick();await f.drain();assert.equal(f.methods.panelUpdate.busy,false);assert.equal(f.reloads,0);assert.ok(f.messages.some(x=>x.kind==='warning'&&x.text.includes('timed out')));
+});
+test('slow productive download remains monitored past fifteen minutes',async()=>{
+  const f=fixture({get:[status('running',{phase:'downloading'}),status('running',{phase:'downloading'}),status('succeeded')]});await f.start();f.advance(17*60*1000);await f.tick();assert.equal(f.methods.panelUpdate.busy,true);await f.tick();await f.drain();assert.equal(f.reloads,1);assert.ok(!f.messages.some(x=>x.text.includes('timed out')));
 });
 test('page reload can resume current running job without posting or asserting intended version',async()=>{
   const f=fixture({get:[status(),status('succeeded',{currentVersion:'observed-version'})]});assert.equal(await f.methods.resumePanelUpdate(),true);await f.drain();assert.equal(f.calls.filter(x=>x.method==='post').length,0);assert.equal(f.reloads,1);assert.ok(f.messages.some(x=>x.kind==='success'&&x.text.includes('observed-version')));

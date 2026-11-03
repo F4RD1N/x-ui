@@ -181,24 +181,89 @@ install_base() {
 }
 
 # ---- fetch -----------------------------------------------------------------
+verify_tarball() {
+    local dest="$1" expected="$2" actual entries
+    [[ -s "$dest" ]] || return 1
+    if [[ -n "$expected" ]]; then
+        actual=$(sha256sum "$dest") || return 1
+        [[ "${actual%% *}" == "$expected" ]] || return 1
+    fi
+    gzip -t "$dest" >/dev/null 2>&1 || return 1
+    entries=$(tar -tzf "$dest" 2>/dev/null) || return 1
+    [[ -n "$entries" ]]
+}
+
+download_tarball() {
+    local url="$1" dest="$2" expected="$3" attempt offset status rc
+    # A slow but progressing download has no total time limit. An idle/very
+    # slow connection times out, then resumes the SAME tag and checksum.
+    # Let curl validate Content-Range; never manually append response bodies.
+    for ((attempt = 1; attempt <= 5; attempt++)); do
+        offset=0
+        [[ -f "$dest" ]] && offset=$(wc -c < "$dest")
+        rc=0
+        status=$(curl -4fL --connect-timeout 20 --speed-limit 1024 --speed-time 120 \
+            --continue-at - --output "$dest" --write-out '%{http_code}' "$url") || rc=$?
+        # Also accept a complete verified file after a late socket error or a
+        # 416 response to a range starting at the already-complete file size.
+        if verify_tarball "$dest" "$expected"; then
+            return 0
+        fi
+        if [[ "$status" == 416 ]] || (( offset > 0 && (rc == 33 || rc == 36) )) || { (( offset > 0 )) && [[ "$status" == 200 ]]; }; then
+            # A server ignoring Range (200), rejecting its offset (416), or
+            # sending an inconsistent Content-Range cannot safely be resumed.
+            rm -f "$dest" || die "Cannot discard an invalid partial download."
+        elif (( rc == 0 )); then
+            die "The downloaded release failed SHA256 or archive validation. The installed panel was not changed."
+        elif (( rc == 23 )) || [[ "$status" == 4?? && "$status" != 408 && "$status" != 429 ]]; then
+            die "Download failed (curl ${rc}, HTTP ${status}): $url"
+        fi
+        if (( attempt < 5 )); then
+            offset=0
+            [[ -f "$dest" ]] && offset=$(wc -c < "$dest")
+            warn "Download interrupted; retry $((attempt + 1))/5 from ${offset} bytes."
+            sleep "$attempt"
+        fi
+    done
+    die "Download failed after 5 attempts: $url. The installed panel was not changed."
+}
+
 fetch_tarball() {
     local dest="$1"
     if [[ -n "$XUI_LOCAL_TARBALL" ]]; then
         [[ -f "$XUI_LOCAL_TARBALL" ]] || die "Local tarball not found: $XUI_LOCAL_TARBALL"
         info "Installing from local build: $XUI_LOCAL_TARBALL"
         cp -f "$XUI_LOCAL_TARBALL" "$dest" || die "Could not copy $XUI_LOCAL_TARBALL."
+        verify_tarball "$dest" "" || die "The local release failed archive validation."
         return
     fi
 
-    local tag="$XUI_TAG"
+    command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required to verify the release."
+    local tag="$XUI_TAG" release tag_pattern='"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)"'
     if [[ -z "$tag" ]]; then
-        tag=$(curl -4fsSL --connect-timeout 15 --max-time 60 --retry 2 --retry-max-time 120 "https://api.github.com/repos/${XUI_REPO}/releases/latest" \
-              | grep -m1 '"tag_name"' | cut -d '"' -f 4)
-        [[ -z "$tag" ]] && die "Could not determine the latest release of ${XUI_REPO}."
+        # Consume and check the entire response: grep -m1 previously closed
+        # curl's pipe early, producing error 23 on larger release metadata.
+        release=$(curl -4fsSL --connect-timeout 15 --max-time 60 --retry 2 --retry-max-time 120 "https://api.github.com/repos/${XUI_REPO}/releases/latest") \
+            || die "Could not determine the latest release of ${XUI_REPO}."
+        [[ "$release" =~ $tag_pattern ]] || die "Could not determine the latest release of ${XUI_REPO}."
+        tag="${BASH_REMATCH[1]}"
     fi
-    local url="https://github.com/${XUI_REPO}/releases/download/${tag}/x-ui-linux-${ARCH}.tar.gz"
+    local asset="x-ui-linux-${ARCH}.tar.gz" base="https://github.com/${XUI_REPO}/releases/download/${tag}" expected
+    # Require the exact artifact's checksum from this selected release. Never
+    # follow 'latest' again during retries or silently skip verification.
+    curl -4fsSL --connect-timeout 15 --max-time 60 --retry 2 --retry-max-time 120 \
+        --output "$dest.sha256" "$base/SHA256SUMS" || die "Could not fetch required SHA256SUMS for ${tag}. For an older release without checksums, use an independently verified local archive with XUI_LOCAL_TARBALL."
+    expected=$(awk -v name="$asset" '
+        $2 == name || $2 == "*" name {
+            count++
+            if (NF == 2 && length($1) == 64 && $1 ~ /^[[:xdigit:]]+$/) hash = tolower($1)
+            else bad = 1
+        }
+        END { if (count == 1 && !bad) print hash; else exit 1 }
+    ' "$dest.sha256") || die "SHA256SUMS must contain exactly one valid checksum for ${asset}."
+    rm -f "$dest.sha256"
     info "Downloading ${tag} for ${ARCH}"
-    curl -4fL --connect-timeout 20 --max-time 900 --retry 2 --retry-max-time 1800 -o "$dest" "$url" || die "Download failed: $url"
+    download_tarball "$base/$asset" "$dest" "$expected"
 }
 
 # ---- install ---------------------------------------------------------------

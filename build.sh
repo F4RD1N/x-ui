@@ -81,7 +81,7 @@ for ARCH in $ARCHES; do
     cp LICENSE "$STAGE/licenses/PANEL-LICENSE"
     cp core/LICENSE "$STAGE/licenses/core/XRAY-LICENSE"
     cp -R core/licenses/. "$STAGE/licenses/core/"
-    for doc in DIALECT11.md DIALECT11-VERIFICATION.md DIALECT11-HOTFIX.md DIALECT11-DEFAULTS.md DIALECT11-11.5-VERIFICATION.md; do
+    for doc in DIALECT11.md DIALECT11-VERIFICATION.md DIALECT11-HOTFIX.md DIALECT11-DEFAULTS.md DIALECT11-11.5-VERIFICATION.md DIALECT11-DOWNLOADS.md; do
         if [[ -f "$doc" ]]; then cp "$doc" "$STAGE/"; fi
     done
     chmod +x "$STAGE/x-ui" "$STAGE/x-ui.sh" "$STAGE/bin/xray-linux-$ARCH"

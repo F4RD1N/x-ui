@@ -84,8 +84,9 @@ new updater uses a unique unit for each attempt and a shared process lock to
 prevent concurrent installers. It runs independently of the panel service, so
 restarting the panel does not kill the updater halfway through installation.
 
-The installer uses the same lock for command-line updates. Downloads have
-bounded connection, transfer and retry times. Temporary installer files are
+The installer uses the same lock for command-line updates. Connection stalls
+and retries are bounded; productive downloads can continue without a total
+transfer cutoff. Temporary installer files are
 private, and update output remains in the panel's `update.log`. The authenticated
 status response reports progress and outcome without exposing raw log content.
 The UI follows the accepted job, handles the panel restart, and reports failure

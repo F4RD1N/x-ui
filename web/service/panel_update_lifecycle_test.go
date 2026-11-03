@@ -350,7 +350,13 @@ func TestPanelInstallerSharedLockBeforeMutation(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil || string(out) != "locked" {
 		t.Fatalf("inherited owned lock rejected: %s %v", out, err)
 	}
-	if !strings.Contains(text, "--max-time 900") || !strings.Contains(text, "--retry-max-time 1800") {
-		t.Fatal("artifact download is unbounded")
+	downloadStart, downloadEnd := strings.Index(text, "download_tarball() {"), strings.Index(text, "fetch_tarball() {")
+	if downloadStart < 0 || downloadEnd <= downloadStart {
+		t.Fatal("artifact download helper is missing")
+	}
+	download := text[downloadStart:downloadEnd]
+	if strings.Contains(download, "--max-time") || !strings.Contains(download, "--connect-timeout 20") ||
+		!strings.Contains(download, "--speed-limit 1024 --speed-time 120") || !strings.Contains(download, "attempt <= 5") {
+		t.Fatal("artifact download must bound connection stalls and retries without cutting off productive slow transfers")
 	}
 }

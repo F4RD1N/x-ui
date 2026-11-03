@@ -118,9 +118,14 @@ before_show_menu() {
 run_installer() {
     local script rc
     script=$(mktemp) || return 1
-    if ! curl -4fsSL -o "$script" https://raw.githubusercontent.com/F4RD1N/x-ui/main/install.sh; then
+    if ! curl -4fsSL --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 120 --retry 2 --retry-max-time 180 -o "$script" https://raw.githubusercontent.com/F4RD1N/x-ui/main/install.sh; then
         rm -f "$script"
         LOGE "Could not download install.sh from GitHub."
+        return 1
+    fi
+    if ! bash -n "$script"; then
+        rm -f "$script"
+        LOGE "The downloaded installer is not a valid shell script."
         return 1
     fi
     bash "$script" "$@"
@@ -140,36 +145,58 @@ install() {
 }
 
 update() {
-    local current latest
-    current=$(${xui_folder}/x-ui -v 2>/dev/null)
-    latest=$(curl -4fsSL --max-time 10 https://api.github.com/repos/F4RD1N/x-ui/releases/latest 2>/dev/null \
-        | grep -m1 '"tag_name"' | cut -d '"' -f 4)
+    local current latest release_json arg from_cli=0 assume_yes=0 rc=0
+    if [[ ${1:-} == 0 ]]; then from_cli=1; shift; fi
+    for arg in "$@"; do
+        case "$arg" in
+            -y|--yes) assume_yes=1 ;;
+            *) LOGE "Usage: x-ui update [-y|--yes]"; return 2 ;;
+        esac
+    done
+    current=$("${xui_folder}/x-ui" -v 2>/dev/null)
+    # Read the whole response before extracting the tag. An early-exiting
+    # filter on curl's pipe can cause a spurious curl (23) write failure.
+    if ! release_json=$(curl -4fsSL --connect-timeout 10 --max-time 30 --retry 2 --retry-max-time 60 https://api.github.com/repos/F4RD1N/x-ui/releases/latest); then
+        LOGE "Could not check the latest release. No update was started."
+        return 1
+    fi
+    latest=$(sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' <<<"$release_json")
+    if [[ ! "$latest" =~ ^v[0-9][a-zA-Z0-9._-]*$ ]]; then
+        LOGE "The release response did not contain a valid version tag. No update was started."
+        return 1
+    fi
     echo -e "Installed: ${green}${current:-unknown}${plain}   latest release: ${green}${latest:-unknown}${plain}"
     if [[ -n "$latest" && "${latest#v}" == "${current#v}" ]]; then
         # The same version string can still be a different build (a branch
         # build installed by hand): reinstalling would replace it.
         LOGI "This is already the latest release."
-        confirm "Reinstall the release build anyway? The login, port, path and data are kept." "n"
+        if (( ! assume_yes )); then
+            confirm "Reinstall the release build anyway? The login, port, path and data are kept." "n" || rc=$?
+        fi
     else
-        confirm "Update x-ui to the latest release? The login, port, path and data are kept." "y"
+        if (( ! assume_yes )); then
+            confirm "Update x-ui to the latest release? The login, port, path and data are kept." "y" || rc=$?
+        fi
     fi
-    if [[ $? != 0 ]]; then
+    if (( rc != 0 )); then
         LOGE "Cancelled"
-        if [[ $# == 0 ]]; then
+        if (( ! from_cli )); then
             before_show_menu
         fi
         return 0
     fi
     # Update mode keeps the username, password, port and path; the install
     # mode would reset them to the defaults.
-    if XUI_MODE=update run_installer update; then
+    if XUI_MODE=update run_installer update "tag=$latest"; then
         LOGI "Update is complete, Panel has automatically restarted "
     else
+        rc=$?
         LOGE "The update failed; see the messages above."
     fi
-    if [[ $# == 0 ]]; then
+    if (( ! from_cli )); then
         before_show_menu
     fi
+    return "$rc"
 }
 
 # fetch_menu_script replaces /usr/bin/x-ui with the latest x-ui.sh. It is
@@ -4112,7 +4139,7 @@ show_usage() {
 │  ${blue}x-ui disable${plain}               - Disable Autostart on OS Startup  │
 │  ${blue}x-ui log${plain}                   - Check logs                       │
 │  ${blue}x-ui banlog${plain}                - Check Fail2ban ban logs          │
-│  ${blue}x-ui update${plain}                - Update                           │
+│  ${blue}x-ui update [-y|--yes]${plain}     - Update (-y skips confirmation)   │
 │  ${blue}x-ui update-all-geofiles${plain}   - Update all geo files             │
 │  ${blue}x-ui anti-abuse${plain}            - Anti-abuse (on, status, off)     │
 │  ${blue}x-ui protect${plain}               - Direct guard, speed tests        │
@@ -4294,7 +4321,7 @@ if [[ $# -gt 0 ]]; then
         check_install 0 && show_banlog 0
         ;;
     "update")
-        check_install 0 && update 0
+        check_install 0 && update 0 "${@:2}"
         ;;
     "legacy")
         check_install 0 && legacy_version 0
