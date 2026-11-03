@@ -104,48 +104,70 @@ func runWebServer() {
 	sigCh := make(chan os.Signal, 1)
 	// Trap shutdown signals
 	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGTERM, sys.SIGUSR1)
+	panelReload := newRestoreSignalGate(time.Second)
+	coreReload := newRestoreSignalGate(time.Second)
+	defer panelReload.Clear()
+	defer coreReload.Clear()
 	for {
-		sig := <-sigCh
+		var sig os.Signal
+		select {
+		case sig = <-sigCh:
+		case <-panelReload.Ready():
+			panelReload.Clear()
+			sig = syscall.SIGHUP
+		case <-coreReload.Ready():
+			coreReload.Clear()
+			sig = sys.SIGUSR1
+		}
 
 		switch sig {
 		case syscall.SIGHUP:
-			logger.Info("Received SIGHUP signal. Restarting servers...")
+			if !panelReload.Run(database.TryLifecycle, func() {
+				logger.Info("Received SIGHUP signal. Restarting servers...")
 
-			// --- FIX FOR TELEGRAM BOT CONFLICT (409): Stop bot before restart ---
-			service.StopBot()
-			// --
+				// --- FIX FOR TELEGRAM BOT CONFLICT (409): Stop bot before restart ---
+				service.StopBot()
+				// --
 
-			err := server.Stop()
-			if err != nil {
-				logger.Debug("Error stopping web server:", err)
-			}
-			err = subServer.Stop()
-			if err != nil {
-				logger.Debug("Error stopping sub server:", err)
-			}
+				err := server.Stop()
+				if err != nil {
+					logger.Debug("Error stopping web server:", err)
+				}
+				err = subServer.Stop()
+				if err != nil {
+					logger.Debug("Error stopping sub server:", err)
+				}
 
-			server = web.NewServer()
-			global.SetWebServer(server)
-			err = server.Start()
-			if err != nil {
-				log.Fatalf("Error restarting web server: %v", err)
-				return
-			}
-			log.Println("Web server restarted successfully.")
+				server = web.NewServer()
+				global.SetWebServer(server)
+				err = server.Start()
+				if err != nil {
+					log.Fatalf("Error restarting web server: %v", err)
+					return
+				}
+				log.Println("Web server restarted successfully.")
 
-			subServer = sub.NewServer()
-			global.SetSubServer(subServer)
-			err = subServer.Start()
-			if err != nil {
-				log.Fatalf("Error restarting sub server: %v", err)
-				return
+				subServer = sub.NewServer()
+				global.SetSubServer(subServer)
+				err = subServer.Start()
+				if err != nil {
+					log.Fatalf("Error restarting sub server: %v", err)
+					return
+				}
+				log.Println("Sub server restarted successfully.")
+			}) {
+				logger.Debug("Panel reload deferred until restore completes")
 			}
-			log.Println("Sub server restarted successfully.")
 		case sys.SIGUSR1:
-			logger.Info("Received USR1 signal, restarting xray-core...")
-			err := server.RestartXray()
-			if err != nil {
-				logger.Error("Failed to restart xray-core:", err)
+			if !coreReload.Run(database.TryLifecycle, func() {
+				logger.Info("Received USR1 signal, restarting xray-core...")
+				err := server.RestartXray()
+				if err != nil {
+					logger.Error("Failed to restart xray-core:", err)
+				}
+
+			}) {
+				logger.Debug("Core reload deferred until restore completes")
 			}
 
 		default:

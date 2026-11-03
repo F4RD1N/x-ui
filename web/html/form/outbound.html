@@ -14,6 +14,7 @@
       <a-form-item label='{{ i18n "protocol" }}'>
         <a-select
           v-model="outbound.protocol"
+          @change="outModal.check()"
           :dropdown-class-name="themeSwitcher.currentTheme"
         >
           <a-select-option v-for="x,y in Protocols" :value="x"
@@ -35,6 +36,92 @@
       <a-form-item label='{{ i18n "pages.xray.outbound.sendThrough" }}'>
         <a-input v-model="outbound.sendThrough"></a-input>
       </a-form-item>
+
+      <a-form-item label="Chain through outbound" help="For a ShadowTLS carrier, configure the inner SOCKS, VLESS or Shadowsocks outbound here and enable transport-layer chaining.">
+        <a-switch :checked="outbound.proxySettings !== undefined" @change="value => {outbound.setChainingEnabled(value); outModal.check();}"></a-switch>
+      </a-form-item>
+      <template v-if="outbound.hasChainingObject">
+        <a-form-item label="Carrier outbound tag">
+          <a-input v-model.trim="outbound.proxySettings.tag" @change="outModal.check()"></a-input>
+        </a-form-item>
+        <a-form-item label="Transport-layer chaining">
+          <a-switch v-model="outbound.proxySettings.transportLayer" @change="outModal.check()"></a-switch>
+        </a-form-item>
+      </template>
+      <a-alert v-if="outbound.validationErrors.length" type="error" show-icon
+        :message="outbound.validationErrors.join(' ')" :style="{marginBottom: '12px'}"></a-alert>
+
+      <!-- Native carriers own their wire transport and TLS configuration. -->
+      <template v-if="outbound.isNative">
+        <a-alert :type="outbound.settings.hasQuicWarning ? 'warning' : 'info'" show-icon :message="outbound.settings.help" :style="{marginBottom: '12px'}"></a-alert>
+        <a-form-item v-if="['openvpn', 'orbit'].includes(outbound.settings.kind)" label="Configuration format">
+          <a-select :value="outbound.settings.inputMode" :dropdown-class-name="themeSwitcher.currentTheme"
+            @change="value => {outbound.settings.changeInputMode(value); outModal.check();}">
+            <template v-if="outbound.settings.kind === 'openvpn'">
+              <a-select-option value="structured">Structured fields</a-select-option>
+              <a-select-option value="text">Inline OpenVPN</a-select-option>
+              <a-select-option value="base64">Base64 OpenVPN</a-select-option>
+            </template>
+            <template v-else>
+              <a-select-option value="fields">Connection fields</a-select-option>
+              <a-select-option value="link">Orbit link</a-select-option>
+            </template>
+          </a-select>
+        </a-form-item>
+        <template v-if="outbound.settings.kind === 'openvpn'">
+          <a-form-item label="Client proof">
+            <a-switch :checked="outbound.settings.proofEnabled"
+              @change="value => {outbound.settings.setProofEnabled(value); outModal.check();}"></a-switch>
+          </a-form-item>
+          <a-form-item v-if="outbound.settings.proofEnabled" label="Proof secret source">
+            <a-select :value="outbound.settings.proofKeyMode" :dropdown-class-name="themeSwitcher.currentTheme"
+              @change="value => {outbound.settings.setProofKeyMode(value); outModal.check();}">
+              <a-select-option value="key">Inline secret</a-select-option>
+              <a-select-option value="keyFile">Server-local secret file</a-select-option>
+            </a-select>
+          </a-form-item>
+        </template>
+        <a-form-item v-for="field in outbound.settings.fields" :key="'native-' + field.path" :label="field.label" :help="field.help">
+          <a-switch v-if="field.type === 'boolean'" :checked="outbound.settings.value(field)"
+            @change="value => {outbound.settings.setField(field, value); outModal.check();}"></a-switch>
+          <a-input-number v-else-if="field.type === 'number'" :value="outbound.settings.value(field)" :min="field.min" :max="field.max" :precision="0"
+            @change="value => {outbound.settings.setField(field, value); outModal.check();}"></a-input-number>
+          <a-select v-else-if="field.type === 'select'" :value="outbound.settings.value(field)" :dropdown-class-name="themeSwitcher.currentTheme"
+            @change="value => {outbound.settings.setField(field, value); outModal.check();}">
+            <a-select-option v-for="value in field.options" :key="String(value)" :value="value">[[ value === '' ? 'Default' : String(value) ]]</a-select-option>
+          </a-select>
+          <a-select v-else-if="field.type === 'tags'" mode="tags" :value="outbound.settings.value(field) || []" :token-separators="[',']"
+            :dropdown-class-name="themeSwitcher.currentTheme" @change="value => {outbound.settings.setField(field, value); outModal.check();}"></a-select>
+          <a-textarea v-else-if="field.type === 'textarea'" :value="outbound.settings.value(field)" :rows="4" spellcheck="false"
+            @change="value => {outbound.settings.setField(field, value); outModal.check();}"></a-textarea>
+          <a-input v-else :type="field.type === 'password' ? 'password' : 'text'" :value="outbound.settings.value(field)" autocomplete="off"
+            @change="value => {outbound.settings.setField(field, value); outModal.check();}"></a-input>
+        </a-form-item>
+        <template v-if="outbound.settings.kind === 'dnstt'">
+          <a-divider>DNS resolvers</a-divider>
+          <template v-for="(resolver, index) in outbound.settings.resolvers">
+            <a-form-item v-for="field in outbound.settings.resolverFields(index)" :key="'resolver-' + field.path" :label="field.label + ' ' + (index + 1)">
+              <a-select v-if="field.type === 'select'" :value="outbound.settings.value(field)" :dropdown-class-name="themeSwitcher.currentTheme"
+                @change="value => {outbound.settings.setField(field, value); outModal.check();}">
+                <a-select-option v-for="value in field.options" :key="value" :value="value">[[ value ]]</a-select-option>
+              </a-select>
+              <a-textarea v-else-if="field.type === 'textarea'" :value="outbound.settings.value(field)" :rows="3" spellcheck="false"
+                @change="value => {outbound.settings.setField(field, value); outModal.check();}"></a-textarea>
+              <a-input v-else :value="outbound.settings.value(field)" @change="value => {outbound.settings.setField(field, value); outModal.check();}"></a-input>
+            </a-form-item>
+            <a-form-item :key="'resolver-remove-' + index" label="Remove resolver">
+              <a-button icon="delete" @click="outbound.settings.removeResolver(index); outModal.check();">[[ index + 1 ]]</a-button>
+            </a-form-item>
+          </template>
+          <a-form-item label="Add resolver">
+            <a-button icon="plus" :disabled="outbound.settings.resolvers.length >= 16" @click="outbound.settings.addResolver(); outModal.check();"></a-button>
+          </a-form-item>
+        </template>
+        <a-form-item label="Advanced settings">
+          <a-button @click="outModal.toggleJson(true)">Edit complete JSON</a-button>
+          <div>Additional protocol fields are retained when switching between JSON and form.</div>
+        </a-form-item>
+      </template>
 
       <!-- freedom settings-->
       <template v-if="outbound.protocol === Protocols.Freedom">
@@ -179,7 +266,7 @@
       </template>
 
       <!-- dns settings -->
-      <template v-if="outbound.protocol === Protocols.DNS">
+      <template v-if="outbound.protocol === Protocols.DNS && !outbound.isNative">
         <a-form-item label='{{ i18n "pages.inbounds.network" }}'>
           <a-select
             v-model="outbound.settings.network"
@@ -381,6 +468,11 @@
           </a-form-item>
         </template>
 
+        <a-form-item v-if="outbound.protocol === Protocols.VMess" label="Raw UUID authentication"
+          help="Optional compatibility mode. Use an encrypted TLS or Reality transport; this is not stronger authentication.">
+          <a-switch v-model="outbound.settings.rawUuidAuth" @change="outModal.check()"></a-switch>
+        </a-form-item>
+
         <!-- vless settings -->
         <template v-if="outbound.protocol === Protocols.VLESS">
           <a-form-item label="encryption">
@@ -481,6 +573,11 @@
           </a-form-item>
         </template>
 
+        <a-form-item v-if="outbound.protocol === Protocols.Trojan" label="UUID hash prefix compatibility"
+          help="Optional server compatibility for UUID passwords. Other passwords retain the standard authentication key.">
+          <a-switch v-model="outbound.settings.uuidHashPrefix" @change="outModal.check()"></a-switch>
+        </a-form-item>
+
         <!-- shadowsocks -->
         <template v-if="outbound.protocol === Protocols.Shadowsocks">
           <a-form-item label='{{ i18n "encryption" }}'>
@@ -494,6 +591,9 @@
                 >[[ method_name ]]</a-select-option
               >
             </a-select>
+          </a-form-item>
+          <a-form-item v-if="outbound.settings.supportsUuidIdentityKeys || outbound.settings.uuidIdentityKeys" label="UUID identity key import compatibility" help="SS2022 only. Keep the first/server PSK in base64; UUID user identities are converted when imported. The wire protocol is unchanged.">
+            <a-switch v-model="outbound.settings.uuidIdentityKeys" @change="outModal.check()"></a-switch>
           </a-form-item>
           <a-form-item label="UDP over TCP">
             <a-switch v-model="outbound.settings.uot"></a-switch>

@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package xray.proxy.openvpn;
+option csharp_namespace = "Xray.Proxy.OpenVPN";
+option go_package = "github.com/xtls/xray-core/proxy/openvpn";
+option java_package = "com.xray.proxy.openvpn";
+option java_multiple_files = true;
+
+// Config is an OpenVPN client outbound.
+message Config {
+  enum DomainStrategy {
+    FORCE_IP = 0;
+    FORCE_IP4 = 1;
+    FORCE_IP6 = 2;
+    FORCE_IP46 = 3;
+    FORCE_IP64 = 4;
+  }
+  // ovpn is the client configuration text with its certificates and keys
+  // inline.
+  string ovpn = 1;
+  // username and password replace the ones in ovpn when username is set.
+  string username = 2;
+  string password = 3;
+  // mtu of the userspace network stack; 0 means min(tun-mtu, 1400).
+  int32 mtu = 4;
+  // How a domain destination is resolved before it is dialled inside the
+  // tunnel, as for WireGuard.
+  DomainStrategy domain_strategy = 5;
+  // Optional session-bound proof in standard OpenVPN peer information.
+  ClientProofConfig client_proof = 6;
+}
+
+// The secret is local configuration material and is never sent to the peer.
+message ClientProofConfig {
+  string key_id = 1;
+  bytes key = 2;
+}

@@ -594,6 +594,17 @@
       findOutboundAddress(o) {
         serverObj = null;
         switch (o.protocol) {
+          case Protocols.Orbit:
+            return o.settings?.link ? ['Orbit link'] : [o.settings?.address + ':' + o.settings?.port];
+          case Protocols.DNSTT:
+            return [o.settings?.domain];
+          case Protocols.OpenVPN:
+          case 'ov':
+            return o.settings?.server ? [o.settings.server.address + ':' + o.settings.server.port] : ['Inline OpenVPN'];
+          case Protocols.AnyTLS:
+          case Protocols.ShadowTLS:
+          case Protocols.Mieru:
+            return [o.settings?.address + ':' + o.settings?.port];
           case Protocols.VMess:
             serverObj = o.settings.vnext;
             break;
@@ -606,7 +617,7 @@
             serverObj = o.settings.servers;
             break;
           case Protocols.DNS:
-            return [o.settings?.address + ':' + o.settings?.port];
+            return o.settings?.tunnel ? [o.settings.tunnel.domain] : [o.settings?.address + ':' + o.settings?.port];
           case Protocols.Wireguard:
             return o.settings.peers.map(peer => peer.endpoint);
           default:

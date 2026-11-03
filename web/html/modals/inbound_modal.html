@@ -16,6 +16,19 @@
         inbound: new Inbound(),
         dbInbound: new DBInbound(),
         ok() {
+            const compatibilityErrors = Inbound.compatibilityErrors(inModal.inbound.protocol, inModal.inbound.clients, inModal.inbound.method);
+            if (compatibilityErrors.length) {
+                app.$message.error(compatibilityErrors.join("; "));
+                return;
+            }
+            if (inModal.inbound.isNative && inModal.inbound.settings.validationErrors.length) {
+                app.$message.error(inModal.inbound.settings.validationErrors.join("; "));
+                return;
+            }
+            if (inModal.inbound.protocol === Protocols.ANYTLS && (inModal.inbound.stream.network !== "tcp" || inModal.inbound.stream.security !== "tls")) {
+                app.$message.error("AnyTLS inbound requires TCP with TLS.");
+                return;
+            }
             ObjectUtil.execute(inModal.confirm, inModal.inbound, inModal.dbInbound);
         },
         show({

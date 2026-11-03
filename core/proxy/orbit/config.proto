@@ -1,0 +1,51 @@
+syntax = "proto3";
+package xray.proxy.orbit;
+option go_package = "github.com/xtls/xray-core/proxy/orbit";
+
+// Config is the normalized client side of one VPN-Core ("orbit") server.
+// The key is a bearer secret: never log this message.
+message Config {
+ // Network dial endpoint. tcp/quic require a numeric IP; ws/wss also allow a
+ // DNS name.
+ string address = 1;
+ uint32 port = 2;
+ // Private connection key (vck1_...): account seed plus the origin key pin.
+ string key = 3;
+ // tcp, quic, ws or wss.
+ string transport = 4;
+ // ws/wss only: HTTP Host and outer WSS SNI.
+ string host = 5;
+ // ws/wss only: exact WebSocket path.
+ string path = 6;
+ // ws/wss only: inner origin certificate identity (defaults to host).
+ string peer = 7;
+ // wss only: outer TLS ClientHello preset.
+ string fingerprint = 8;
+ // ws/wss only: User-Agent override.
+ string user_agent = 9;
+ // ws/wss only: extra HTTP handshake headers.
+ map<string, string> headers = 10;
+ // ws/wss only: "" for the browser-style handshake defaults, "off" for the
+ // previous defaults.
+ string browser = 11;
+ // Seconds; 0 selects 15 (VPN-Core's handshake_seconds default).
+ uint32 handshake_timeout = 12;
+ // Tunnel DNS server (numeric IPv4 host:port) for UDP packets addressed to a
+ // domain; empty selects 1.1.1.1:53 (VPN-Core's resolver default).
+ string resolver = 13;
+ // tcp only: REALITY authenticates the outer TCP stream instead of the inner
+ // pinned TLS (VPN-Core 0.12, link security=reality). Unset for every other
+ // link; the private connection key is still required.
+ Reality reality = 14;
+}
+
+// Reality is the client side of an owned REALITY listener: the cover server
+// name, the server's X25519 public key (43 unpadded base64url characters),
+// an optional short ID (0-16 lower-case hex digits in byte pairs) and the
+// ClientHello preset ("" for chrome, chrome, firefox or safari).
+message Reality {
+ string server_name = 1;
+ string public_key = 2;
+ string short_id = 3;
+ string fingerprint = 4;
+}

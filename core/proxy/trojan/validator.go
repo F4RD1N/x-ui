@@ -10,6 +10,8 @@ import (
 
 // Validator stores valid trojan users.
 type Validator struct {
+	// Serialize the two-index updates when accounts are hot-added or removed.
+	mutation sync.Mutex
 	// Considering email's usage here, map + sync.Mutex/RWMutex may have better performance.
 	email sync.Map
 	users sync.Map
@@ -17,18 +19,37 @@ type Validator struct {
 
 // Add a trojan user, Email must be empty or unique.
 func (v *Validator) Add(u *protocol.MemoryUser) error {
+	if u == nil {
+		return errors.New("Trojan user is required")
+	}
+	a, ok := u.Account.(*MemoryAccount)
+	if !ok || a == nil {
+		return errors.New("Trojan account is required")
+	}
+	v.mutation.Lock()
+	defer v.mutation.Unlock()
+	key := hexString(a.Key)
+	if existing, loaded := v.users.Load(key); loaded {
+		// A non-UUID custom password has the ordinary wire key. Reject an
+		// ambiguous custom mapping rather than replacing another identity.
+		if a.UUIDHashPrefix || existing.(*protocol.MemoryUser).Account.(*MemoryAccount).UUIDHashPrefix {
+			return errors.New("Trojan compatibility authentication key already exists")
+		}
+	}
 	if u.Email != "" {
 		_, loaded := v.email.LoadOrStore(strings.ToLower(u.Email), u)
 		if loaded {
 			return errors.New("User ", u.Email, " already exists.")
 		}
 	}
-	v.users.Store(hexString(u.Account.(*MemoryAccount).Key), u)
+	v.users.Store(key, u)
 	return nil
 }
 
 // Del a trojan user with a non-empty Email.
 func (v *Validator) Del(e string) error {
+	v.mutation.Lock()
+	defer v.mutation.Unlock()
 	if e == "" {
 		return errors.New("Email must not be empty.")
 	}

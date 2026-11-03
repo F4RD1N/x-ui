@@ -163,7 +163,7 @@ func (w *ServerWorker) handleStatusKeepAlive(meta *FrameMetadata, reader *buf.Bu
 }
 
 func (w *ServerWorker) handleStatusNew(ctx context.Context, meta *FrameMetadata, reader *buf.BufferedReader) error {
-	ctx = session.SubContextFromMuxInbound(ctx)
+	ctx = session.ContextWithMuxStream(session.SubContextFromMuxInbound(ctx))
 	if meta.Inbound != nil && meta.Inbound.Source.IsValid() && meta.Inbound.Local.IsValid() {
 		if inbound := session.InboundFromContext(ctx); inbound != nil {
 			newInbound := *inbound

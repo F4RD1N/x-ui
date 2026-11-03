@@ -192,3 +192,18 @@ func MitmServerNameFromContext(ctx context.Context) string {
 	}
 	return ""
 }
+
+// openVPNMuxStreamKey is additive lifecycle metadata used by native OpenVPN.
+// It does not alter mux framing or the behavior of other protocols.
+type openVPNMuxStreamKey struct{}
+
+// ContextWithMuxStream marks a mux stream, whose End closes both directions.
+func ContextWithMuxStream(ctx context.Context) context.Context {
+	return context.WithValue(ctx, openVPNMuxStreamKey{}, true)
+}
+
+// MuxStreamFromContext distinguishes mux End from a TCP write half-close.
+func MuxStreamFromContext(ctx context.Context) bool {
+	v, _ := ctx.Value(openVPNMuxStreamKey{}).(bool)
+	return v
+}

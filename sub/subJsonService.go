@@ -102,9 +102,20 @@ func (s *SubJsonService) GetJson(subId string, host string) (string, string, err
 
 		for _, client := range clients {
 			if client.Enable && client.SubID == subId {
+				if nativeSubscriptionProtocol(inbound.Protocol) && !nativeClientExportActive(inbound, client) {
+					continue
+				}
 				clientTraffics = append(clientTraffics, s.SubService.getClientTraffics(inbound.ClientStats, client.Email))
-				newConfigs := s.getConfig(inbound, client, host)
-				configArray = append(configArray, newConfigs...)
+				if nativeSubscriptionProtocol(inbound.Protocol) {
+					newConfigs, err := s.getNativeConfig(inbound, client, host)
+					if err != nil {
+						return "", "", fmt.Errorf("%w: %v", errNativeExportUnavailable, err)
+					}
+					configArray = append(configArray, newConfigs...)
+				} else {
+					newConfigs := s.getConfig(inbound, client, host)
+					configArray = append(configArray, newConfigs...)
+				}
 			}
 		}
 	}
@@ -149,6 +160,11 @@ func (s *SubJsonService) GetJson(subId string, host string) (string, string, err
 }
 
 func (s *SubJsonService) getConfig(inbound *model.Inbound, client model.Client, host string) []json_util.RawMessage {
+	// Native protocols require the error-returning generator. Never produce a
+	// direct/block-only configuration if this legacy helper is called for one.
+	if nativeSubscriptionProtocol(inbound.Protocol) {
+		return nil
+	}
 	var newJsonArray []json_util.RawMessage
 	stream := s.streamData(inbound.StreamSettings)
 
@@ -295,6 +311,7 @@ func (s *SubJsonService) genVnext(inbound *model.Inbound, streamSettings json_ut
 	usersData[0].ID = client.ID
 	usersData[0].Email = client.Email
 	usersData[0].Security = client.Security
+	usersData[0].RawUUIDAuth = client.RawUUIDAuth
 	vnextData := make([]VnextSetting, 1)
 	vnextData[0] = VnextSetting{
 		Address: inbound.Listen,
@@ -329,6 +346,11 @@ func (s *SubJsonService) genVless(inbound *model.Inbound, streamSettings json_ut
 	var inboundSettings map[string]any
 	json.Unmarshal([]byte(inbound.Settings), &inboundSettings)
 	encryption, _ := inboundSettings["encryption"].(string)
+	if decryption, _ := inboundSettings["decryption"].(string); encryption == "" && decryption == "none" {
+		// The API may store only the server-side ordinary VLESS setting.
+		// Never infer client public material for encrypted VLESS modes.
+		encryption = "none"
+	}
 
 	user := map[string]any{
 		"id":         client.ID,
@@ -370,12 +392,27 @@ func (s *SubJsonService) genServer(inbound *model.Inbound, streamSettings json_u
 		Level:    8,
 		Password: client.Password,
 	}
+	if inbound.Protocol == model.Trojan {
+		serverData[0].UUIDHashPrefix = client.UUIDHashPrefix
+	}
 
 	if inbound.Protocol == model.Shadowsocks {
 		var inboundSettings map[string]any
 		json.Unmarshal([]byte(inbound.Settings), &inboundSettings)
 		method, _ := inboundSettings["method"].(string)
 		serverData[0].Method = method
+		if enabled, ok := inboundSettings["uuidIdentityKeys"].(bool); ok {
+			serverData[0].UUIDIdentityKeys = enabled
+		}
+		if rows, ok := inboundSettings["clients"].([]any); ok {
+			for _, item := range rows {
+				if row, ok := item.(map[string]any); ok && row["email"] == client.Email {
+					if enabled, present := row["uuidIdentityKeys"].(bool); present {
+						serverData[0].UUIDIdentityKeys = enabled
+					}
+				}
+			}
+		}
 
 		// server password in multi-user 2022 protocols
 		if strings.HasPrefix(method, "2022") {
@@ -457,16 +494,19 @@ type VnextSetting struct {
 }
 
 type UserVnext struct {
-	ID       string `json:"id"`
-	Email    string `json:"email,omitempty"`
-	Security string `json:"security,omitempty"`
+	ID          string `json:"id"`
+	Email       string `json:"email,omitempty"`
+	Security    string `json:"security,omitempty"`
+	RawUUIDAuth bool   `json:"rawUuidAuth,omitempty"`
 }
 
 type ServerSetting struct {
-	Password string `json:"password"`
-	Level    int    `json:"level"`
-	Address  string `json:"address"`
-	Port     int    `json:"port"`
-	Flow     string `json:"flow,omitempty"`
-	Method   string `json:"method,omitempty"`
+	Password         string `json:"password"`
+	Level            int    `json:"level"`
+	Address          string `json:"address"`
+	Port             int    `json:"port"`
+	Flow             string `json:"flow,omitempty"`
+	Method           string `json:"method,omitempty"`
+	UUIDHashPrefix   bool   `json:"uuidHashPrefix,omitempty"`
+	UUIDIdentityKeys bool   `json:"uuidIdentityKeys,omitempty"`
 }

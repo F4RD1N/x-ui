@@ -12,7 +12,19 @@ import (
 )
 
 func SealVMessAEADHeader(key [16]byte, data []byte) []byte {
-	generatedAuthID := CreateAuthID(key[:], time.Now().Unix())
+	return SealVMessAEADHeaderWithRawUUIDAuth(key, data, false)
+}
+
+// SealVMessAEADHeaderWithRawUUIDAuth preserves the AEAD envelope while using
+// the raw UUID as AuthID and header key when explicitly requested. The caller
+// supplies UUID bytes as key for raw mode, or the standard command key otherwise.
+func SealVMessAEADHeaderWithRawUUIDAuth(key [16]byte, data []byte, rawUUIDAuth bool) []byte {
+	var generatedAuthID [16]byte
+	if rawUUIDAuth {
+		generatedAuthID = key
+	} else {
+		generatedAuthID = CreateAuthID(key[:], time.Now().Unix())
+	}
 
 	connectionNonce := make([]byte, 8)
 	if _, err := io.ReadFull(rand.Reader, connectionNonce); err != nil {

@@ -22,6 +22,7 @@ type TimedUserValidator struct {
 	behaviorFused bool
 
 	aeadDecoderHolder *aead.AuthIDDecoderHolder
+	rawUsers          map[[16]byte]*protocol.MemoryUser
 }
 
 // NewTimedUserValidator creates a new TimedUserValidator.
@@ -29,6 +30,7 @@ func NewTimedUserValidator() *TimedUserValidator {
 	tuv := &TimedUserValidator{
 		users:             make([]*protocol.MemoryUser, 0, 16),
 		aeadDecoderHolder: aead.NewAuthIDDecoderHolder(),
+		rawUsers:          make(map[[16]byte]*protocol.MemoryUser),
 	}
 	return tuv
 }
@@ -37,21 +39,34 @@ func (v *TimedUserValidator) Add(u *protocol.MemoryUser) error {
 	v.Lock()
 	defer v.Unlock()
 
-	v.users = append(v.users, u)
-
+	if u == nil {
+		return errors.New("user must not be nil")
+	}
 	account, ok := u.Account.(*MemoryAccount)
-	if !ok {
+	if !ok || account == nil || account.ID == nil {
 		return errors.New("account type is incorrect")
 	}
+	var rawID [16]byte
+	if account.RawUUIDAuth {
+		copy(rawID[:], account.ID.Bytes())
+		if _, exists := v.rawUsers[rawID]; exists {
+			return errors.New("raw UUID account already exists")
+		}
+	}
+	v.users = append(v.users, u)
 	if !v.behaviorFused {
 		hashkdf := hmac.New(sha256.New, []byte("VMESSBSKDF"))
 		hashkdf.Write(account.ID.Bytes())
 		v.behaviorSeed = crc64.Update(v.behaviorSeed, crc64.MakeTable(crc64.ECMA), hashkdf.Sum(nil))
 	}
 
-	var cmdkeyfl [16]byte
-	copy(cmdkeyfl[:], account.ID.CmdKey())
-	v.aeadDecoderHolder.AddUser(cmdkeyfl, u)
+	if account.RawUUIDAuth {
+		v.rawUsers[rawID] = u
+	} else {
+		var cmdkeyfl [16]byte
+		copy(cmdkeyfl[:], account.ID.CmdKey())
+		v.aeadDecoderHolder.AddUser(cmdkeyfl, u)
+	}
 
 	return nil
 }
@@ -70,12 +85,21 @@ func (v *TimedUserValidator) GetCount() int64 {
 	return int64(len(v.users))
 }
 
+// GetAEAD matches an explicitly enabled raw account or the standard AuthID
+// decoder. Raw accounts never enter the timestamped AuthID replay filter: their
+// AuthID is constant, and decoded session history performs replay checks later.
 func (v *TimedUserValidator) GetAEAD(userHash []byte) (*protocol.MemoryUser, bool, error) {
+	if len(userHash) != protocol.IDBytesLen {
+		return nil, false, aead.ErrNotFound
+	}
 	v.RLock()
 	defer v.RUnlock()
 
 	var userHashFL [16]byte
 	copy(userHashFL[:], userHash)
+	if user, ok := v.rawUsers[userHashFL]; ok {
+		return user, true, nil
+	}
 
 	userd, err := v.aeadDecoderHolder.Match(userHashFL)
 	if err != nil {
@@ -93,9 +117,16 @@ func (v *TimedUserValidator) Remove(email string) bool {
 	for i, u := range v.users {
 		if strings.EqualFold(u.Email, email) {
 			idx = i
-			var cmdkeyfl [16]byte
-			copy(cmdkeyfl[:], u.Account.(*MemoryAccount).ID.CmdKey())
-			v.aeadDecoderHolder.RemoveUser(cmdkeyfl)
+			account := u.Account.(*MemoryAccount)
+			if account.RawUUIDAuth {
+				var rawID [16]byte
+				copy(rawID[:], account.ID.Bytes())
+				delete(v.rawUsers, rawID)
+			} else {
+				var cmdkeyfl [16]byte
+				copy(cmdkeyfl[:], account.ID.CmdKey())
+				v.aeadDecoderHolder.RemoveUser(cmdkeyfl)
+			}
 			break
 		}
 	}

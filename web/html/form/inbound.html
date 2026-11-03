@@ -150,8 +150,27 @@
     {{template "form/hysteria"}}
 </template>
 
+<template v-if="inbound.protocol === Protocols.ORBIT">
+    {{template "form/orbit"}}
+</template>
+<template v-if="inbound.protocol === Protocols.DNSTT">
+    {{template "form/dnstt"}}
+</template>
+<template v-if="inbound.protocol === Protocols.OPENVPN">
+    {{template "form/openvpn"}}
+</template>
+<template v-if="inbound.protocol === Protocols.ANYTLS">
+    {{template "form/anytls"}}
+</template>
+<template v-if="inbound.protocol === Protocols.SHADOWTLS">
+    {{template "form/shadowtls"}}
+</template>
+<template v-if="inbound.protocol === Protocols.MIERU">
+    {{template "form/mieru"}}
+</template>
+
 <!-- stream settings -->
-<template v-if="inbound.canEnableStream()">
+<template v-if="inbound.canEnableStream() && !inbound.isNative">
     {{template "form/streamSettings"}}
     {{template "form/externalProxy" }}
 </template>

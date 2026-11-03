@@ -11,6 +11,8 @@ import (
 	"os"
 	"path"
 	"slices"
+	"sync"
+	"sync/atomic"
 
 	"github.com/mhsanaei/3x-ui/v2/config"
 	"github.com/mhsanaei/3x-ui/v2/database/model"
@@ -22,14 +24,15 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-var db *gorm.DB
+var currentDB atomic.Pointer[gorm.DB]
+var initializationMu sync.Mutex
 
 const (
 	defaultUsername = "admin"
 	defaultPassword = "admin"
 )
 
-func initModels() error {
+func initModels(db *gorm.DB) error {
 	models := []any{
 		&model.User{},
 		&model.Inbound{},
@@ -50,8 +53,8 @@ func initModels() error {
 }
 
 // initUser creates a default admin user if the users table is empty.
-func initUser() error {
-	empty, err := isTableEmpty("users")
+func initUser(db *gorm.DB) error {
+	empty, err := isTableEmpty(db, "users")
 	if err != nil {
 		log.Printf("Error checking if users table is empty: %v", err)
 		return err
@@ -74,8 +77,8 @@ func initUser() error {
 }
 
 // runSeeders migrates user passwords to bcrypt and records seeder execution to prevent re-running.
-func runSeeders(isUsersEmpty bool) error {
-	empty, err := isTableEmpty("history_of_seeders")
+func runSeeders(db *gorm.DB, isUsersEmpty bool) error {
+	empty, err := isTableEmpty(db, "history_of_seeders")
 	if err != nil {
 		log.Printf("Error checking if users table is empty: %v", err)
 		return err
@@ -114,7 +117,7 @@ func runSeeders(isUsersEmpty bool) error {
 }
 
 // isTableEmpty returns true if the named table contains zero rows.
-func isTableEmpty(tableName string) (bool, error) {
+func isTableEmpty(db *gorm.DB, tableName string) (bool, error) {
 	var count int64
 	err := db.Table(tableName).Count(&count).Error
 	return count == 0, err
@@ -122,45 +125,72 @@ func isTableEmpty(tableName string) (bool, error) {
 
 // InitDB sets up the database connection, migrates models, and runs seeders.
 func InitDB(dbPath string) error {
-	dir := path.Dir(dbPath)
-	err := os.MkdirAll(dir, fs.ModePerm)
+	initializationMu.Lock()
+	defer initializationMu.Unlock()
+	next, err := OpenInitializedDB(dbPath)
 	if err != nil {
 		return err
 	}
+	currentDB.Store(next)
+	return nil
+}
 
+// OpenInitializedDB runs all initialization against a private handle. It never
+// exposes a partially migrated database through GetDB.
+func OpenInitializedDB(dbPath string) (_ *gorm.DB, resultErr error) {
+	dir := path.Dir(dbPath)
+	if err := os.MkdirAll(dir, fs.ModePerm); err != nil {
+		return nil, err
+	}
 	var gormLogger logger.Interface
-
 	if config.IsDebug() {
 		gormLogger = logger.Default
 	} else {
 		gormLogger = logger.Discard
 	}
-
-	c := &gorm.Config{
-		Logger: gormLogger,
-	}
-	db, err = gorm.Open(sqlite.Open(dbPath), c)
+	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{Logger: gormLogger})
 	if err != nil {
-		return err
+		return nil, err
 	}
-
-	if err := initModels(); err != nil {
-		return err
+	defer func() {
+		if resultErr != nil {
+			if handle, err := db.DB(); err == nil {
+				_ = handle.Close()
+			}
+		}
+	}()
+	if err := initModels(db); err != nil {
+		return nil, err
 	}
-
-	isUsersEmpty, err := isTableEmpty("users")
+	isUsersEmpty, err := isTableEmpty(db, "users")
 	if err != nil {
-		return err
+		return nil, err
 	}
+	if err := initUser(db); err != nil {
+		return nil, err
+	}
+	if err := runSeeders(db, isUsersEmpty); err != nil {
+		return nil, err
+	}
+	return db, nil
+}
 
-	if err := initUser(); err != nil {
-		return err
+// PublishDB is the final, atomic restore commit. Callers retain responsibility
+// for closing the predecessor, so no request can be redirected to a candidate
+// which might later be rolled back.
+func PublishDB(next *gorm.DB) error {
+	if next == nil {
+		return errors.New("cannot publish a nil panel database")
 	}
-	return runSeeders(isUsersEmpty)
+	initializationMu.Lock()
+	defer initializationMu.Unlock()
+	currentDB.Store(next)
+	return nil
 }
 
 // CloseDB closes the database connection if it exists.
 func CloseDB() error {
+	db := GetDB()
 	if db != nil {
 		sqlDB, err := db.DB()
 		if err != nil {
@@ -173,7 +203,7 @@ func CloseDB() error {
 
 // GetDB returns the global GORM database instance.
 func GetDB() *gorm.DB {
-	return db
+	return currentDB.Load()
 }
 
 func IsNotFound(err error) bool {
@@ -193,6 +223,10 @@ func IsSQLiteDB(file io.ReaderAt) (bool, error) {
 
 // Checkpoint performs a WAL checkpoint on the SQLite database to ensure data consistency.
 func Checkpoint() error {
+	db := GetDB()
+	if db == nil {
+		return errors.New("panel database is unavailable")
+	}
 	// Update WAL
 	err := db.Exec("PRAGMA wal_checkpoint;").Error
 	if err != nil {

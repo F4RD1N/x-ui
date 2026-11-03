@@ -94,8 +94,12 @@ func (c *ClientSession) EncodeRequestHeader(header *protocol.RequestHeader, writ
 	}
 
 	var fixedLengthCmdKey [16]byte
-	copy(fixedLengthCmdKey[:], account.ID.CmdKey())
-	vmessout := vmessaead.SealVMessAEADHeader(fixedLengthCmdKey, buffer.Bytes())
+	if account.RawUUIDAuth {
+		copy(fixedLengthCmdKey[:], account.ID.Bytes())
+	} else {
+		copy(fixedLengthCmdKey[:], account.ID.CmdKey())
+	}
+	vmessout := vmessaead.SealVMessAEADHeaderWithRawUUIDAuth(fixedLengthCmdKey, buffer.Bytes(), account.RawUUIDAuth)
 	common.Must2(io.Copy(writer, bytes.NewReader(vmessout)))
 
 	return nil

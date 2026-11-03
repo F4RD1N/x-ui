@@ -2,6 +2,7 @@ package sub
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -99,6 +100,10 @@ func (a *SUBController) subs(c *gin.Context) {
 	subId := c.Param("subid")
 	scheme, host, hostWithPort, hostHeader := a.subService.ResolveRequest(c)
 	subs, lastOnline, traffic, err := a.subService.GetSubs(subId, host)
+	if errors.Is(err, errNativeJSONSubscriptionRequired) {
+		c.String(400, "Native protocols require the JSON subscription URL shown in the panel.")
+		return
+	}
 	if err != nil || len(subs) == 0 {
 		c.String(400, "Error!")
 	} else {
@@ -178,6 +183,10 @@ func (a *SUBController) subJsons(c *gin.Context) {
 	subId := c.Param("subid")
 	scheme, host, hostWithPort, _ := a.subService.ResolveRequest(c)
 	jsonSub, header, err := a.subJsonService.GetJson(subId, host)
+	if errors.Is(err, errNativeExportUnavailable) {
+		c.String(400, "%s", err.Error())
+		return
+	}
 	if err != nil || len(jsonSub) == 0 {
 		c.String(400, "Error!")
 	} else {
@@ -195,6 +204,10 @@ func (a *SUBController) subClashs(c *gin.Context) {
 	subId := c.Param("subid")
 	scheme, host, hostWithPort, _ := a.subService.ResolveRequest(c)
 	clashSub, header, err := a.subClashService.GetClash(subId, host)
+	if errors.Is(err, errNativeJSONSubscriptionRequired) {
+		c.String(400, "Native protocols and custom authentication require the JSON subscription URL shown in the panel.")
+		return
+	}
 	if err != nil || len(clashSub) == 0 {
 		c.String(400, "Error!")
 	} else {

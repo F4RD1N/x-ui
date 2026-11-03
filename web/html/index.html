@@ -466,6 +466,7 @@
   </a-modal>
   <a-modal id="backup-modal" v-model="backupModal.visible" title='{{ i18n "pages.index.backupTitle" }}' :closable="true"
     footer="" :class="themeSwitcher.currentTheme">
+    <p>Download a portable ZIP with the database and managed certificate/key files. Restore accepts the portable ZIP or a legacy SQLite .db file.</p>
     <a-list class="ant-backup-list w-100" bordered>
       <a-list-item class="ant-backup-list-item">
         <a-list-item-meta>
@@ -1311,7 +1312,7 @@
       importDatabase() {
         const fileInput = document.createElement('input');
         fileInput.type = 'file';
-        fileInput.accept = '.db';
+        fileInput.accept = '.zip,.db';
         fileInput.addEventListener('change', async (event) => {
           const dbFile = event.target.files[0];
           if (dbFile) {
@@ -1328,13 +1329,33 @@
             if (!uploadMsg.success) {
               return;
             }
+            let restoredTarget = null;
+            if (uploadMsg.obj?.restored) {
+              restoredTarget = location.href;
+              try {
+                const restoredURL = new URL(uploadMsg.obj.url || location.href, location.href);
+                if (['http:', 'https:'].includes(restoredURL.protocol)) restoredTarget = restoredURL.href;
+              } catch (_) { /* keep the current panel URL */ }
+            }
+            if (uploadMsg.obj?.restored && uploadMsg.obj?.restarting) {
+              this.$message.success('Backup restored. Panel and subscription services are restarting. Reconnect at ' + restoredTarget, 10);
+              this.loading(true);
+              const delay = Math.min(30, Math.max(3, Number(uploadMsg.obj.restartAfterSeconds) || 3));
+              await PromiseUtil.sleep((delay + 2) * 1000);
+              location.assign(restoredTarget);
+              return;
+            }
+            if (uploadMsg.obj?.restored && uploadMsg.obj?.restartRequired) {
+              this.$message.warning('Backup restored. A panel restart is required; attempting it now. Reconnect at ' + restoredTarget, 10);
+            }
             this.loading(true);
             const restartMsg = await HttpUtil.post("/panel/setting/restartPanel");
             this.loading(false);
             if (restartMsg.success) {
               this.loading(true);
               await PromiseUtil.sleep(5000);
-              location.reload();
+              if (restoredTarget) location.assign(restoredTarget);
+              else location.reload();
             }
           }
         });

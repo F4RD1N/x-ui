@@ -143,6 +143,7 @@ class DBInbound {
     }
 
     isMultiUser() {
+        if (Inbound.NativeSettings?.supports(this.protocol)) return true;
         switch (this.protocol) {
             case Protocols.VMESS:
             case Protocols.VLESS:

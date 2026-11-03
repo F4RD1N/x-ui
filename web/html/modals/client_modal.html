@@ -29,6 +29,15 @@
         clientIps: null,
         delayedStart: false,
         ok() {
+            const compatibilityErrors = Inbound.compatibilityErrors(clientModal.inbound.protocol, [clientModalApp.client], clientModal.inbound.method);
+            if (compatibilityErrors.length) {
+                clientModalApp.$message.error(compatibilityErrors.join("; "));
+                return;
+            }
+            if (clientModalApp.client instanceof Inbound.NativeClient && clientModalApp.client.validationErrors.length) {
+                clientModalApp.$message.error(clientModalApp.client.validationErrors.join("; "));
+                return;
+            }
             if (clientModal.isEdit) {
                 ObjectUtil.execute(clientModal.confirm, clientModalApp.client, clientModal.dbInbound.id, clientModal.oldClientId);
             } else {
@@ -49,7 +58,7 @@
                 if (this.clients[index].expiryTime < 0) {
                     this.delayedStart = true;
                 }
-                this.oldClientId = this.getClientId(dbInbound.protocol, clients[index]);
+                this.oldClientId = this.getClientId(dbInbound.protocol, this.clients[index]);
             } else {
                 this.addClient(this.inbound, this.clients);
             }
@@ -57,6 +66,7 @@
             this.confirm = confirm;
         },  
         getClientId(protocol, client) {
+            if (Inbound.NativeSettings.supports(protocol)) return Inbound.nativeClientId(protocol, client);
             switch (protocol) {
                 case Protocols.TROJAN: return client.password;
                 case Protocols.SHADOWSOCKS: return client.email;
@@ -65,11 +75,16 @@
             }
         },
         addClient(inbound, clients) {
+            if (inbound.isNative) return clients.push(inbound.settings.newClient());
             switch (inbound.protocol) {
                 case Protocols.VMESS: return clients.push(new Inbound.VmessSettings.VMESS());
                 case Protocols.VLESS: return clients.push(new Inbound.VLESSSettings.VLESS());
                 case Protocols.TROJAN: return clients.push(new Inbound.TrojanSettings.Trojan());
-                case Protocols.SHADOWSOCKS: return clients.push(new Inbound.ShadowsocksSettings.Shadowsocks(clients[0].method, RandomUtil.randomShadowsocksPassword(inbound.settings.method)));
+                case Protocols.SHADOWSOCKS: {
+                    const client = new Inbound.ShadowsocksSettings.Shadowsocks(clients[0].method, RandomUtil.randomShadowsocksPassword(inbound.settings.method));
+                    if (inbound.settings.uuidIdentityKeys === true) { client.uuidIdentityKeys = true; client._uuidIdentityKeysPresent = true; }
+                    return clients.push(client);
+                }
                 case Protocols.HYSTERIA: return clients.push(new Inbound.HysteriaSettings.Hysteria());
                 default: return null;
             }

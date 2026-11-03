@@ -16,4 +16,6 @@ message Account {
   xray.common.protocol.SecurityConfig security_settings = 3;
   // Define tests enabled for this account
   string tests_enabled = 4;
+  // Opt-in compatibility mode: UUID bytes are the AuthID and header key.
+  bool raw_uuid_auth = 5;
 }

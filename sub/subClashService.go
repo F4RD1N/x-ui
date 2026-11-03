@@ -56,6 +56,17 @@ func (s *SubClashService) GetClash(subId string, host string) (string, string, e
 		}
 		for _, client := range clients {
 			if client.Enable && client.SubID == subId {
+				if nativeSubscriptionProtocol(inbound.Protocol) || client.RawUUIDAuth || client.UUIDHashPrefix {
+					if nativeSubscriptionProtocol(inbound.Protocol) && !nativeClientExportActive(inbound, client) {
+						continue
+					}
+					return "", "", errNativeJSONSubscriptionRequired
+				}
+				if inbound.Protocol == model.Shadowsocks {
+					if _, err := ss2022ExportIdentity(inbound, client); err != nil {
+						return "", "", err
+					}
+				}
 				clientTraffics = append(clientTraffics, s.SubService.getClientTraffics(inbound.ClientStats, client.Email))
 				proxies = append(proxies, s.getProxies(inbound, client, host)...)
 			}
@@ -197,7 +208,11 @@ func (s *SubClashService) buildProxy(inbound *model.Inbound, client model.Client
 		proxy["password"] = client.Password
 	case model.Shadowsocks:
 		proxy["type"] = "ss"
-		proxy["password"] = client.Password
+		identity, err := ss2022ExportIdentity(inbound, client)
+		if err != nil {
+			return nil
+		}
+		proxy["password"] = identity
 		var inboundSettings map[string]any
 		json.Unmarshal([]byte(inbound.Settings), &inboundSettings)
 		method, _ := inboundSettings["method"].(string)
@@ -207,7 +222,7 @@ func (s *SubClashService) buildProxy(inbound *model.Inbound, client model.Client
 		proxy["cipher"] = method
 		if strings.HasPrefix(method, "2022") {
 			if serverPassword, ok := inboundSettings["password"].(string); ok && serverPassword != "" {
-				proxy["password"] = fmt.Sprintf("%s:%s", serverPassword, client.Password)
+				proxy["password"] = fmt.Sprintf("%s:%s", serverPassword, identity)
 			}
 		}
 	default:

@@ -1,0 +1,52 @@
+# Local metadata and generated build products never enter the build context.
+.git
+.git/**
+/build
+/dist
+/bin
+/x-ui
+/x-ui.exe
+/.docker-build-stage.*
+**/xray-linux-*
+**/node_modules
+**/.gradle
+**/.cache
+**/__pycache__
+**/*.pyc
+**/*.test
+**/*.prof
+**/*.log
+**/*.so
+**/*.a
+**/*.apk
+**/*.aar
+/windows_files/SSL/*.exe
+
+# Runtime databases, deployment credentials and signing material.
+**/*.db
+**/*.db-*
+**/*.db.*
+**/*.sqlite
+**/*.sqlite3
+/db
+/cert
+/certs
+/secrets
+/credentials
+**/.ssh
+**/.env
+**/.env.*
+!.env.example
+**/local.properties
+**/signing.properties
+**/*.jks
+**/*.keystore
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.crt
+
+# Checked-in synthetic fixtures remain available for source/tests. Their names
+# and contents are intentionally public; deployment credentials belong above.
+!**/testdata/**

@@ -1,0 +1,60 @@
+{
+  "source_sha256": "578959313b6181a61944e258bd08dbf985e2bdce9aad8ad7de9086af5ea02aab",
+  "description": "Captured native function output using synthetic identities and offline deterministic randomness.",
+  "tests": [
+    {
+      "test": "socket connect without address",
+      "hex": "08000600785634124433"
+    },
+    {
+      "test": "socket close flag 0",
+      "hex": "0a0005007856341200"
+    },
+    {
+      "test": "socket close flag 1",
+      "hex": "0a0005007856341201"
+    },
+    {
+      "test": "connection response",
+      "hex": "02000000"
+    },
+    {
+      "test": "connection kickout",
+      "hex": "14000200f401"
+    },
+    {
+      "test": "socket connect with 131-byte address structure",
+      "hex": "08018900785634124433016578616d706c652e746573740000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000bb01"
+    },
+    {
+      "test": "obfuscation header generation and native parse, seed 0",
+      "hex": "5ff32132295047e9f67d0a16b3",
+      "derivedKeyHex": "4560728119ccdb0beef96008ca3c02c3"
+    },
+    {
+      "test": "obfuscation header generation and native parse, seed 1",
+      "hex": "6c59aadb85885e7e36caadb4",
+      "derivedKeyHex": "25e36a1298486e91f620f1d297e93c70"
+    },
+    {
+      "test": "obfuscation header generation and native parse, seed 2",
+      "hex": "79bf3b84e2c075130c5f30639da90e",
+      "derivedKeyHex": "24564d762ec0f99af1fc327e16bd888c"
+    },
+    {
+      "test": "obfuscation header generation and native parse, seed 3",
+      "hex": "8625182d3ff9a26b8d49",
+      "derivedKeyHex": "886908e8a4b0fd19970e1915e6e49544"
+    },
+    {
+      "test": "obfuscation header generation and native parse, seed 4",
+      "hex": "938b8dd69b31a43d218dd25720",
+      "derivedKeyHex": "e1b14b2df882c5499259885bc06be659"
+    },
+    {
+      "test": "obfuscation header generation and native parse, seed 5",
+      "hex": "a0f1c67ff869ab140b39",
+      "derivedKeyHex": "6d4991f9be516bb6c33b58d6c7bc4fd4"
+    }
+  ]
+}

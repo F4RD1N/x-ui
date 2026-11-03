@@ -1,0 +1,51 @@
+syntax = "proto3";
+package xray.proxy.dnstt;
+option go_package = "github.com/xtls/xray-core/proxy/dnstt";
+
+import "common/serial/typed_message.proto";
+
+// One authenticated dnstt client. Inner credentials are private.
+message Config {
+ string domain = 1;
+ string public_key = 2;
+ repeated Resolver resolvers = 3;
+ Inner inner = 4;
+ uint32 handshake_timeout = 5;
+ uint32 query_timeout = 6;
+ uint32 max_concurrent_queries = 7;
+ uint32 min_query_interval_ms = 8;
+ uint32 edns_payload_size = 9;
+ uint32 max_qname_length = 10;
+ uint32 label_min = 11;
+ uint32 label_max = 12;
+}
+
+// Resolver keeps the authenticated TLS hostname separate from its dial IP.
+message Resolver {
+ string transport = 1;
+ string address = 2;
+ string bootstrap = 3;
+ string server_name = 4;
+ string fingerprint = 5;
+ string ca_pem = 6;
+}
+
+// An authenticated proxy request is carried inside each tunnel stream.
+// SOCKS supports TCP; VLESS supports TCP and fixed-destination UDP.
+message Inner {
+ string protocol = 1;
+ string uuid = 2;
+ string username = 3;
+ string password = 4;
+}
+
+// Native authoritative DNS tunnel. The private inner proxy has no listener.
+message ServerConfig {
+ string domain = 1;
+ string private_key = 2;
+ xray.common.serial.TypedMessage inner = 3;
+ uint32 mtu = 4;
+ uint32 handshake_timeout = 5;
+ uint32 max_sessions = 6;
+ uint32 max_streams = 7;
+}

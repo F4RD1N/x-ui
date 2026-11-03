@@ -452,6 +452,14 @@ func (t *Tgbot) OnReceive() {
 	go func() {
 		defer botWG.Done()
 		h, _ := th.NewBotHandler(bot, updates)
+		h.Use(func(ctx *th.Context, update telego.Update) error {
+			release, ok := database.TryMutation()
+			if !ok {
+				return nil
+			}
+			defer release()
+			return ctx.Next(update)
+		})
 		tgBotMutex.Lock()
 		botHandler = h
 		tgBotMutex.Unlock()
@@ -467,6 +475,11 @@ func (t *Tgbot) OnReceive() {
 			go func() {
 				messageWorkerPool <- struct{}{}        // Acquire worker
 				defer func() { <-messageWorkerPool }() // Release worker
+				release, ok := database.TryMutation()
+				if !ok {
+					return
+				}
+				defer release()
 
 				delete(userStates, message.Chat.ID)
 				t.answerCommand(&message, message.Chat.ID, checkAdmin(message.From.ID))
@@ -479,6 +492,11 @@ func (t *Tgbot) OnReceive() {
 			go func() {
 				messageWorkerPool <- struct{}{}        // Acquire worker
 				defer func() { <-messageWorkerPool }() // Release worker
+				release, ok := database.TryMutation()
+				if !ok {
+					return
+				}
+				defer release()
 
 				delete(userStates, query.Message.GetChat().ID)
 				t.answerCallback(&query, checkAdmin(query.From.ID))
@@ -3627,52 +3645,18 @@ func (t *Tgbot) onlineClients(chatId int64, messageID ...int) {
 
 // sendBackup sends a backup of the database and configuration files.
 func (t *Tgbot) sendBackup(chatId int64) {
+	archive, err := (&ServerService{}).GetBackup()
+	if err != nil {
+		logger.Error("Cannot create portable backup: ", err)
+		return
+	}
 	output := t.I18nBot("tgbot.messages.backupTime", "Time=="+time.Now().Format("2006-01-02 15:04:05"))
 	t.SendMsgToTgbot(chatId, output)
-
-	// Update by manually trigger a checkpoint operation
-	err := database.Checkpoint()
-	if err != nil {
-		logger.Error("Error in trigger a checkpoint operation: ", err)
-	}
-
-	// Send database backup
-	file, err := os.Open(config.GetDBPath())
-	if err == nil {
-		defer file.Close()
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		document := tu.Document(
-			tu.ID(chatId),
-			tu.File(file),
-		)
-		_, err = bot.SendDocument(ctx, document)
-		if err != nil {
-			logger.Error("Error in uploading backup: ", err)
-		}
-	} else {
-		logger.Error("Error in opening db file for backup: ", err)
-	}
-
-	// Small delay between file sends
-	time.Sleep(500 * time.Millisecond)
-
-	// Send config.json backup
-	file, err = os.Open(xray.GetConfigPath())
-	if err == nil {
-		defer file.Close()
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		document := tu.Document(
-			tu.ID(chatId),
-			tu.File(file),
-		)
-		_, err = bot.SendDocument(ctx, document)
-		if err != nil {
-			logger.Error("Error in uploading config.json: ", err)
-		}
-	} else {
-		logger.Error("Error in opening config.json file for backup: ", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	document := tu.Document(tu.ID(chatId), tu.FileFromBytes(archive, "x-ui-backup.zip"))
+	if _, err := bot.SendDocument(ctx, document); err != nil {
+		logger.Error("Error uploading portable backup: ", err)
 	}
 }
 

@@ -143,11 +143,11 @@
                           <a-icon type="import"></a-icon>
                           {{ i18n "pages.inbounds.importInbound" }}
                         </a-menu-item>
-                        <a-menu-item key="export">
+                        <a-menu-item key="export" v-if="dbInbound.hasLink()">
                           <a-icon type="export"></a-icon>
                           {{ i18n "pages.inbounds.export" }}
                         </a-menu-item>
-                        <a-menu-item key="subs" v-if="subSettings.enable">
+                        <a-menu-item key="subs" v-if="dbInbound.toInbound().isNative ? subSettings.subJsonEnable : subSettings.enable">
                           <a-icon type="export"></a-icon>
                           {{ i18n "pages.inbounds.export" }} - {{ i18n
                           "pages.settings.subSettings" }}
@@ -258,7 +258,7 @@
                               <a-icon type="user-add"></a-icon>
                               {{ i18n "pages.client.add"}}
                             </a-menu-item>
-                            <a-menu-item key="addBulkClient">
+                            <a-menu-item key="addBulkClient" v-if="!dbInbound.toInbound().isNative || dbInbound.toInbound().settings.canBulkCreate">
                               <a-icon type="usergroup-add"></a-icon>
                               {{ i18n "pages.client.bulk"}}
                             </a-menu-item>
@@ -738,7 +738,7 @@
                       </a-popover>
                     </template>
                     <template slot="expandedRowRender" slot-scope="record">
-                      <a-table :row-key="client => client.id"
+                      <a-table :row-key="client => record.toInbound().isNative ? client.email : client.id"
                         :columns="isMobile ? innerMobileColumns : innerColumns"
                         :data-source="getInboundClients(record)"
                         :pagination=pagination(getInboundClients(record))
@@ -764,6 +764,8 @@
   src="{{ .base_path }}assets/js/model/reality_targets.js?{{ .cur_ver }}"></script>
 <script
   src="{{ .base_path }}assets/js/model/inbound.js?{{ .cur_ver }}"></script>
+<script
+  src="{{ .base_path }}assets/js/model/native-inbound.js?{{ .cur_ver }}"></script>
 <script
   src="{{ .base_path }}assets/js/model/dbinbound.js?{{ .cur_ver }}"></script>
 {{template "component/aSidebar" .}}
@@ -1190,8 +1192,10 @@
           listen: '',
           port: RandomUtil.randomInteger(10000, 60000),
           protocol: baseInbound.protocol,
-          settings: Inbound.Settings.getSettings(baseInbound.protocol).toString(),
-          streamSettings: baseInbound.stream.toString(),
+          settings: baseInbound.isNative ? baseInbound.settings.cloneForNewInbound().toString() : Inbound.Settings.getSettings(baseInbound.protocol).toString(),
+          streamSettings: baseInbound.isNative && !baseInbound.canEnableStream()
+            ? JSON.stringify(baseInbound.stream?.sockopt ? {sockopt: baseInbound.stream.sockopt.toJson()} : {})
+            : baseInbound.stream.toString(),
           sniffing: baseInbound.sniffing.toString(),
         };
         await this.submit('/panel/api/inbounds/add', data, inModal);
@@ -1322,6 +1326,9 @@
         if (!clients || !Array.isArray(clients) || !client) {
           return -1;
         }
+        if (Inbound.NativeSettings.supports(protocol)) {
+          return clients.findIndex(item => item && Inbound.nativeClientId(protocol, item) === Inbound.nativeClientId(protocol, client));
+        }
         switch (protocol) {
           case Protocols.TROJAN:
           case Protocols.SHADOWSOCKS:
@@ -1416,6 +1423,7 @@
         return response;
       },
       getClientId(protocol, client) {
+        if (Inbound.NativeSettings.supports(protocol)) return Inbound.nativeClientId(protocol, client);
         switch (protocol) {
           case Protocols.TROJAN: return client.password;
           case Protocols.SHADOWSOCKS: return client.email;
@@ -1694,11 +1702,17 @@
       exportSubs(dbInboundId) {
         const dbInbound = this.dbInbounds.find(row => row.id === dbInboundId);
         const clients = this.getInboundClients(dbInbound);
+        const native = dbInbound.toInbound().isNative || (clients || []).some(client => Inbound.subscriptionNeedsJSON(this.dbInbounds, client.subId));
+        if (native && (!this.subSettings.subJsonEnable || !this.subSettings.subJsonURI)) {
+          this.$message.error('Enable JSON subscriptions to export these client configurations.');
+          return;
+        }
+        const subscriptionBase = native ? this.subSettings.subJsonURI : this.subSettings.subURI;
         let subLinks = []
         if (clients != null) {
           clients.forEach(c => {
             if (c.subId && c.subId.length > 0) {
-              subLinks.push(this.subSettings.subURI + c.subId)
+              subLinks.push(subscriptionBase + c.subId)
             }
           })
         }
@@ -1722,10 +1736,16 @@
         let subLinks = []
         for (const dbInbound of this.dbInbounds) {
           const clients = this.getInboundClients(dbInbound);
+          const native = dbInbound.toInbound().isNative || (clients || []).some(client => Inbound.subscriptionNeedsJSON(this.dbInbounds, client.subId));
+          if (native && (!this.subSettings.subJsonEnable || !this.subSettings.subJsonURI)) {
+            this.$message.error('Enable JSON subscriptions to export all native client configurations.');
+            return;
+          }
+          const subscriptionBase = native ? this.subSettings.subJsonURI : this.subSettings.subURI;
           if (clients != null) {
             clients.forEach(c => {
               if (c.subId && c.subId.length > 0) {
-                subLinks.push(this.subSettings.subURI + c.subId)
+                subLinks.push(subscriptionBase + c.subId)
               }
             })
           }

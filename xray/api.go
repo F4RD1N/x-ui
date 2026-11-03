@@ -4,8 +4,10 @@
 package xray
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"regexp"
@@ -19,7 +21,11 @@ import (
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/infra/conf"
+	"github.com/xtls/xray-core/proxy/anytls"
 	hysteriaAccount "github.com/xtls/xray-core/proxy/hysteria/account"
+	"github.com/xtls/xray-core/proxy/mieru"
+	"github.com/xtls/xray-core/proxy/openvpn"
+	"github.com/xtls/xray-core/proxy/orbit"
 	"github.com/xtls/xray-core/proxy/shadowsocks"
 	"github.com/xtls/xray-core/proxy/shadowsocks_2022"
 	"github.com/xtls/xray-core/proxy/trojan"
@@ -71,12 +77,24 @@ func (x *XrayAPI) Close() {
 	x.isConnected = false
 }
 
+// handlerClient fails explicitly when the managed core is stopped or API
+// initialization failed; service callers can then schedule a safe reload.
+func (x *XrayAPI) handlerClient() (command.HandlerServiceClient, error) {
+	if x == nil || x.HandlerServiceClient == nil || *x.HandlerServiceClient == nil {
+		return nil, fmt.Errorf("Xray handler API is not initialized")
+	}
+	return *x.HandlerServiceClient, nil
+}
+
 // AddInbound adds a new inbound configuration to the Xray core via gRPC.
 func (x *XrayAPI) AddInbound(inbound []byte) error {
-	client := *x.HandlerServiceClient
+	client, err := x.handlerClient()
+	if err != nil {
+		return err
+	}
 
 	conf := new(conf.InboundDetourConfig)
-	err := json.Unmarshal(inbound, conf)
+	err = json.Unmarshal(inbound, conf)
 	if err != nil {
 		logger.Debug("Failed to unmarshal inbound:", err)
 		return err
@@ -95,56 +113,103 @@ func (x *XrayAPI) AddInbound(inbound []byte) error {
 
 // DelInbound removes an inbound configuration from the Xray core by tag.
 func (x *XrayAPI) DelInbound(tag string) error {
-	client := *x.HandlerServiceClient
-	_, err := client.RemoveInbound(context.Background(), &command.RemoveInboundRequest{
+	client, err := x.handlerClient()
+	if err != nil {
+		return err
+	}
+	_, err = client.RemoveInbound(context.Background(), &command.RemoveInboundRequest{
 		Tag: tag,
 	})
 	return err
 }
 
+// ErrUserRestartRequired tells the inbound service that a dynamic user update
+// cannot represent the protocol settings and a validated configuration reload
+// is required. Unsupported protocols must never report a successful no-op.
+var ErrUserRestartRequired = errors.New("inbound configuration reload required")
+
+// apiUserAuthFields contains only core account fields. Panel metadata such as
+// traffic quotas and export certificates must not enter a native account. JSON
+// decoding validates booleans and unsigned levels without assertion panics and
+// preserves integer precision when callers use json.Number.
+type apiUserAuthFields struct {
+	ID                  string          `json:"id"`
+	Flow                string          `json:"flow"`
+	Testseed            []uint32        `json:"testseed"`
+	Testpre             uint32          `json:"testpre"`
+	Password            string          `json:"password"`
+	Cipher              string          `json:"cipher"`
+	Auth                string          `json:"auth"`
+	Email               string          `json:"email"`
+	Level               uint32          `json:"level"`
+	RawUUIDAuth         bool            `json:"rawUuidAuth"`
+	UUIDHashPrefix      bool            `json:"uuidHashPrefix"`
+	UUIDHashMiddle      bool            `json:"uuidHashMiddle"`
+	UUIDMetadataTrailer bool            `json:"uuidMetadataTrailer"`
+	UUIDIdentityKeys    bool            `json:"uuidIdentityKeys"`
+	Username            string          `json:"username"`
+	CommonName          string          `json:"commonName"`
+	Key                 string          `json:"key"`
+	ExpiresAt           int64           `json:"expiresAt"`
+	ClientProof         json.RawMessage `json:"clientProof"`
+}
+
 // AddUser adds a user to an inbound in the Xray core using the specified protocol and user data.
 func (x *XrayAPI) AddUser(Protocol string, inboundTag string, user map[string]any) error {
+	// DNS tunnels and ShadowTLS may wrap VLESS or SOCKS. The account map
+	// omits listener version/inner policy, so a full validated reload is needed
+	// to update the actual credentials (including ShadowTLS v1/v2 inner users).
+	if Protocol == "dns" || Protocol == "dnstt" || Protocol == "shadowtls" {
+		return fmt.Errorf("%w: %s listener and inner user configuration", ErrUserRestartRequired, Protocol)
+	}
+	data, err := json.Marshal(user)
+	if err != nil {
+		return fmt.Errorf("invalid %s user fields", Protocol)
+	}
+	var fields apiUserAuthFields
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return fmt.Errorf("invalid %s user fields: %w", Protocol, err)
+	}
 	var account *serial.TypedMessage
 	switch Protocol {
 	case "vmess":
 		account = serial.ToTypedMessage(&vmess.Account{
-			Id: user["id"].(string),
+			Id:          fields.ID,
+			RawUuidAuth: fields.RawUUIDAuth,
 		})
 	case "vless":
 		vlessAccount := &vless.Account{
-			Id:   user["id"].(string),
-			Flow: user["flow"].(string),
+			Id:   fields.ID,
+			Flow: fields.Flow,
 		}
-		// Add testseed if provided
-		if testseedVal, ok := user["testseed"]; ok {
-			if testseedArr, ok := testseedVal.([]any); ok && len(testseedArr) >= 4 {
-				testseed := make([]uint32, len(testseedArr))
-				for i, v := range testseedArr {
-					if num, ok := v.(float64); ok {
-						testseed[i] = uint32(num)
-					}
-				}
-				vlessAccount.Testseed = testseed
-			} else if testseedArr, ok := testseedVal.([]uint32); ok && len(testseedArr) >= 4 {
-				vlessAccount.Testseed = testseedArr
-			}
+		// Decode numeric fields through JSON too, so UseNumber callers retain
+		// the same seeds instead of silently turning them into zeros.
+		if len(fields.Testseed) >= 4 {
+			vlessAccount.Testseed = fields.Testseed
 		}
-		// Add testpre if provided (for outbound, but can be in user for compatibility)
-		if testpreVal, ok := user["testpre"]; ok {
-			if testpre, ok := testpreVal.(float64); ok && testpre > 0 {
-				vlessAccount.Testpre = uint32(testpre)
-			} else if testpre, ok := testpreVal.(uint32); ok && testpre > 0 {
-				vlessAccount.Testpre = testpre
-			}
-		}
+		vlessAccount.Testpre = fields.Testpre
 		account = serial.ToTypedMessage(vlessAccount)
 	case "trojan":
 		account = serial.ToTypedMessage(&trojan.Account{
-			Password: user["password"].(string),
+			Password:       fields.Password,
+			UuidHashPrefix: fields.UUIDHashPrefix,
 		})
 	case "shadowsocks":
+		if value, present := user["uuidIdentityKeys"]; present {
+			raw, _ := json.Marshal(value)
+			if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+				return fmt.Errorf("uuidIdentityKeys must be a boolean")
+			}
+		}
+		identity := fields.Password
+		if fields.UUIDIdentityKeys {
+			identity, err = conf.NormalizeSS2022IdentityKey(fields.Cipher, identity)
+			if err != nil {
+				return fmt.Errorf("invalid Shadowsocks2022 identity key: %w", err)
+			}
+		}
 		var ssCipherType shadowsocks.CipherType
-		switch user["cipher"].(string) {
+		switch fields.Cipher {
 		case "aes-128-gcm":
 			ssCipherType = shadowsocks.CipherType_AES_128_GCM
 		case "aes-256-gcm":
@@ -159,30 +224,67 @@ func (x *XrayAPI) AddUser(Protocol string, inboundTag string, user map[string]an
 
 		if ssCipherType != shadowsocks.CipherType_NONE {
 			account = serial.ToTypedMessage(&shadowsocks.Account{
-				Password:   user["password"].(string),
+				Password:   fields.Password,
 				CipherType: ssCipherType,
 			})
 		} else {
 			account = serial.ToTypedMessage(&shadowsocks_2022.ServerConfig{
-				Key:   user["password"].(string),
-				Email: user["email"].(string),
+				Key:   identity,
+				Email: fields.Email,
 			})
 		}
 	case "hysteria":
 		account = serial.ToTypedMessage(&hysteriaAccount.Account{
-			Auth: user["auth"].(string),
+			Auth: fields.Auth,
 		})
+	case "orbit":
+		account = serial.ToTypedMessage(&orbit.Account{Key: fields.Key, ExpiresAt: fields.ExpiresAt})
+	case "anytls":
+		account = serial.ToTypedMessage(&anytls.Account{Password: fields.Password, UuidHashMiddle: fields.UUIDHashMiddle})
+	case "mieru":
+		account = serial.ToTypedMessage(&mieru.Account{Username: fields.Username, Password: fields.Password, UuidMetadataTrailer: fields.UUIDMetadataTrailer})
+	case "openvpn":
+		client := openvpn.ServerUser{Email: fields.Email, Level: fields.Level, CommonName: fields.CommonName, Username: fields.Username, Password: fields.Password}
+		if len(fields.ClientProof) != 0 && string(fields.ClientProof) != "null" {
+			decoder := json.NewDecoder(bytes.NewReader(fields.ClientProof))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&client.ClientProof); err != nil {
+				return fmt.Errorf("invalid OpenVPN clientProof fields")
+			}
+		}
+		settings, err := json.Marshal(client)
+		if err != nil {
+			return fmt.Errorf("invalid OpenVPN user fields")
+		}
+		account = serial.ToTypedMessage(&openvpn.ServerAccount{Settings: settings})
 	default:
-		return nil
+		return fmt.Errorf("%w: unsupported dynamic user protocol %q", ErrUserRestartRequired, Protocol)
 	}
 
-	client := *x.HandlerServiceClient
+	// Validate typed credentials locally before sending the operation. Account
+	// conversion also preserves compatibility flags across the gRPC boundary.
+	value, err := account.GetInstance()
+	if err != nil {
+		return fmt.Errorf("invalid %s account message", Protocol)
+	}
+	if a, ok := value.(protocol.AsAccount); ok {
+		if _, err := a.AsAccount(); err != nil {
+			return fmt.Errorf("invalid %s user account: %w", Protocol, err)
+		}
+	}
+	client, err := x.handlerClient()
+	if err != nil {
+		return err
+	}
 
-	_, err := client.AlterInbound(context.Background(), &command.AlterInboundRequest{
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = client.AlterInbound(ctx, &command.AlterInboundRequest{
 		Tag: inboundTag,
 		Operation: serial.ToTypedMessage(&command.AddUserOperation{
 			User: &protocol.User{
-				Email:   user["email"].(string),
+				Email:   fields.Email,
+				Level:   fields.Level,
 				Account: account,
 			},
 		}),
@@ -192,6 +294,10 @@ func (x *XrayAPI) AddUser(Protocol string, inboundTag string, user map[string]an
 
 // RemoveUser removes a user from an inbound in the Xray core by email.
 func (x *XrayAPI) RemoveUser(inboundTag, email string) error {
+	client, err := x.handlerClient()
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -201,7 +307,7 @@ func (x *XrayAPI) RemoveUser(inboundTag, email string) error {
 		Operation: serial.ToTypedMessage(op),
 	}
 
-	_, err := (*x.HandlerServiceClient).AlterInbound(ctx, req)
+	_, err = client.AlterInbound(ctx, req)
 	if err != nil {
 		return fmt.Errorf("failed to remove user: %w", err)
 	}

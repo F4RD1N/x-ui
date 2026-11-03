@@ -1,0 +1,118 @@
+{
+  "method": "Original AArch64 instructions, synthetic state, bounded Unicorn execution",
+  "referenceSHA256": "578959313b6181a61944e258bd08dbf985e2bdce9aad8ad7de9086af5ea02aab",
+  "networkRequests": 0,
+  "tests": [
+    {
+      "test": "connect response echoes metadata",
+      "passed": true,
+      "metadata": 0,
+      "frameHex": "09000600785634120000"
+    },
+    {
+      "test": "connect response echoes metadata",
+      "passed": true,
+      "metadata": 13124,
+      "frameHex": "09000600785634124433"
+    },
+    {
+      "test": "connect response echoes metadata",
+      "passed": true,
+      "metadata": 65535,
+      "frameHex": "0900060078563412ffff"
+    },
+    {
+      "test": "buffer full parser requires byte one",
+      "passed": true,
+      "bodyHex": "7856341200100000000000000000010000",
+      "full": false
+    },
+    {
+      "test": "buffer full parser requires byte one",
+      "passed": true,
+      "bodyHex": "7856341200100000000000000000010001",
+      "full": true
+    },
+    {
+      "test": "buffer full parser requires byte one",
+      "passed": true,
+      "bodyHex": "7856341200100000000000000000010002",
+      "full": false
+    },
+    {
+      "test": "buffer full parser requires byte one",
+      "passed": true,
+      "bodyHex": "78563412001000000000000000000100ff",
+      "full": false
+    },
+    {
+      "test": "read close frame with zeroed allocator tail",
+      "passed": true,
+      "frameHex": "1e000600785634120000",
+      "note": "Last two body bytes are not initialized by the native routine; receiver ignores them."
+    },
+    {
+      "test": "native UDP inner builder",
+      "passed": true,
+      "payloadBytes": 0,
+      "headerHex": "15c000020a3930c633641435000000",
+      "frameHex": "15c000020a3930c633641435000000"
+    },
+    {
+      "test": "native UDP inner builder",
+      "passed": true,
+      "payloadBytes": 5,
+      "headerHex": "15c000020a3930c633641435000500",
+      "frameHex": "15c000020a3930c6336414350005007676767676"
+    },
+    {
+      "test": "native UDP inner builder",
+      "passed": true,
+      "payloadBytes": 1470,
+      "headerHex": "15c000020a3930c63364143500be05",
+      "frameHex": null
+    },
+    {
+      "test": "native UDP receive bounds",
+      "passed": true,
+      "totalBytes": 14,
+      "lengthDelta": 0,
+      "accepted": false
+    },
+    {
+      "test": "native UDP receive bounds",
+      "passed": true,
+      "totalBytes": 15,
+      "lengthDelta": 0,
+      "accepted": true
+    },
+    {
+      "test": "native UDP receive bounds",
+      "passed": true,
+      "totalBytes": 20,
+      "lengthDelta": 0,
+      "accepted": true
+    },
+    {
+      "test": "native UDP receive bounds",
+      "passed": true,
+      "totalBytes": 20,
+      "lengthDelta": 1,
+      "accepted": false
+    },
+    {
+      "test": "native UDP receive bounds",
+      "passed": true,
+      "totalBytes": 1500,
+      "lengthDelta": 0,
+      "accepted": true
+    },
+    {
+      "test": "native UDP receive bounds",
+      "passed": true,
+      "totalBytes": 1501,
+      "lengthDelta": 0,
+      "accepted": false
+    }
+  ]
+}

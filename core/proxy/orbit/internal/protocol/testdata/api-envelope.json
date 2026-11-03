@@ -1,0 +1,5 @@
+{
+  "description": "Independent Python gzip+cryptography fixture. Synthetic JSON, no network traffic.",
+  "plaintext_hex": "7b226d657373616765223a2248656c6c6f20e4b896e7958c222c226f6b223a747275652c226e223a34327d",
+  "ciphertext_hex": "12af1e5adc5909b726d36983e970378544e395aad330804aef2c28a0157534808c5e9c1c169e7ecf7d148e2bc4336c36ddf258d3887b5f1eb6345a3419857a"
+}

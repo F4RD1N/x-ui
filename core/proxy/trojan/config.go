@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+
 	"google.golang.org/protobuf/proto"
 
 	"github.com/xtls/xray-core/common"
@@ -14,29 +15,38 @@ import (
 type MemoryAccount struct {
 	Password string
 	Key      []byte
+	// UUIDHashPrefix opts this account into the UUID-prefix compatibility key.
+	UUIDHashPrefix bool
 }
 
 // AsAccount implements protocol.AsAccount.
 func (a *Account) AsAccount() (protocol.Account, error) {
 	password := a.GetPassword()
-	key := hexSha224(password)
+	var key []byte
+	if a.GetUuidHashPrefix() {
+		key = uuidPrefixedKey(password)
+	} else {
+		key = hexSha224(password)
+	}
 	return &MemoryAccount{
-		Password: password,
-		Key:      key,
+		Password:       password,
+		Key:            key,
+		UUIDHashPrefix: a.GetUuidHashPrefix(),
 	}, nil
 }
 
 // Equals implements protocol.Account.Equals().
 func (a *MemoryAccount) Equals(another protocol.Account) bool {
 	if account, ok := another.(*MemoryAccount); ok {
-		return a.Password == account.Password
+		return a.Password == account.Password && a.UUIDHashPrefix == account.UUIDHashPrefix
 	}
 	return false
 }
 
 func (a *MemoryAccount) ToProto() proto.Message {
 	return &Account{
-		Password: a.Password,
+		Password:       a.Password,
+		UuidHashPrefix: a.UUIDHashPrefix,
 	}
 }
 

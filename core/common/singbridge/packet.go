@@ -2,6 +2,8 @@ package singbridge
 
 import (
 	"context"
+	stdnet "net"
+	"sync"
 	"time"
 
 	B "github.com/sagernet/sing/common/buf"
@@ -27,68 +29,115 @@ type PacketConnWrapper struct {
 	buf.Reader
 	buf.Writer
 	net.Conn
-	Dest   net.Destination
+	Dest net.Destination
+
+	readMu sync.Mutex
+	mu     sync.Mutex
 	cached buf.MultiBuffer
+	done   chan struct{}
+	closed bool
 }
 
-// This ReadPacket implemented a timeout to avoid goroutine leak like PipeConnWrapper.Read()
-// as a temporarily solution
 func (w *PacketConnWrapper) ReadPacket(buffer *B.Buffer) (M.Socksaddr, error) {
-	if w.cached != nil {
-		mb, bb := buf.SplitFirst(w.cached)
-		if bb == nil {
-			w.cached = nil
-		} else {
-			buffer.Write(bb.Bytes())
-			w.cached = mb
-			var destination net.Destination
-			if bb.UDP != nil {
-				destination = *bb.UDP
-			} else {
-				destination = w.Dest
+	return w.readPacket(buffer, 60*time.Second)
+}
+
+func (w *PacketConnWrapper) readPacket(buffer *B.Buffer, timeout time.Duration) (M.Socksaddr, error) {
+	// Only one caller may read the underlying reader or consume the cached batch.
+	// Close uses mu alone, so it can cancel a blocked read without waiting here.
+	w.readMu.Lock()
+	defer w.readMu.Unlock()
+
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return M.Socksaddr{}, stdnet.ErrClosed
+	}
+	if w.done == nil {
+		w.done = make(chan struct{})
+	}
+	done := w.done
+	bb := w.takePacketLocked()
+	w.mu.Unlock()
+
+	if bb == nil {
+		// The handoff is unbuffered: either this read owns the result, or the
+		// worker releases it after cancellation. No packet can be orphaned in a
+		// channel if the reader returns after Close or the timeout.
+		results := make(chan packetReadResult)
+		go readPacketBuffers(w.Reader, results, done)
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case <-done:
+			return M.Socksaddr{}, stdnet.ErrClosed
+		case <-timer.C:
+			// A timed-out reader is interrupted and cannot safely be reused.
+			// Closing also prevents another caller starting an overlapping read
+			// if an underlying reader cannot be interrupted.
+			w.Close()
+			return M.Socksaddr{}, buf.ErrReadTimeout
+		case result := <-results:
+			if result.err != nil {
+				buf.ReleaseMulti(result.mb)
+				return M.Socksaddr{}, result.err
 			}
-			bb.Release()
-			return ToSocksaddr(destination), nil
+			w.mu.Lock()
+			if w.closed {
+				w.mu.Unlock()
+				buf.ReleaseMulti(result.mb)
+				return M.Socksaddr{}, stdnet.ErrClosed
+			}
+			w.cached = result.mb
+			bb = w.takePacketLocked()
+			w.mu.Unlock()
 		}
 	}
 
-	// timeout
-	type readResult struct {
-		mb  buf.MultiBuffer
-		err error
-	}
-	c := make(chan readResult, 1)
-	go func() {
-		mb, err := w.ReadMultiBuffer()
-		c <- readResult{mb: mb, err: err}
-	}()
-	var mb buf.MultiBuffer
-	select {
-	case <-time.After(60 * time.Second):
-		common.Close(w.Reader)
-		common.Interrupt(w.Reader)
-		return M.Socksaddr{}, buf.ErrReadTimeout
-	case result := <-c:
-		if result.err != nil {
-			return M.Socksaddr{}, result.err
-		}
-		mb = result.mb
-	}
-
-	nb, bb := buf.SplitFirst(mb)
 	if bb == nil {
 		return M.Socksaddr{}, nil
-	} else {
-		buffer.Write(bb.Bytes())
-		w.cached = nb
-		var destination net.Destination
-		if bb.UDP != nil {
-			destination = *bb.UDP
-		} else {
-			destination = w.Dest
+	}
+	// bb has been detached from cached. Close can release the rest of the
+	// batch, but this caller alone owns bb until the payload copy completes.
+	defer bb.Release()
+	buffer.Write(bb.Bytes())
+	destination := w.Dest
+	if bb.UDP != nil {
+		destination = *bb.UDP
+	}
+	return ToSocksaddr(destination), nil
+}
+
+// takePacketLocked transfers one cached packet to the reader. Empty entries do
+// not prevent later packets in a batch from being delivered or released.
+func (w *PacketConnWrapper) takePacketLocked() *buf.Buffer {
+	for len(w.cached) > 0 {
+		var packet *buf.Buffer
+		w.cached, packet = buf.SplitFirst(w.cached)
+		if packet != nil {
+			return packet
 		}
-		bb.Release()
-		return ToSocksaddr(destination), nil
+	}
+	w.cached = nil
+	return nil
+}
+
+type packetReadResult struct {
+	mb  buf.MultiBuffer
+	err error
+}
+
+func readPacketBuffers(reader buf.Reader, results chan<- packetReadResult, done <-chan struct{}) {
+	select {
+	case <-done:
+		return
+	default:
+	}
+	mb, err := reader.ReadMultiBuffer()
+	select {
+	case results <- packetReadResult{mb: mb, err: err}:
+	case <-done:
+		buf.ReleaseMulti(mb)
 	}
 }
 
@@ -101,6 +150,22 @@ func (w *PacketConnWrapper) WritePacket(buffer *B.Buffer, destination M.Socksadd
 }
 
 func (w *PacketConnWrapper) Close() error {
-	buf.ReleaseMulti(w.cached)
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return nil
+	}
+	w.closed = true
+	if w.done != nil {
+		close(w.done)
+	}
+	cached := w.cached
+	w.cached = nil
+	w.mu.Unlock()
+
+	buf.ReleaseMulti(cached)
+	// The wrapper owns the read cancellation, not the caller's Writer or Conn.
+	// Interrupt also falls back to Close for readers that only implement that.
+	common.Interrupt(w.Reader)
 	return nil
 }

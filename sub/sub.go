@@ -43,8 +43,9 @@ func setEmbeddedTemplates(engine *gin.Engine) error {
 
 // Server represents the subscription server that serves subscription links and JSON configurations.
 type Server struct {
-	httpServer *http.Server
-	listener   net.Listener
+	httpServer             *http.Server
+	listener               net.Listener
+	restoreListenerRelease func()
 
 	sub            *SUBController
 	settingService service.SettingService
@@ -357,6 +358,7 @@ func (s *Server) Start() (err error) {
 		logger.Info("Sub server running HTTP on", listener.Addr())
 	}
 	s.listener = listener
+	s.restoreListenerRelease = service.RegisterRestoreListener("sub", listenAddr, listener)
 
 	s.httpServer = &http.Server{
 		Handler: engine,
@@ -380,6 +382,10 @@ func (s *Server) Stop() error {
 	}
 	if s.listener != nil {
 		err2 = s.listener.Close()
+	}
+	if s.restoreListenerRelease != nil {
+		s.restoreListenerRelease()
+		s.restoreListenerRelease = nil
 	}
 	return common.Combine(err1, err2)
 }

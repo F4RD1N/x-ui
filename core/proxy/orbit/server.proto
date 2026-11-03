@@ -1,0 +1,33 @@
+syntax = "proto3";
+package xray.proxy.orbit;
+option go_package = "github.com/xtls/xray-core/proxy/orbit";
+import "common/protocol/user.proto";
+
+message Account {
+  string key = 1;
+  int64 expires_at = 2;
+}
+message Certificate {
+  repeated string certificate = 1;
+  repeated string key = 2;
+}
+message ServerReality {
+  string private_key = 1;
+  repeated string server_names = 2;
+  repeated string short_ids = 3;
+  string dest = 4;
+}
+message ServerConfig {
+  string transport = 1;
+  repeated xray.common.protocol.User users = 2;
+  Certificate tls = 3;
+  Certificate outer_tls = 4;
+  string host = 5;
+  string path = 6;
+  string security = 7;
+  ServerReality reality = 8;
+  uint32 handshake_timeout = 9;
+  uint32 max_sessions = 10;
+  uint32 max_flows = 11;
+  uint32 udp_idle_timeout = 12;
+}

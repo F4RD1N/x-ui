@@ -135,6 +135,9 @@ type InboundDetourConfig struct {
 
 // Build implements Buildable.
 func (c *InboundDetourConfig) Build() (*core.InboundHandlerConfig, error) {
+	if err := validateNativeStream(c.Protocol, c.Settings, c.StreamSetting, true); err != nil {
+		return nil, err
+	}
 	receiverSettings := &proxyman.ReceiverConfig{}
 
 	// TUN inbound doesn't need port configuration as it uses network interface instead
@@ -233,6 +236,9 @@ func (c *OutboundDetourConfig) checkChainProxyConfig() error {
 
 // Build implements Buildable.
 func (c *OutboundDetourConfig) Build() (*core.OutboundHandlerConfig, error) {
+	if err := validateNativeStream(c.Protocol, c.Settings, c.StreamSetting, false); err != nil {
+		return nil, err
+	}
 	senderSettings := &proxyman.SenderConfig{}
 	switch strings.ToLower(c.TargetStrategy) {
 	case "asis", "":

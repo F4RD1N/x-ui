@@ -1,0 +1,2 @@
+# Source archives contain source/assets, not the unrelated Windows installer.
+windows_files/SSL/Win64OpenSSL_Light-3_6_0.exe export-ignore

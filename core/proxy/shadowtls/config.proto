@@ -1,0 +1,33 @@
+syntax = "proto3";
+package xray.proxy.shadowtls;
+option go_package = "github.com/xtls/xray-core/proxy/shadowtls";
+import "common/serial/typed_message.proto";
+message Config {
+ string address = 1;
+ uint32 port = 2;
+ string password = 3;
+ uint32 version = 4;
+ string server_name = 5;
+ bool allow_insecure = 6;
+ bool strict = 7;
+ bool uuid_session_id = 8;
+ string fingerprint = 9;
+ string ca_pem = 10;
+ uint32 handshake_timeout = 11;
+}
+message ServerUser {
+ string email = 1;
+ string password = 2;
+ bool require_uuid_session_id = 3;
+ uint32 level = 4;
+}
+message ServerConfig {
+ uint32 version = 1;
+ string password = 2;
+ bool strict = 3;
+ string handshake_address = 4;
+ uint32 handshake_port = 5;
+ repeated ServerUser clients = 6;
+ uint32 handshake_timeout = 7;
+ xray.common.serial.TypedMessage inner = 8;
+}

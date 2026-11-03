@@ -18,6 +18,9 @@ type MemoryAccount struct {
 
 	AuthenticatedLengthExperiment bool
 	NoTerminationSignal           bool
+	// RawUUIDAuth opts this account into raw UUID authentication. It must be
+	// explicitly enabled on both peers and does not change standard users.
+	RawUUIDAuth bool
 }
 
 // Equals implements protocol.Account.
@@ -26,7 +29,7 @@ func (a *MemoryAccount) Equals(account protocol.Account) bool {
 	if !ok {
 		return false
 	}
-	return a.ID.Equals(vmessAccount.ID)
+	return a.RawUUIDAuth == vmessAccount.RawUUIDAuth && a.ID.Equals(vmessAccount.ID)
 }
 
 func (a *MemoryAccount) ToProto() proto.Message {
@@ -40,6 +43,7 @@ func (a *MemoryAccount) ToProto() proto.Message {
 	return &Account{
 		Id:               a.ID.String(),
 		TestsEnabled:     test,
+		RawUuidAuth:      a.RawUUIDAuth,
 		SecuritySettings: &protocol.SecurityConfig{Type: a.Security},
 	}
 }
@@ -63,5 +67,6 @@ func (a *Account) AsAccount() (protocol.Account, error) {
 		Security:                      a.SecuritySettings.GetSecurityType(),
 		AuthenticatedLengthExperiment: AuthenticatedLength,
 		NoTerminationSignal:           NoTerminationSignal,
+		RawUUIDAuth:                   a.GetRawUuidAuth(),
 	}, nil
 }

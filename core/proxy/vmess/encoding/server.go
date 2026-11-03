@@ -161,7 +161,11 @@ func (s *ServerSession) DecodeRequestHeader(reader io.Reader, isDrain bool) (*pr
 	case foundAEAD:
 		vmessAccount = user.Account.(*vmess.MemoryAccount)
 		var fixedSizeCmdKey [16]byte
-		copy(fixedSizeCmdKey[:], vmessAccount.ID.CmdKey())
+		if vmessAccount.RawUUIDAuth {
+			copy(fixedSizeCmdKey[:], vmessAccount.ID.Bytes())
+		} else {
+			copy(fixedSizeCmdKey[:], vmessAccount.ID.CmdKey())
+		}
 		aeadData, shouldDrain, bytesRead, errorReason := vmessaead.OpenVMessAEADHeader(fixedSizeCmdKey, fixedSizeAuthID, reader)
 		if errorReason != nil {
 			if shouldDrain {

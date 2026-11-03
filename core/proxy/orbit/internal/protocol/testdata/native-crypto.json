@@ -1,0 +1,53 @@
+{
+  "source_sha256": "578959313b6181a61944e258bd08dbf985e2bdce9aad8ad7de9086af5ea02aab",
+  "description": "Captured native function output using synthetic identities and offline deterministic randomness.",
+  "tests": [
+    {
+      "test": "Native AES-128-CBC matches independent implementation, IV equals key",
+      "ciphertextHex": "c6a13b37878f5b826f4f8162a1c8d87935d9dcdb829fec3352e7bf10b84be4a57b30464605f02a094c0af7ad984f61fcd88434a5591dbc8fd9630812d3a27b8725cc26ee46931340c1a9f10d822eaae369f3ffd0fcb1a15ea0dcd6c175079d4537d1e158ec3d2f6707de48125fc4a4cb22622b9dd6ea3d1eecc9c15e53ea338b"
+    },
+    {
+      "test": "Native AES-128-CTR matches independent implementation, IV equals key",
+      "ciphertextHex": "0a9509b6456bf642f9ca9e53ca5ee4551272fe87720d648182c3e71457b911c33a0cb690353983df95ebe266e004c2687d3a99e1ad6aa9305a1a1e537b88ed31cd72b36b027ecea89bb1ef6e494f4d365be95521f59c7c627c3bb7ff5b42e89997e2a3ced4496aab1b6b1be5d2a09c7e663c3187fd646c2e86411608294f6194"
+    },
+    {
+      "test": "Native 128-byte userinfo layout and encryption match independent implementation",
+      "plaintextHex": "7727000061756469742d75736572000000000000000000000000000000000000000000006a5e000061756469742d746f6b656e000000000000000000000000000000000000000000c1fa00009fab030061756469742d646576696365000000000000000000000000000000000000000000000000000000002c95000007000000",
+      "ciphertextHex": "2bf24cf705d6b24f89752b8de7c4b37278694635d4cd03a5bd15d3f37001cd92d5ecf0ba7ee6ddddadc9e4c9913450a48763f8e3a22f45cf5bc5c5254763d28726211bbfd4ca49783655664a09de822c80dab91cac32d1241bd305ca51bd5be628df82219bbf24f23dabe5c9db36f1d5c13a96c338028f4a61acfbd74e1a2eb9"
+    },
+    {
+      "test": "Complete native connection request: 155 bytes including userinfo and channel ID",
+      "hex": "010297000100012bf24cf705d6b24f89752b8de7c4b37278694635d4cd03a5bd15d3f37001cd92d5ecf0ba7ee6ddddadc9e4c9913450a48763f8e3a22f45cf5bc5c5254763d28726211bbfd4ca49783655664a09de822c80dab91cac32d1241bd305ca51bd5be628df82219bbf24f23dabe5c9db36f1d5c13a96c338028f4a61acfbd74e1a2eb94433221100112233445566778899aabbccddeeff"
+    },
+    {
+      "test": "heartbeat",
+      "hex": "03000000"
+    },
+    {
+      "test": "leave without acknowledgement",
+      "hex": "04000000"
+    },
+    {
+      "test": "leave acknowledgement flag",
+      "hex": "04010000"
+    },
+    {
+      "test": "socket flow-control fields",
+      "hex": "0b0011007856341208070605040302016655443301"
+    },
+    {
+      "test": "Native UDP-over-connection frame joins supplied buffers in order",
+      "hex": "12000b0066697273747365636f6e64"
+    },
+    {
+      "test": "Native data framing for 5 bytes: socket ID, sequence, offset, 2048-byte cap",
+      "headerHex": "100019007856341207000000000000000000000000000000",
+      "payloadBytesEmitted": 5
+    },
+    {
+      "test": "Native data framing for 2050 bytes: socket ID, sequence, offset, 2048-byte cap",
+      "headerHex": "100014087856341207000000000000000000000000000000",
+      "payloadBytesEmitted": 2048
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+syntax = "proto3";
+package xray.proxy.mieru;
+option go_package = "github.com/xtls/xray-core/proxy/mieru";
+import "common/protocol/user.proto";
+message Account {
+ string username = 1;
+ string password = 2;
+ bool uuid_metadata_trailer = 3;
+}
+message ServerConfig {
+ repeated xray.common.protocol.User users = 1;
+ string transport = 2;
+ uint32 handshake_timeout = 3;
+}
+message Config {
+ string address = 1;
+ uint32 port = 2;
+ string username = 3;
+ string password = 4;
+ string transport = 5;
+ bool uuid_metadata_trailer = 6;
+ uint32 handshake_timeout = 7;
+}

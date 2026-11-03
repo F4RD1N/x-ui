@@ -77,6 +77,13 @@ for ARCH in $ARCHES; do
 
     cp x-ui.sh "$STAGE/"
     cp x-ui.service.debian x-ui.service.arch x-ui.service.rhel x-ui.rc "$STAGE/" 2>/dev/null || true
+    mkdir -p "$STAGE/licenses/core"
+    cp LICENSE "$STAGE/licenses/PANEL-LICENSE"
+    cp core/LICENSE "$STAGE/licenses/core/XRAY-LICENSE"
+    cp -R core/licenses/. "$STAGE/licenses/core/"
+    for doc in DIALECT11.md DIALECT11-VERIFICATION.md; do
+        if [[ -f "$doc" ]]; then cp "$doc" "$STAGE/"; fi
+    done
     chmod +x "$STAGE/x-ui" "$STAGE/x-ui.sh" "$STAGE/bin/xray-linux-$ARCH"
 
     tar -C "$OUT/stage-$ARCH" -czf "$OUT/x-ui-linux-$ARCH.tar.gz" x-ui

@@ -9,7 +9,13 @@ const Protocols = {
     Socks: "socks",
     HTTP: "http",
     Wireguard: "wireguard",
-    Hysteria: "hysteria"
+    Hysteria: "hysteria",
+    Orbit: "orbit",
+    DNSTT: "dnstt",
+    OpenVPN: "openvpn",
+    AnyTLS: "anytls",
+    ShadowTLS: "shadowtls",
+    Mieru: "mieru"
 };
 
 const SSMethods = {
@@ -774,6 +780,7 @@ class Outbound extends CommonClass {
         this.stream = streamSettings;
         this.sendThrough = sendThrough;
         this.mux = mux;
+        this.proxySettings = undefined;
     }
 
     get protocol() {
@@ -784,6 +791,36 @@ class Outbound extends CommonClass {
         this._protocol = protocol;
         this.settings = Outbound.Settings.getSettings(protocol);
         this.stream = new StreamSettings();
+        this._nativeExtras = undefined;
+        this._nativeStream = undefined;
+        this._nativeMux = undefined;
+        this._nativeSockoptBaseline = undefined;
+        this.proxySettings = undefined;
+    }
+
+    get isNative() {
+        return this.settings instanceof Outbound.NativeSettings;
+    }
+
+    get validationErrors() {
+        const errors = this.settings?.validationErrors ? [...this.settings.validationErrors] : [];
+        if (this.proxySettings !== undefined) {
+            if (!Outbound.NativeSettings.isObject(this.proxySettings)) errors.push('Outbound chaining settings must be an object.');
+            else {
+                if (typeof this.proxySettings.tag !== 'string' || !this.proxySettings.tag.trim()) errors.push('A carrier outbound tag is required.');
+                if (this.proxySettings.tag === this.tag) errors.push('An outbound cannot chain through itself.');
+                if (this.proxySettings.transportLayer !== undefined && typeof this.proxySettings.transportLayer !== 'boolean') errors.push('transportLayer must be a boolean.');
+            }
+        }
+        return errors;
+    }
+
+    setChainingEnabled(enabled) {
+        this.proxySettings = enabled ? {tag: '', transportLayer: true} : undefined;
+    }
+
+    get hasChainingObject() {
+        return Outbound.NativeSettings.isObject(this.proxySettings);
     }
 
     canEnableTls() {
@@ -845,6 +882,7 @@ class Outbound extends CommonClass {
     }
 
     hasAddressPort() {
+        if (this.isNative) return false;
         return [
             Protocols.DNS,
             Protocols.VMess,
@@ -862,17 +900,54 @@ class Outbound extends CommonClass {
     }
 
     static fromJson(json = {}) {
-        return new Outbound(
+        const result = new Outbound(
             json.tag,
             json.protocol,
             Outbound.Settings.fromJson(json.protocol, json.settings),
             StreamSettings.fromJson(json.streamSettings),
             json.sendThrough,
             Mux.fromJson(json.mux),
-        )
+        );
+        result.proxySettings = Outbound.NativeSettings.clone(json.proxySettings);
+        if (result.isNative) {
+            result._nativeExtras = Outbound.NativeSettings.clone(json);
+            for (const key of ["protocol", "settings", "tag", "sendThrough", "streamSettings", "mux", "proxySettings"]) delete result._nativeExtras[key];
+            result._nativeStream = json.streamSettings === undefined ? undefined : Outbound.NativeSettings.clone(json.streamSettings);
+            result._nativeMux = json.mux === undefined ? undefined : Outbound.NativeSettings.clone(json.mux);
+            result._nativeSockoptBaseline = result.stream?.sockopt ? Outbound.NativeSettings.clone(result.stream.sockopt.toJson()) : undefined;
+        }
+        return result;
     }
 
     toJson() {
+        if (this.isNative) {
+            // Native carriers own their framing/TLS. Preserve explicitly imported
+            // top-level chaining/socket options without inventing an outer layer.
+            const stream = this._nativeStream === undefined ? {} : Outbound.NativeSettings.clone(this._nativeStream);
+            if (this.stream?.sockopt) {
+                const current = Outbound.NativeSettings.clone(this.stream.sockopt.toJson());
+                const baseline = this._nativeSockoptBaseline || {};
+                const socket = stream.sockopt || {};
+                // Apply only edited typed fields; retain socket options the UI
+                // does not yet know, such as a routing mark.
+                for (const key of new Set([...Object.keys(baseline), ...Object.keys(current)])) {
+                    if (JSON.stringify(current[key]) === JSON.stringify(baseline[key])) continue;
+                    if (current[key] === undefined) delete socket[key];
+                    else socket[key] = current[key];
+                }
+                stream.sockopt = socket;
+            } else delete stream.sockopt;
+            return {
+                ...Outbound.NativeSettings.clone(this._nativeExtras || {}),
+                protocol: this.protocol,
+                settings: this.settings.toJson(),
+                ...(this.tag ? {tag: this.tag} : {}),
+                ...(this.sendThrough ? {sendThrough: this.sendThrough} : {}),
+                ...(Object.keys(stream).length ? {streamSettings: stream} : {}),
+                ...(this._nativeMux ? {mux: Outbound.NativeSettings.clone(this._nativeMux)} : {}),
+                ...(this.proxySettings !== undefined ? {proxySettings: Outbound.NativeSettings.clone(this.proxySettings)} : {}),
+            };
+        }
         var stream;
         if (this.canEnableStream()) {
             stream = this.stream.toJson();
@@ -889,6 +964,7 @@ class Outbound extends CommonClass {
             ...(stream ? { streamSettings: stream } : {}),
             ...(this.sendThrough ? { sendThrough: this.sendThrough } : {}),
             ...(this.mux?.enabled ? { mux: this.mux } : {}),
+            ...(this.proxySettings !== undefined ? {proxySettings: Outbound.NativeSettings.clone(this.proxySettings)} : {}),
         };
     }
 
@@ -1096,6 +1172,7 @@ Outbound.Settings = class extends CommonClass {
     }
 
     static getSettings(protocol) {
+        if (Outbound.NativeSettings.supports(protocol)) return new Outbound.NativeSettings(protocol);
         switch (protocol) {
             case Protocols.Freedom: return new Outbound.FreedomSettings();
             case Protocols.Blackhole: return new Outbound.BlackholeSettings();
@@ -1113,6 +1190,9 @@ Outbound.Settings = class extends CommonClass {
     }
 
     static fromJson(protocol, json) {
+        if (Outbound.NativeSettings.supports(protocol) || (protocol === Protocols.DNS && json && Object.prototype.hasOwnProperty.call(json, "tunnel"))) {
+            return new Outbound.NativeSettings(protocol, json);
+        }
         switch (protocol) {
             case Protocols.Freedom: return Outbound.FreedomSettings.fromJson(json);
             case Protocols.Blackhole: return Outbound.BlackholeSettings.fromJson(json);
@@ -1280,12 +1360,17 @@ Outbound.DNSSettings = class extends CommonClass {
     }
 };
 Outbound.VmessSettings = class extends CommonClass {
-    constructor(address, port, id, security) {
+    constructor(address, port, id, security, rawUuidAuth = false) {
         super();
         this.address = address;
         this.port = port;
         this.id = id;
         this.security = security;
+        this.rawUuidAuth = rawUuidAuth;
+    }
+
+    get validationErrors() {
+        return typeof this.rawUuidAuth === "boolean" ? [] : ["rawUuidAuth must be a boolean."];
     }
 
     static fromJson(json = {}) {
@@ -1297,6 +1382,7 @@ Outbound.VmessSettings = class extends CommonClass {
                 v.port,
                 u.id,
                 u.security,
+                u.rawUuidAuth === undefined ? json.rawUuidAuth : u.rawUuidAuth,
             );
         }
     }
@@ -1308,7 +1394,8 @@ Outbound.VmessSettings = class extends CommonClass {
                 port: this.port,
                 users: [{
                     id: this.id,
-                    security: this.security
+                    security: this.security,
+                    ...(this.rawUuidAuth !== undefined && this.rawUuidAuth !== false ? {rawUuidAuth: this.rawUuidAuth} : {}),
                 }]
             }]
         };
@@ -1360,11 +1447,16 @@ Outbound.VLESSSettings = class extends CommonClass {
     }
 };
 Outbound.TrojanSettings = class extends CommonClass {
-    constructor(address, port, password) {
+    constructor(address, port, password, uuidHashPrefix = false) {
         super();
         this.address = address;
         this.port = port;
         this.password = password;
+        this.uuidHashPrefix = uuidHashPrefix;
+    }
+
+    get validationErrors() {
+        return typeof this.uuidHashPrefix === "boolean" ? [] : ["uuidHashPrefix must be a boolean."];
     }
 
     static fromJson(json = {}) {
@@ -1373,6 +1465,7 @@ Outbound.TrojanSettings = class extends CommonClass {
             json.servers[0].address,
             json.servers[0].port,
             json.servers[0].password,
+            json.servers[0].uuidHashPrefix === undefined ? json.uuidHashPrefix : json.servers[0].uuidHashPrefix,
         );
     }
 
@@ -1382,12 +1475,13 @@ Outbound.TrojanSettings = class extends CommonClass {
                 address: this.address,
                 port: this.port,
                 password: this.password,
+                ...(this.uuidHashPrefix !== undefined && this.uuidHashPrefix !== false ? {uuidHashPrefix: this.uuidHashPrefix} : {}),
             }],
         };
     }
 };
 Outbound.ShadowsocksSettings = class extends CommonClass {
-    constructor(address, port, password, method, uot, UoTVersion) {
+    constructor(address, port, password, method, uot, UoTVersion, uuidIdentityKeys = false) {
         super();
         this.address = address;
         this.port = port;
@@ -1395,6 +1489,16 @@ Outbound.ShadowsocksSettings = class extends CommonClass {
         this.method = method;
         this.uot = uot;
         this.UoTVersion = UoTVersion;
+        this.uuidIdentityKeys = uuidIdentityKeys;
+    }
+
+    get supportsUuidIdentityKeys() {
+        return ['2022-blake3-aes-128-gcm', '2022-blake3-aes-256-gcm', '2022-blake3-chacha20-poly1305'].includes(this.method);
+    }
+
+    get validationErrors() {
+        if (typeof this.uuidIdentityKeys !== 'boolean') return ['uuidIdentityKeys must be a boolean.'];
+        return this.uuidIdentityKeys && !this.supportsUuidIdentityKeys ? ['UUID identity key import requires an SS2022 method.'] : [];
     }
 
     static fromJson(json = {}) {
@@ -1407,6 +1511,7 @@ Outbound.ShadowsocksSettings = class extends CommonClass {
             servers[0].method,
             servers[0].uot,
             servers[0].UoTVersion,
+            servers[0].uuidIdentityKeys,
         );
     }
 
@@ -1419,6 +1524,7 @@ Outbound.ShadowsocksSettings = class extends CommonClass {
                 method: this.method,
                 uot: this.uot,
                 UoTVersion: this.UoTVersion,
+                ...(this.uuidIdentityKeys !== false ? {uuidIdentityKeys: this.uuidIdentityKeys} : {}),
             }],
         };
     }
@@ -1603,5 +1709,322 @@ Outbound.HysteriaSettings = class extends CommonClass {
             port: this.port,
             version: this.version
         };
+    }
+};
+// Dialect11 native carrier editors keep their JSON as data. This avoids losing
+// nested protocol options when switching between the typed form and JSON tab.
+Outbound.NativeSettings = class extends CommonClass {
+    static supports(protocol) {
+        return [Protocols.Orbit, Protocols.DNSTT, Protocols.OpenVPN, Protocols.AnyTLS, Protocols.ShadowTLS, Protocols.Mieru, 'ov'].includes(protocol);
+    }
+
+    static clone(value) {
+        return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+    }
+
+    static isObject(value) {
+        return value !== null && typeof value === 'object' && !Array.isArray(value);
+    }
+
+    static defaults(kind) {
+        switch (kind) {
+            case 'orbit': return {address: '', port: 443, key: '', transport: 'tcp'};
+            case 'dnstt': return {domain: '', publicKey: '', resolvers: [{transport: 'udp', address: ''}], inner: {protocol: 'vless', uuid: ''}};
+            case 'openvpn': return {server: {address: '', port: 1194, network: 'udp'}, certificates: {ca: '', cert: '', key: ''}, advanced: {dev: 'tun', nobind: true, remoteCertTls: 'server', mtu: 1400}};
+            case 'anytls': return {address: '', port: 443, password: ''};
+            case 'shadowtls': return {address: '', port: 443, password: '', version: 3, serverName: ''};
+            case 'mieru': return {address: '', port: 443, username: '', password: '', transport: 'tcp'};
+            default: return {};
+        }
+    }
+
+    constructor(protocol, json) {
+        super();
+        this.protocol = protocol;
+        this.kind = protocol === 'dns' ? 'dnstt' : protocol === 'ov' ? 'openvpn' : protocol;
+        this.envelope = {};
+        if (protocol === 'dns' && Outbound.NativeSettings.isObject(json)) {
+            this.envelope = Outbound.NativeSettings.clone(json);
+            delete this.envelope.tunnel;
+            this.data = Outbound.NativeSettings.clone(json.tunnel);
+        } else {
+            this.data = json === undefined ? Outbound.NativeSettings.defaults(this.kind) : Outbound.NativeSettings.clone(json);
+        }
+        this.inputMode = this.kind === 'openvpn'
+            ? (this.read('ovpn') !== undefined ? 'text' : this.read('ovpnBase64') !== undefined ? 'base64' : 'structured')
+            : this.read('link') !== undefined ? 'link' : 'fields';
+    }
+
+    read(path) {
+        let value = this.data;
+        for (const key of path.split('.')) {
+            if (value === null || typeof value !== 'object' || !Object.prototype.hasOwnProperty.call(value, key)) return undefined;
+            value = value[key];
+        }
+        return value;
+    }
+
+    write(path, value) {
+        const keys = path.split('.');
+        if (keys.some(key => ['__proto__', 'prototype', 'constructor'].includes(key))) throw new Error('Invalid settings path');
+        if (!Outbound.NativeSettings.isObject(this.data)) return;
+        const assign = (object, key, item) => {
+            if (typeof Vue !== 'undefined' && Vue.set) Vue.set(object, key, item);
+            else object[key] = item;
+        };
+        let target = this.data;
+        for (let i = 0; i < keys.length - 1; i++) {
+            if (target[keys[i]] === null || typeof target[keys[i]] !== 'object') assign(target, keys[i], {});
+            target = target[keys[i]];
+        }
+        const key = keys[keys.length - 1];
+        if (value === undefined) {
+            if (typeof Vue !== 'undefined' && Vue.delete) Vue.delete(target, key);
+            else delete target[key];
+        } else assign(target, key, value);
+    }
+
+    value(field) {
+        const value = this.read(field.path);
+        if (field.type === 'boolean') return value === undefined ? field.default === true : value === true;
+        if (field.path === 'browser' && typeof value === 'boolean') return value ? 'on' : 'off';
+        if (field.type === 'textarea' && Array.isArray(value)) return value.join('\n');
+        return value;
+    }
+
+    setField(field, event) {
+        let value = event && event.target ? event.target.value : event;
+        if (field.path === 'certificates.keyDirection' && (value === '' || value === null)) value = undefined;
+        if (field.type === 'number') value = value === '' || value === null ? undefined : Number(value);
+        if (field.omitFalse && value === false) value = undefined;
+        this.write(field.path, value);
+    }
+
+    changeInputMode(mode) {
+        if (this.kind === 'openvpn') {
+            for (const key of ['server', 'auth', 'crypto', 'certificates', 'advanced', 'ovpn', 'ovpnBase64']) this.write(key, undefined);
+            if (mode === 'structured') for (const [key, value] of Object.entries(Outbound.NativeSettings.defaults('openvpn'))) this.write(key, value);
+            else this.write(mode === 'text' ? 'ovpn' : 'ovpnBase64', '');
+        } else if (this.kind === 'orbit') {
+            for (const key of ['link', 'address', 'port', 'key', 'transport', 'host', 'path', 'peer', 'fingerprint', 'fp', 'userAgent', 'ua', 'headers', 'browser', 'security', 'reality']) this.write(key, undefined);
+            if (mode === 'link') this.write('link', '');
+            else for (const [key, value] of Object.entries(Outbound.NativeSettings.defaults('orbit'))) this.write(key, value);
+        }
+        this.inputMode = mode;
+    }
+
+    get proofEnabled() { return this.read('clientProof') !== undefined; }
+    setProofEnabled(enabled) { this.write('clientProof', enabled ? {keyId: '', key: ''} : undefined); }
+    get proofKeyMode() { return this.read('clientProof.keyFile') === undefined ? 'key' : 'keyFile'; }
+    setProofKeyMode(mode) {
+        this.write('clientProof.key', undefined);
+        this.write('clientProof.keyFile', undefined);
+        this.write('clientProof.' + mode, '');
+    }
+
+    get resolvers() { return Array.isArray(this.read('resolvers')) ? this.read('resolvers') : []; }
+    addResolver() {
+        const resolvers = Outbound.NativeSettings.clone(this.resolvers);
+        resolvers.push({transport: 'udp', address: ''});
+        this.write('resolvers', resolvers);
+    }
+    removeResolver(index) { this.write('resolvers', this.resolvers.filter((_, i) => i !== index)); }
+
+    get hasQuicWarning() {
+        if (this.kind !== 'orbit') return false;
+        if (this.read('transport') === 'quic') return true;
+        const link = this.read('link');
+        if (typeof link !== 'string' || link.length > 32768 || !/^(orbit|core):\/\//i.test(link)) return false;
+        const start = link.indexOf('&');
+        if (start < 0) return false;
+        return new URLSearchParams(link.slice(start + 1).split('#')[0]).getAll('transport').some(value => value.toLowerCase() === 'quic');
+    }
+
+    get help() {
+        switch (this.kind) {
+            case 'shadowtls': return 'ShadowTLS is a TCP carrier. Route an inner SOCKS, VLESS or Shadowsocks outbound through this tag with proxySettings: {tag: "this-carrier-tag", transportLayer: true}. It does not send destination addresses itself.';
+            case 'dnstt': return 'DNS tunneling carries an authenticated inner VLESS or SOCKS connection. Use the public key of your DNSTT listener and a resolver that can resolve its delegated domain. Ordinary DNS outbound behavior is separate.';
+            case 'openvpn': return 'Choose exactly one OpenVPN configuration format. clientProof is optional authentication compatibility and requires a server configured for the same key ID and secret.';
+            case 'orbit': return 'Use a complete Orbit link or separate connection fields. TCP/QUIC require a numeric server IP. Reality is available only with the TCP carrier.' + (this.hasQuicWarning ? ' Warning: this QUIC compatibility mode exposes bearer credentials to a passive network observer. Use TCP, WS, WSS or TCP Reality for TLS-protected credentials.' : '');
+            case 'anytls': return 'TLS is configured inside these settings. UUID hash compatibility is optional and must match the server; it is not stronger encryption.';
+            case 'mieru': return 'The native TCP or UDP transport carries both TCP and UDP destinations. UUID metadata compatibility is optional and requires a UUID username and matching server.';
+            default: return '';
+        }
+    }
+
+    get fields() {
+        const fields = [];
+        const add = (path, label, type = 'text', options = {}) => fields.push({path, label, type, ...options});
+        const endpoint = (prefix = '') => {
+            add(prefix + 'address', 'Server address');
+            add(prefix + 'port', 'Server port', 'number', {min: 1, max: 65535});
+        };
+        const compatibility = (path, label, help) => add(path, label, 'boolean', {omitFalse: true, help});
+        switch (this.kind) {
+            case 'orbit':
+                if (this.inputMode === 'link') add('link', 'Orbit link', 'password');
+                else {
+                    endpoint(); add('key', 'Connection key', 'password');
+                    add('transport', 'Carrier', 'select', {options: ['tcp', 'quic', 'ws', 'wss']});
+                    if (['ws', 'wss'].includes(this.read('transport'))) {
+                        add('host', 'HTTP host'); add('path', 'WebSocket path'); add('peer', 'Peer name');
+                        if (this.read('transport') === 'wss') add(this.read('fp') === undefined ? 'fingerprint' : 'fp', 'TLS fingerprint');
+                        add(this.read('ua') === undefined ? 'userAgent' : 'ua', 'User agent');
+                        add('browser', 'Browser handshake', 'select', {options: ['on', 'off']});
+                    }
+                    if (!this.read('transport') || this.read('transport') === 'tcp') {
+                        add('security', 'TCP security', 'select', {options: ['', 'reality']});
+                        if (this.read('security') === 'reality') {
+                            for (const [path, label] of [['serverName', 'Reality server name'], ['publicKey', 'Reality public key'], ['shortId', 'Reality short ID'], ['fingerprint', 'Reality fingerprint']]) add('reality.' + path, label);
+                        }
+                    }
+                }
+                add('resolver', 'DNS resolver (numeric IP:port)');
+                break;
+            case 'dnstt':
+                add('domain', 'Delegated tunnel domain'); add('publicKey', 'Server public key (64 hex)');
+                add('inner.protocol', 'Inner protocol', 'select', {options: ['vless', 'socks']});
+                if (this.read('inner.protocol') === 'socks') { add('inner.username', 'Inner username'); add('inner.password', 'Inner password', 'password'); }
+                else add('inner.uuid', 'Inner VLESS UUID');
+                for (const [path, label, min, max] of [
+                    ['queryTimeout', 'Query timeout (s)', 0, 60], ['maxConcurrentQueries', 'Concurrent queries', 0, 256],
+                    ['minQueryIntervalMs', 'Minimum query interval (ms)', 0, 60000], ['ednsPayloadSize', 'EDNS payload size', 512, 4096],
+                    ['maxQnameLength', 'Maximum QName length', 64, 255], ['labelMin', 'Minimum label length', 1, 63], ['labelMax', 'Maximum label length', 1, 63],
+                ]) add(path, label, 'number', {min, max});
+                break;
+            case 'openvpn':
+                if (this.inputMode === 'text') add('ovpn', 'Inline OpenVPN configuration', 'textarea');
+                else if (this.inputMode === 'base64') add('ovpnBase64', 'Base64 OpenVPN configuration', 'textarea');
+                else {
+                    endpoint('server.'); add('server.network', 'Network', 'select', {options: ['udp', 'tcp', 'udp4', 'udp6', 'tcp4', 'tcp6']});
+                    add('auth.user', 'Username'); add('auth.pass', 'Password', 'password');
+                    add('crypto.cipher', 'Cipher'); add('crypto.dataCiphers', 'Data ciphers', 'tags'); add('crypto.authHash', 'Auth hash');
+                    for (const [key, label] of [['ca', 'CA certificate'], ['cert', 'Client certificate'], ['key', 'Client private key'], ['tlsCrypt', 'tls-crypt key'], ['tlsAuth', 'tls-auth key'], ['tlsCryptV2', 'tls-crypt-v2 key']]) add('certificates.' + key, label, 'textarea');
+                    add('certificates.keyDirection', 'tls-auth key direction', 'select', {options: ['', 0, 1], help: 'Default leaves key direction unset (bidirectional). Use 0/1 only when the server uses the complementary direction.'});
+                    add('advanced.mtu', 'Tunnel MTU', 'number', {min: 576, max: 65535});
+                    add('advanced.remoteCertTls', 'Verify server certificate usage', 'select', {options: ['server', '']});
+                    add('advanced.nobind', 'Do not bind local port', 'boolean');
+                }
+                if (this.inputMode !== 'structured') { add('username', 'Username override'); add('password', 'Password override', 'password'); add('mtu', 'Tunnel MTU', 'number', {min: 0, max: 65535}); }
+                add('domainStrategy', 'Domain strategy', 'select', {options: ['', 'ForceIP', 'ForceIPv4', 'ForceIPv6', 'ForceIPv4v6', 'ForceIPv6v4']});
+                if (this.proofEnabled) {
+                    add('clientProof.keyId', 'Proof key ID');
+                    add('clientProof.' + this.proofKeyMode, this.proofKeyMode === 'key' ? 'Proof secret (64 hex)' : 'Proof secret file', this.proofKeyMode === 'key' ? 'password' : 'text');
+                }
+                break;
+            case 'anytls':
+                endpoint(); add('password', 'Password', 'password');
+                compatibility('uuidHashMiddle', 'UUID hash compatibility', 'Match the server account mode. This changes authentication compatibility, not encryption strength.');
+                add('tlsSettings.serverName', 'TLS server name'); add('tlsSettings.fingerprint', 'TLS fingerprint');
+                add('tlsSettings.allowInsecure', 'Allow insecure certificate', 'boolean', {omitFalse: true});
+                for (const [path, label] of [['idleSessionCheckInterval', 'Idle check interval (s)'], ['idleSessionTimeout', 'Idle timeout (s)'], ['minIdleSession', 'Minimum idle sessions']]) add(path, label, 'number', {min: 0});
+                break;
+            case 'shadowtls':
+                endpoint(); add('version', 'Version', 'select', {options: [1, 2, 3]}); add('password', 'Password', 'password');
+                add('serverName', 'Handshake server name'); add('fingerprint', 'TLS fingerprint');
+                add('strict', 'Strict handshake verification', 'boolean', {default: true});
+                add('allowInsecure', 'Allow insecure certificate', 'boolean', {omitFalse: true}); add('caPem', 'Custom CA PEM', 'textarea');
+                compatibility('uuidSessionId', 'UUID session compatibility', 'Version 3 only; requires a UUID password and the matching server account mode.');
+                break;
+            case 'mieru':
+                endpoint(); add('username', 'Username'); add('password', 'Password', 'password');
+                add('transport', 'Transport', 'select', {options: ['tcp', 'udp']});
+                compatibility('uuidMetadataTrailer', 'UUID metadata compatibility', 'Requires a UUID username and the matching server account mode.');
+                break;
+        }
+        if (this.kind !== 'openvpn') add('handshakeTimeout', 'Handshake timeout (s)', 'number', {min: 0, max: this.kind === 'orbit' ? 90 : this.kind === 'anytls' ? 4294967295 : 300});
+        return fields;
+    }
+
+    resolverFields(index) {
+        const prefix = 'resolvers.' + index + '.';
+        const fields = [{path: prefix + 'transport', label: 'Resolver transport', type: 'select', options: ['udp', 'dot', 'doh']}, {path: prefix + 'address', label: 'Resolver address', type: 'text'}];
+        if (this.read(prefix + 'transport') !== 'udp') {
+            for (const [path, label] of [['bootstrap', 'Bootstrap IP'], ['serverName', 'TLS server name'], ['fingerprint', 'TLS fingerprint'], ['caPem', 'Custom CA PEM']]) fields.push({path: prefix + path, label, type: path === 'caPem' ? 'textarea' : 'text'});
+        }
+        return fields;
+    }
+
+    get validationErrors() {
+        const errors = [];
+        const object = Outbound.NativeSettings.isObject;
+        if (!object(this.data)) return ['Protocol settings must be a JSON object.'];
+        const required = (path, label = path) => { if (typeof this.read(path) !== 'string' || !this.read(path).trim()) errors.push(label + ' is required.'); };
+        const integer = (path, min, max, required = false) => {
+            const value = this.read(path);
+            if (value === undefined && !required) return;
+            if (!Number.isInteger(value) || value < min || value > max) errors.push(path + ' must be an integer between ' + min + ' and ' + max + '.');
+        };
+        const endpoint = (prefix = '') => { required(prefix + 'address'); integer(prefix + 'port', 1, 65535, true); };
+        const uuid = path => { if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(this.read(path) || '')) errors.push(path + ' must be a UUID.'); };
+        const choice = (path, choices) => { if (this.read(path) !== undefined && !choices.includes(this.read(path))) errors.push(path + ' has an unsupported value.'); };
+        for (const field of this.fields) if (field.type === 'boolean' && this.read(field.path) !== undefined && typeof this.read(field.path) !== 'boolean') errors.push(field.path + ' must be a boolean.');
+        switch (this.kind) {
+            case 'orbit':
+                if (this.read('link') !== undefined) {
+                    required('link');
+                    if (['address', 'port', 'key', 'transport', 'host', 'path', 'peer', 'fingerprint', 'fp', 'userAgent', 'ua', 'headers', 'browser', 'security', 'reality'].some(key => this.read(key) !== undefined)) errors.push('Use an Orbit link or separate fields, not both.');
+                } else {
+                    endpoint(); required('key'); choice('transport', ['tcp', 'quic', 'ws', 'wss']); choice('browser', [true, false, 'on', 'off']);
+                    if (this.read('security') === 'reality' && ![undefined, 'tcp'].includes(this.read('transport'))) errors.push('Reality requires the TCP carrier.');
+                    if (this.read('security') === 'reality') { required('reality.serverName'); required('reality.publicKey'); }
+                }
+                break;
+            case 'dnstt':
+                required('domain');
+                if (!/^[0-9a-f]{64}$/i.test(this.read('publicKey') || '') || /^0{64}$/.test(this.read('publicKey') || '')) errors.push('A nonzero 64-hex server public key is required.');
+                if (this.resolvers.length < 1 || this.resolvers.length > 16) errors.push('Use between 1 and 16 DNS resolvers.');
+                this.resolvers.forEach((resolver, i) => {
+                    if (!object(resolver)) { errors.push('Each DNS resolver must be an object.'); return; }
+                    required('resolvers.' + i + '.address');
+                    if (!['udp', 'dot', 'doh'].includes(resolver.transport)) errors.push('Resolver transport must be udp, dot or doh.');
+                    if (resolver.transport === 'udp' && ['bootstrap', 'serverName', 'fingerprint', 'caPem'].some(key => resolver[key])) errors.push('UDP resolvers cannot use TLS fields.');
+                });
+                if (!object(this.read('inner')) || !['vless', 'socks'].includes(this.read('inner.protocol'))) errors.push('Choose the inner VLESS or SOCKS protocol.');
+                if (this.read('inner.protocol') === 'vless') uuid('inner.uuid');
+                integer('queryTimeout', 0, 60); integer('maxConcurrentQueries', 0, 256); integer('minQueryIntervalMs', 0, 60000);
+                for (const [key, min, max] of [['ednsPayloadSize', 512, 4096], ['maxQnameLength', 64, 255], ['labelMin', 1, 63], ['labelMax', 1, 63]]) if (this.read(key) !== 0) integer(key, min, max);
+                if (this.read('labelMin') && this.read('labelMax') && this.read('labelMin') > this.read('labelMax')) errors.push('Minimum label length cannot exceed maximum label length.');
+                break;
+            case 'openvpn': {
+                const structured = ['server', 'auth', 'crypto', 'certificates', 'advanced'].some(key => this.read(key) !== undefined);
+                const text = this.read('ovpn') !== undefined;
+                const base64 = this.read('ovpnBase64') !== undefined;
+                if ([structured, text, base64].filter(Boolean).length !== 1) errors.push('Choose exactly one OpenVPN configuration format.');
+                if (structured) endpoint('server.');
+                if (text && !(typeof this.read('ovpn') === 'string' && this.read('ovpn').trim()) && !(Array.isArray(this.read('ovpn')) && this.read('ovpn').length && this.read('ovpn').every(line => typeof line === 'string'))) errors.push('Inline OpenVPN configuration is required.');
+                if (base64) required('ovpnBase64');
+                if (this.proofEnabled) {
+                    if (!object(this.read('clientProof'))) errors.push('clientProof must be an object.');
+                    required('clientProof.keyId');
+                    const key = this.read('clientProof.key'), keyFile = this.read('clientProof.keyFile');
+                    if ((key !== undefined) === (keyFile !== undefined)) errors.push('clientProof requires exactly one secret or secret file.');
+                    if (key !== undefined && !/^[0-9a-f]{64}$/i.test(key)) errors.push('Proof secret must be exactly 64 hexadecimal characters.');
+                    if (keyFile !== undefined) required('clientProof.keyFile');
+                }
+                break;
+            }
+            case 'anytls': endpoint(); required('password'); break;
+            case 'shadowtls':
+                endpoint(); required('serverName'); choice('version', [1, 2, 3]);
+                if (this.read('version') !== 1) required('password');
+                if (this.read('uuidSessionId') === true) {
+                    if (![undefined, 3].includes(this.read('version'))) errors.push('UUID session compatibility requires version 3.');
+                    uuid('password');
+                }
+                break;
+            case 'mieru':
+                endpoint(); required('username'); required('password'); choice('transport', ['tcp', 'udp']);
+                if (this.read('uuidMetadataTrailer') === true) uuid('username');
+                if ((this.read('username') || '').length > 256 || (this.read('password') || '').length > 4096) errors.push('Mieru credentials exceed the supported length.');
+                break;
+        }
+        if (this.kind !== 'openvpn') integer('handshakeTimeout', 0, this.kind === 'orbit' ? 90 : this.kind === 'anytls' ? 4294967295 : 300);
+        return errors;
+    }
+
+    toJson() {
+        const data = Outbound.NativeSettings.clone(this.data);
+        return this.protocol === 'dns' ? {...Outbound.NativeSettings.clone(this.envelope), tunnel: data} : data;
     }
 };

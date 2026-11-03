@@ -1,27 +1,29 @@
 # ========================================================
 # Stage: Builder
 # ========================================================
-FROM golang:1.26-alpine AS builder
+ARG ALPINE_VERSION=3.24
+FROM golang:1.27-alpine${ALPINE_VERSION} AS builder
 WORKDIR /app
 ARG TARGETARCH
 
 RUN apk --no-cache --update add \
   build-base \
   gcc \
-  curl \
-  unzip
+  curl
 
 COPY . .
 
-ENV CGO_ENABLED=1
+ENV GOTOOLCHAIN=local
+ENV GOMAXPROCS=2
 ENV CGO_CFLAGS="-D_LARGEFILE64_SOURCE"
-RUN go build -ldflags "-w -s" -o build/x-ui main.go
+# BuildKit runs this stage on TARGETARCH, so its C compiler matches the panel.
+# DockerInit builds the whole panel package and this checkout's native core.
 RUN ./DockerInit.sh "$TARGETARCH"
 
 # ========================================================
 # Stage: Final Image of 3x-ui
 # ========================================================
-FROM alpine
+FROM alpine:${ALPINE_VERSION}
 ENV TZ=Asia/Tehran
 WORKDIR /app
 

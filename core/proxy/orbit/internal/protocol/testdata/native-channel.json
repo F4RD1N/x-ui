@@ -1,0 +1,63 @@
+{
+  "referenceSHA256": "578959313b6181a61944e258bd08dbf985e2bdce9aad8ad7de9086af5ea02aab",
+  "method": "Original make_channel_id and connect builder, native MD5, synthetic fields/clock/random, libc snprintf adapter.",
+  "cases": [
+    {
+      "fields": [
+        7,
+        18,
+        33,
+        45,
+        678
+      ],
+      "counter": 0,
+      "randomWords": [
+        1967335287,
+        3442499178
+      ],
+      "monotonicMillis": 123456,
+      "formatted": "7183345678:0:8449640721374273130:123456",
+      "hex": "49968b972b570ae53b430ed2ac96e5ec",
+      "wireHex": "49968b972b570ae53b430ed2ac96e5ec",
+      "counterAfter": 1
+    },
+    {
+      "fields": [
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "counter": 4294967295,
+      "randomWords": [
+        1013904223,
+        1196435762
+      ],
+      "monotonicMillis": 123456,
+      "formatted": "10000:4294967295:4354685480257726770:123456",
+      "hex": "efe08bb899e5ec6f500f60f9e68cbfa8",
+      "wireHex": "efe08bb899e5ec6f500f60f9e68cbfa8",
+      "counterAfter": 0
+    },
+    {
+      "fields": [
+        -1,
+        -2,
+        -3,
+        -4,
+        -5
+      ],
+      "counter": 2166572391,
+      "randomWords": [
+        1012239698,
+        806866057
+      ],
+      "monotonicMillis": 123456,
+      "formatted": "-1-2-3-4-5:2166572391:4347536399429782665:123456",
+      "hex": "8bdd9fc0effe50c084db40867754f98d",
+      "wireHex": "8bdd9fc0effe50c084db40867754f98d",
+      "counterAfter": 2166572392
+    }
+  ]
+}

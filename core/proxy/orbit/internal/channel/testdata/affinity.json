@@ -1,0 +1,170 @@
+{
+  "referenceSHA256": "578959313b6181a61944e258bd08dbf985e2bdce9aad8ad7de9086af5ea02aab",
+  "method": "Original attach_conn/do_attach/attach_sock/flush/switch_power_mode routines. QUIC stream creation and physical connection startup are isolated callbacks. TCP connect builder executes natively; flush transport sink only is stubbed.",
+  "cases": [
+    {
+      "loads": [
+        3,
+        1,
+        2
+      ],
+      "selected": 1,
+      "sendAffinityPreserved": true
+    },
+    {
+      "loads": [
+        1,
+        1,
+        1
+      ],
+      "selected": 0,
+      "sendAffinityPreserved": true
+    },
+    {
+      "loads": [
+        0,
+        0
+      ],
+      "selected": 0,
+      "sendAffinityPreserved": true
+    },
+    {
+      "loads": [
+        10001,
+        10000,
+        9999
+      ],
+      "selected": 2,
+      "sendAffinityPreserved": true
+    },
+    {
+      "loads": [],
+      "selected": -1,
+      "sendAffinityPreserved": false
+    },
+    {
+      "tcpCount": 1,
+      "quicReady": 1,
+      "forceTCP": 0,
+      "channelPreferTCP": 0,
+      "quicSelected": true
+    },
+    {
+      "tcpCount": 1,
+      "quicReady": 1,
+      "forceTCP": 1,
+      "channelPreferTCP": 0,
+      "quicSelected": false
+    },
+    {
+      "tcpCount": 1,
+      "quicReady": 1,
+      "forceTCP": 0,
+      "channelPreferTCP": 1,
+      "quicSelected": false
+    },
+    {
+      "tcpCount": 0,
+      "quicReady": 1,
+      "forceTCP": 1,
+      "channelPreferTCP": 1,
+      "quicSelected": true
+    },
+    {
+      "tcpCount": 1,
+      "quicReady": 0,
+      "forceTCP": 0,
+      "channelPreferTCP": 0,
+      "quicSelected": false
+    },
+    {
+      "powerMode": 2,
+      "TCPConfigured": 4,
+      "UDPConfigured": 3,
+      "persistent": 1,
+      "TCPType": 4,
+      "UDPType": 5,
+      "TCPActive": 4,
+      "UDPActive": 3
+    },
+    {
+      "powerMode": 1,
+      "TCPConfigured": 4,
+      "UDPConfigured": 3,
+      "persistent": 1,
+      "TCPType": 4,
+      "UDPType": 5,
+      "TCPActive": 1,
+      "UDPActive": 1
+    },
+    {
+      "powerMode": 0,
+      "TCPConfigured": 4,
+      "UDPConfigured": 3,
+      "persistent": 1,
+      "TCPType": 4,
+      "UDPType": 5,
+      "TCPActive": 1,
+      "UDPActive": 1
+    },
+    {
+      "powerMode": 0,
+      "TCPConfigured": 4,
+      "UDPConfigured": 3,
+      "persistent": 0,
+      "TCPType": 4,
+      "UDPType": 5,
+      "TCPActive": 0,
+      "UDPActive": 0
+    },
+    {
+      "powerMode": 2,
+      "TCPConfigured": 0,
+      "UDPConfigured": 3,
+      "persistent": 1,
+      "TCPType": 4,
+      "UDPType": 5,
+      "TCPActive": 0,
+      "UDPActive": 3
+    },
+    {
+      "powerMode": 2,
+      "TCPConfigured": 4,
+      "UDPConfigured": 0,
+      "persistent": 1,
+      "TCPType": 4,
+      "UDPType": 5,
+      "TCPActive": 4,
+      "UDPActive": 0
+    },
+    {
+      "powerMode": 2,
+      "TCPConfigured": 4,
+      "UDPConfigured": 3,
+      "persistent": 1,
+      "TCPType": 0,
+      "UDPType": 5,
+      "TCPActive": 0,
+      "UDPActive": 3
+    },
+    {
+      "powerMode": 2,
+      "TCPConfigured": 4,
+      "UDPConfigured": 3,
+      "persistent": 1,
+      "TCPType": 4,
+      "UDPType": 0,
+      "TCPActive": 4,
+      "UDPActive": 0
+    },
+    {
+      "UDPRoundRobin": [
+        0,
+        1,
+        2,
+        0,
+        1
+      ]
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+syntax = "proto3";
+package xray.proxy.anytls;
+option go_package = "github.com/xtls/xray-core/proxy/anytls";
+import "transport/internet/tls/config.proto";
+message Config {
+ string address = 1;
+ uint32 port = 2;
+ string password = 3;
+ bool uuid_hash_middle = 4;
+ uint32 idle_session_check_interval = 5;
+ uint32 idle_session_timeout = 6;
+ uint32 min_idle_session = 7;
+ uint32 handshake_timeout = 8;
+ xray.transport.internet.tls.Config tls = 9;
+}

@@ -1,0 +1,7 @@
+syntax = "proto3";
+package xray.proxy.openvpn;
+option go_package = "github.com/xtls/xray-core/proxy/openvpn";
+// ServerConfig is an isolated native OpenVPN inbound. Settings are strict JSON.
+message ServerConfig { bytes settings = 1; }
+// ServerAccount stores the native OpenVPN client identity for Xray user updates.
+message ServerAccount { bytes settings = 1; }

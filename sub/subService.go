@@ -77,7 +77,21 @@ func (s *SubService) GetSubs(subId string, host string) ([]string, int64, xray.C
 		}
 		for _, client := range clients {
 			if client.Enable && client.SubID == subId {
+				if nativeSubscriptionProtocol(inbound.Protocol) {
+					if !nativeClientExportActive(inbound, client) {
+						continue
+					}
+					return nil, 0, traffic, errNativeJSONSubscriptionRequired
+				}
+				if inbound.Protocol == model.Shadowsocks {
+					if _, err := ss2022ExportIdentity(inbound, client); err != nil {
+						return nil, 0, traffic, err
+					}
+				}
 				link := s.getLink(inbound, client.Email)
+				if link == "" {
+					return nil, 0, traffic, fmt.Errorf("unable to generate subscription link")
+				}
 				result = append(result, link)
 				ct := s.getClientTraffics(inbound.ClientStats, client.Email)
 				clientTraffics = append(clientTraffics, ct)
@@ -121,7 +135,7 @@ func (s *SubService) getInboundsBySubId(subId string) ([]*model.Inbound, error) 
 		FROM inbounds,
 			JSON_EACH(JSON_EXTRACT(inbounds.settings, '$.clients')) AS client 
 		WHERE
-			protocol in ('vmess','vless','trojan','shadowsocks','hysteria')
+			protocol in ('vmess','vless','trojan','shadowsocks','hysteria','orbit','dnstt','dns','openvpn','anytls','shadowtls','mieru')
 			AND JSON_EXTRACT(client.value, '$.subId') = ? AND enable = ?
 	)`, subId, true).Find(&inbounds).Error
 	if err != nil {
@@ -286,6 +300,9 @@ func (s *SubService) genVmessLink(inbound *model.Inbound, email string) string {
 	}
 	obj["id"] = clients[clientIndex].ID
 	obj["scy"] = clients[clientIndex].Security
+	if clients[clientIndex].RawUUIDAuth {
+		obj["rawUuidAuth"] = true
+	}
 
 	externalProxies, _ := stream["externalProxy"].([]any)
 
@@ -560,6 +577,9 @@ func (s *SubService) genTrojanLink(inbound *model.Inbound, email string) string 
 	streamNetwork := stream["network"].(string)
 	params := make(map[string]string)
 	params["type"] = streamNetwork
+	if clients[clientIndex].UUIDHashPrefix {
+		params["uuidHashPrefix"] = "true"
+	}
 
 	switch streamNetwork {
 	case "tcp":
@@ -839,9 +859,13 @@ func (s *SubService) genShadowsocksLink(inbound *model.Inbound, email string) st
 		}
 	}
 
-	encPart := fmt.Sprintf("%s:%s", method, clients[clientIndex].Password)
+	identity, err := ss2022ExportIdentity(inbound, clients[clientIndex])
+	if err != nil {
+		return ""
+	}
+	encPart := fmt.Sprintf("%s:%s", method, identity)
 	if method[0] == '2' {
-		encPart = fmt.Sprintf("%s:%s:%s", method, inboundPassword, clients[clientIndex].Password)
+		encPart = fmt.Sprintf("%s:%s:%s", method, inboundPassword, identity)
 	}
 
 	externalProxies, _ := stream["externalProxy"].([]any)

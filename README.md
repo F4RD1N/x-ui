@@ -6,6 +6,11 @@ answers clients whose core speaks one of them.
 
 It ships its own Xray core and cannot use another one.
 
+Dialect11 adds native Go Orbit, DNS tunneling (DNSTT), OpenVPN, AnyTLS,
+ShadowTLS, and Mieru inbounds/outbounds, optional client authentication modes,
+and portable backup restoration. See [the implementation and configuration
+guide](DIALECT11.md) for schemas, export requirements, and compatibility limits.
+
 ## Dialects
 
 A VLESS request begins with a version byte. Stock VLESS always sends `0`, and a
@@ -40,8 +45,9 @@ this repository, and the panel's ability to download or switch the Xray core has
 been removed. A stock core would silently drop `dialects` and quietly go back to
 accepting stock VLESS only.
 
-The core is [Xray-core v26.3.27](https://github.com/XTLS/Xray-core) plus the
-dialect change and nothing else.
+The core is based on [Xray-core v26.3.27](https://github.com/XTLS/Xray-core),
+with the existing dialect features and the native protocol/authentication
+extensions described in [DIALECT11.md](DIALECT11.md).
 
 ## Install
 

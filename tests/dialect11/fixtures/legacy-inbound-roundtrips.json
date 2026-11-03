@@ -1,0 +1,145 @@
+{
+  "vmess": {
+    "clients": [
+      {
+        "id": "11111111-2222-4333-8444-555555555555",
+        "security": "auto",
+        "email": "legacy-vmess",
+        "limitIp": 0,
+        "totalGB": 0,
+        "expiryTime": 0,
+        "enable": true,
+        "tgId": "",
+        "subId": "synthetic1",
+        "comment": "",
+        "reset": 0
+      }
+    ]
+  },
+  "vless": {
+    "clients": [
+      {
+        "id": "11111111-2222-4333-8444-555555555555",
+        "flow": "",
+        "email": "legacy-vless",
+        "limitIp": 0,
+        "totalGB": 0,
+        "expiryTime": 0,
+        "enable": true,
+        "tgId": "",
+        "subId": "synthetic2",
+        "comment": "",
+        "reset": 0
+      }
+    ],
+    "decryption": "none",
+    "encryption": "none",
+    "dialects": [
+      120
+    ],
+    "minClientVer": "1.2.3",
+    "maxClientVer": "9.9.9"
+  },
+  "trojan": {
+    "clients": [
+      {
+        "password": "synthetic-password",
+        "email": "legacy-trojan",
+        "limitIp": 0,
+        "totalGB": 0,
+        "expiryTime": 0,
+        "enable": true,
+        "tgId": "",
+        "subId": "synthetic3",
+        "comment": "",
+        "reset": 0
+      }
+    ],
+    "fallbacks": []
+  },
+  "shadowsocks": {
+    "method": "aes-256-gcm",
+    "password": "synthetic-password",
+    "network": "tcp,udp",
+    "clients": [
+      {
+        "method": "",
+        "password": "synthetic-user",
+        "email": "legacy-ss",
+        "limitIp": 0,
+        "totalGB": 0,
+        "expiryTime": 0,
+        "enable": true,
+        "tgId": "",
+        "subId": "synthetic4",
+        "comment": "",
+        "reset": 0
+      }
+    ],
+    "ivCheck": false
+  },
+  "hysteria": {
+    "version": 2,
+    "clients": [
+      {
+        "auth": "synthetic-password",
+        "email": "legacy-hy",
+        "limitIp": 0,
+        "totalGB": 0,
+        "expiryTime": 0,
+        "enable": true,
+        "tgId": "",
+        "subId": "synthetic5",
+        "comment": "",
+        "reset": 0
+      }
+    ]
+  },
+  "mixed": {
+    "auth": "password",
+    "accounts": [
+      {
+        "user": "synthetic",
+        "pass": "synthetic"
+      }
+    ],
+    "udp": true,
+    "ip": "127.0.0.1"
+  },
+  "http": {
+    "accounts": [
+      {
+        "user": "synthetic",
+        "pass": "synthetic"
+      }
+    ],
+    "allowTransparent": false
+  },
+  "tunnel": {
+    "address": "127.0.0.1",
+    "port": 80,
+    "portMap": {},
+    "network": "tcp",
+    "followRedirect": false
+  },
+  "tun": {
+    "name": "test0",
+    "mtu": [
+      1500,
+      1280
+    ],
+    "gateway": [
+      "10.0.0.1/24"
+    ],
+    "dns": [],
+    "userLevel": 0,
+    "autoSystemRoutingTable": [],
+    "autoOutboundsInterface": "auto"
+  },
+  "wireguard": {
+    "mtu": 1420,
+    "secretKey": "",
+    "peers": [],
+    "noKernelTun": false
+  }
+}

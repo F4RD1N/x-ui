@@ -2,11 +2,15 @@ package controller
 
 import (
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/mhsanaei/3x-ui/v2/util/backup"
 	"github.com/mhsanaei/3x-ui/v2/web/global"
 	"github.com/mhsanaei/3x-ui/v2/web/service"
 	"github.com/mhsanaei/3x-ui/v2/web/websocket"
@@ -57,6 +61,7 @@ func (a *ServerController) initRouter(g *gin.RouterGroup) {
 	g.POST("/xraylogs/:count", a.getXrayLogs)
 	g.POST("/importDB", a.importDB)
 	g.POST("/getNewEchCert", a.getNewEchCert)
+	g.POST("/native/credentials", a.nativeCredentials)
 }
 
 // refreshStatus updates the cached server status and collects CPU history.
@@ -240,13 +245,13 @@ func (a *ServerController) getConfigJson(c *gin.Context) {
 
 // getDb downloads the database file.
 func (a *ServerController) getDb(c *gin.Context) {
-	db, err := a.serverService.GetDb()
+	db, err := a.serverService.GetBackup()
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.index.getDatabaseError"), err)
 		return
 	}
 
-	filename := "x-ui.db"
+	filename := "x-ui-backup.zip"
 
 	if !isValidFilename(filename) {
 		c.AbortWithError(http.StatusBadRequest, fmt.Errorf("invalid filename"))
@@ -254,7 +259,8 @@ func (a *ServerController) getDb(c *gin.Context) {
 	}
 
 	// Set the headers for the response
-	c.Header("Content-Type", "application/octet-stream")
+	c.Header("Content-Type", "application/zip")
+	c.Header("Cache-Control", "no-store")
 	c.Header("Content-Disposition", "attachment; filename="+filename)
 
 	// Write the file contents to the response
@@ -266,25 +272,55 @@ func isValidFilename(filename string) bool {
 	return filenameRegex.MatchString(filename)
 }
 
-// importDB imports a database file and restarts the Xray service.
+// importDB validates and transactionally restores a portable or legacy backup.
 func (a *ServerController) importDB(c *gin.Context) {
-	// Get the file from the request body
+	previousPort, _ := a.settingService.GetPort()
+	// Bound multipart parsing as well as the service's staged file copy.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, backup.MaxTotal+(1<<20))
 	file, _, err := c.Request.FormFile("db")
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.index.readDatabaseError"), err)
 		return
 	}
 	defer file.Close()
-	// Always restart Xray before return
-	defer a.serverService.RestartXrayService()
-	// lastGetStatusTime removed; no longer needed
+	if c.Request.MultipartForm != nil {
+		defer c.Request.MultipartForm.RemoveAll()
+	}
 	// Import it
 	err = a.serverService.ImportDB(file)
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.index.importDatabaseError"), err)
 		return
 	}
-	jsonObj(c, I18nWeb(c, "pages.index.importDatabaseSuccess"), nil)
+	if err := service.ScheduleRestoreReload(3 * time.Second); err != nil {
+		jsonObj(c, gin.H{"restored": true, "restarting": false, "restartRequired": true}, nil)
+		return
+	}
+	target := restoredPanelURL(c, &a.settingService, previousPort)
+	jsonObj(c, gin.H{"restored": true, "restarting": true, "restartAfterSeconds": 3, "url": target}, nil)
+}
+
+// Preserve an external reverse-proxy host/port unless this request directly
+// used the old panel listener. A relative target also keeps TLS termination at
+// a reverse proxy intact when only the panel base path changed.
+func restoredPanelURL(c *gin.Context, settings *service.SettingService, previousPort int) string {
+	basePath, err := settings.GetBasePath()
+	if err != nil || !strings.HasPrefix(basePath, "/") || strings.HasPrefix(basePath, "//") {
+		basePath = "/"
+	}
+	host, port, splitErr := net.SplitHostPort(c.Request.Host)
+	if splitErr != nil || port != strconv.Itoa(previousPort) {
+		return basePath
+	}
+	newPort, err := settings.GetPort()
+	if err != nil || newPort < 1 || newPort > 65535 {
+		return basePath
+	}
+	scheme := "http"
+	if cert, _ := settings.GetCertFile(); cert != "" {
+		scheme = "https"
+	}
+	return (&url.URL{Scheme: scheme, Host: net.JoinHostPort(host, strconv.Itoa(newPort)), Path: basePath}).String()
 }
 
 // getNewX25519Cert generates a new X25519 certificate.

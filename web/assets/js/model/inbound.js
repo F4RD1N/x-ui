@@ -9,6 +9,12 @@ const Protocols = {
     WIREGUARD: 'wireguard',
     TUN: 'tun',
     HYSTERIA: 'hysteria',
+    ORBIT: 'orbit',
+    DNSTT: 'dnstt',
+    OPENVPN: 'openvpn',
+    ANYTLS: 'anytls',
+    SHADOWTLS: 'shadowtls',
+    MIERU: 'mieru',
 };
 
 const SSMethods = {
@@ -1317,7 +1323,12 @@ class Inbound extends XrayCommonClass {
         return this.clientStats;
     }
 
+    get isNative() {
+        return [Protocols.ORBIT, Protocols.DNSTT, Protocols.OPENVPN, Protocols.ANYTLS, Protocols.SHADOWTLS, Protocols.MIERU].includes(this.protocol);
+    }
+
     get clients() {
+        if (this.isNative) return this.settings.clients;
         switch (this.protocol) {
             case Protocols.VMESS: return this.settings.vmesses;
             case Protocols.VLESS: return this.settings.vlesses;
@@ -1338,6 +1349,10 @@ class Inbound extends XrayCommonClass {
         this.stream = new StreamSettings();
         if (protocol === Protocols.TROJAN) {
             this.tls = false;
+        }
+        if (protocol === Protocols.ANYTLS) {
+            this.stream.network = 'tcp';
+            this.stream.security = 'tls';
         }
         if (protocol === Protocols.HYSTERIA) {
             this.stream.network = 'hysteria';
@@ -1444,7 +1459,7 @@ class Inbound extends XrayCommonClass {
     }
 
     canEnableTls() {
-        if (this.protocol === Protocols.HYSTERIA) return true;
+        if ([Protocols.HYSTERIA, Protocols.ANYTLS].includes(this.protocol)) return true;
         if (![Protocols.VMESS, Protocols.VLESS, Protocols.TROJAN, Protocols.SHADOWSOCKS].includes(this.protocol)) return false;
         return ["tcp", "ws", "http", "grpc", "httpupgrade", "xhttp"].includes(this.network);
     }
@@ -1471,6 +1486,7 @@ class Inbound extends XrayCommonClass {
     }
 
     canEnableStream() {
+        if (this.protocol === Protocols.ANYTLS) return true;
         return [Protocols.VMESS, Protocols.VLESS, Protocols.TROJAN, Protocols.SHADOWSOCKS, Protocols.HYSTERIA].includes(this.protocol);
     }
 
@@ -1975,6 +1991,7 @@ Inbound.Settings = class extends XrayCommonClass {
     }
 
     static getSettings(protocol) {
+        if (Inbound.NativeSettings?.supports(protocol)) return new Inbound.NativeSettings(protocol);
         switch (protocol) {
             case Protocols.VMESS: return new Inbound.VmessSettings(protocol);
             case Protocols.VLESS: return new Inbound.VLESSSettings(protocol);
@@ -1991,6 +2008,7 @@ Inbound.Settings = class extends XrayCommonClass {
     }
 
     static fromJson(protocol, json) {
+        if (Inbound.NativeSettings?.supports(protocol)) return new Inbound.NativeSettings(protocol, json);
         switch (protocol) {
             case Protocols.VMESS: return Inbound.VmessSettings.fromJson(json);
             case Protocols.VLESS: return Inbound.VLESSSettings.fromJson(json);
@@ -2147,20 +2165,24 @@ Inbound.VmessSettings.VMESS = class extends Inbound.ClientBase {
         super(email, limitIp, totalGB, expiryTime, enable, tgId, subId, comment, reset, created_at, updated_at);
         this.id = id;
         this.security = security;
+        this.rawUuidAuth = false;
     }
 
     static fromJson(json = {}) {
-        return new Inbound.VmessSettings.VMESS(
+        const client = new Inbound.VmessSettings.VMESS(
             json.id,
             json.security,
             ...Inbound.ClientBase.commonArgsFromJson(json),
         );
+        client.rawUuidAuth = json.rawUuidAuth === undefined ? false : json.rawUuidAuth;
+        return client;
     }
 
     toJson() {
         return {
             id: this.id,
             security: this.security,
+            ...(this.rawUuidAuth !== false ? { rawUuidAuth: this.rawUuidAuth } : {}),
             ...this._clientBaseToJson(),
         };
     }
@@ -2391,20 +2413,24 @@ Inbound.TrojanSettings.Trojan = class extends Inbound.ClientBase {
     ) {
         super(email, limitIp, totalGB, expiryTime, enable, tgId, subId, comment, reset, created_at, updated_at);
         this.password = password;
+        this.uuidHashPrefix = false;
     }
 
     toJson() {
         return {
             password: this.password,
+            ...(this.uuidHashPrefix !== false ? { uuidHashPrefix: this.uuidHashPrefix } : {}),
             ...this._clientBaseToJson(),
         };
     }
 
     static fromJson(json = {}) {
-        return new Inbound.TrojanSettings.Trojan(
+        const client = new Inbound.TrojanSettings.Trojan(
             json.password,
             ...Inbound.ClientBase.commonArgsFromJson(json),
         );
+        client.uuidHashPrefix = json.uuidHashPrefix === undefined ? false : json.uuidHashPrefix;
+        return client;
     }
 };
 
@@ -2461,10 +2487,11 @@ Inbound.ShadowsocksSettings = class extends Inbound.Settings {
         this.network = network;
         this.shadowsockses = shadowsockses;
         this.ivCheck = ivCheck;
+        this.uuidIdentityKeys = undefined;
     }
 
     static fromJson(json = {}) {
-        return new Inbound.ShadowsocksSettings(
+        const settings = new Inbound.ShadowsocksSettings(
             Protocols.SHADOWSOCKS,
             json.method,
             json.password,
@@ -2472,6 +2499,14 @@ Inbound.ShadowsocksSettings = class extends Inbound.Settings {
             (json.clients || []).map(client => Inbound.ShadowsocksSettings.Shadowsocks.fromJson(client)),
             json.ivCheck,
         );
+        settings.uuidIdentityKeys = json.uuidIdentityKeys;
+        if (json.uuidIdentityKeys === true) settings.shadowsockses.forEach(client => {
+            if (!client._uuidIdentityKeysPresent) {
+                client.uuidIdentityKeys = true;
+                client._uuidIdentityKeysPresent = true;
+            }
+        });
+        return settings;
     }
 
     toJson() {
@@ -2481,6 +2516,7 @@ Inbound.ShadowsocksSettings = class extends Inbound.Settings {
             network: this.network,
             clients: Inbound.ShadowsocksSettings.toJsonArray(this.shadowsockses),
             ivCheck: this.ivCheck,
+            ...(this.uuidIdentityKeys !== undefined && this.uuidIdentityKeys !== false ? {uuidIdentityKeys: this.uuidIdentityKeys} : {}),
         };
     }
 };
@@ -2494,22 +2530,28 @@ Inbound.ShadowsocksSettings.Shadowsocks = class extends Inbound.ClientBase {
         super(email, limitIp, totalGB, expiryTime, enable, tgId, subId, comment, reset, created_at, updated_at);
         this.method = method;
         this.password = password;
+        this.uuidIdentityKeys = false;
+        this._uuidIdentityKeysPresent = false;
     }
 
     toJson() {
         return {
             method: this.method,
             password: this.password,
+            ...(this.uuidIdentityKeys !== false || this._uuidIdentityKeysPresent ? {uuidIdentityKeys: this.uuidIdentityKeys} : {}),
             ...this._clientBaseToJson(),
         };
     }
 
     static fromJson(json = {}) {
-        return new Inbound.ShadowsocksSettings.Shadowsocks(
+        const client = new Inbound.ShadowsocksSettings.Shadowsocks(
             json.method,
             json.password,
             ...Inbound.ClientBase.commonArgsFromJson(json),
         );
+        client.uuidIdentityKeys = json.uuidIdentityKeys === undefined ? false : json.uuidIdentityKeys;
+        client._uuidIdentityKeysPresent = Object.prototype.hasOwnProperty.call(json, "uuidIdentityKeys");
+        return client;
     }
 };
 

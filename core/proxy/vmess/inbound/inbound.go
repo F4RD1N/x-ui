@@ -102,6 +102,8 @@ func (v *userByEmail) Remove(email string) bool {
 
 // Handler is an inbound connection handler that handles messages in VMess protocol.
 type Handler struct {
+	// Serialize mutations spanning the email index and authentication validator.
+	userMu                sync.Mutex
 	policyManager         policy.Manager
 	inboundHandlerManager feature_inbound.Manager
 	clients               *vmess.TimedUserValidator
@@ -147,9 +149,14 @@ func (*Handler) Network() []net.Network {
 }
 
 func (h *Handler) GetOrGenerateUser(email string) *protocol.MemoryUser {
+	h.userMu.Lock()
+	defer h.userMu.Unlock()
 	user, existing := h.usersByEmail.GetOrGenerate(email)
 	if !existing {
-		h.clients.Add(user)
+		if err := h.clients.Add(user); err != nil {
+			h.usersByEmail.Remove(email)
+			return nil
+		}
 	}
 	return user
 }
@@ -167,13 +174,26 @@ func (h *Handler) GetUsersCount(context.Context) int64 {
 }
 
 func (h *Handler) AddUser(ctx context.Context, user *protocol.MemoryUser) error {
+	h.userMu.Lock()
+	defer h.userMu.Unlock()
+	if user == nil {
+		return errors.New("user must not be nil")
+	}
 	if len(user.Email) > 0 && !h.usersByEmail.Add(user) {
 		return errors.New("User ", user.Email, " already exists.")
 	}
-	return h.clients.Add(user)
+	if err := h.clients.Add(user); err != nil {
+		if len(user.Email) > 0 {
+			h.usersByEmail.Remove(user.Email)
+		}
+		return err
+	}
+	return nil
 }
 
 func (h *Handler) RemoveUser(ctx context.Context, email string) error {
+	h.userMu.Lock()
+	defer h.userMu.Unlock()
 	if email == "" {
 		return errors.New("Email must not be empty.")
 	}

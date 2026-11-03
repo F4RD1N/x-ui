@@ -2,6 +2,7 @@
 package model
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/mhsanaei/3x-ui/v2/util/json_util"
@@ -22,6 +23,13 @@ const (
 	Mixed       Protocol = "mixed"
 	WireGuard   Protocol = "wireguard"
 	Hysteria    Protocol = "hysteria"
+	Orbit       Protocol = "orbit"
+	DNSTT       Protocol = "dnstt"
+	DNS         Protocol = "dns"
+	OpenVPN     Protocol = "openvpn"
+	AnyTLS      Protocol = "anytls"
+	ShadowTLS   Protocol = "shadowtls"
+	Mieru       Protocol = "mieru"
 )
 
 // User represents a user account in the 3x-ui panel.
@@ -119,20 +127,38 @@ type CustomGeoResource struct {
 
 // Client represents a client configuration for Xray inbounds with traffic limits and settings.
 type Client struct {
-	ID         string `json:"id,omitempty"`                 // Unique client identifier
-	Security   string `json:"security"`                     // Security method (e.g., "auto", "aes-128-gcm")
-	Password   string `json:"password,omitempty"`           // Client password
-	Flow       string `json:"flow,omitempty"`               // Flow control (XTLS)
-	Auth       string `json:"auth,omitempty"`               // Auth password (Hysteria)
-	Email      string `json:"email"`                        // Client email identifier
-	LimitIP    int    `json:"limitIp"`                      // IP limit for this client
-	TotalGB    int64  `json:"totalGB" form:"totalGB"`       // Total traffic limit in GB
-	ExpiryTime int64  `json:"expiryTime" form:"expiryTime"` // Expiration timestamp
-	Enable     bool   `json:"enable" form:"enable"`         // Whether the client is enabled
-	TgID       int64  `json:"tgId" form:"tgId"`             // Telegram user ID for notifications
-	SubID      string `json:"subId" form:"subId"`           // Subscription identifier
-	Comment    string `json:"comment" form:"comment"`       // Client comment
-	Reset      int    `json:"reset" form:"reset"`           // Reset period in days
-	CreatedAt  int64  `json:"created_at,omitempty"`         // Creation timestamp
-	UpdatedAt  int64  `json:"updated_at,omitempty"`         // Last update timestamp
+	ID                   string          `json:"id,omitempty"`                 // Unique client identifier
+	Security             string          `json:"security"`                     // Security method (e.g., "auto", "aes-128-gcm")
+	Password             string          `json:"password,omitempty"`           // Client password
+	Flow                 string          `json:"flow,omitempty"`               // Flow control (XTLS)
+	Auth                 string          `json:"auth,omitempty"`               // Auth password (Hysteria)
+	Email                string          `json:"email"`                        // Client email identifier
+	LimitIP              int             `json:"limitIp"`                      // IP limit for this client
+	TotalGB              int64           `json:"totalGB" form:"totalGB"`       // Total traffic limit in GB
+	ExpiryTime           int64           `json:"expiryTime" form:"expiryTime"` // Expiration timestamp
+	Enable               bool            `json:"enable" form:"enable"`         // Whether the client is enabled
+	TgID                 int64           `json:"tgId" form:"tgId"`             // Telegram user ID for notifications
+	SubID                string          `json:"subId" form:"subId"`           // Subscription identifier
+	Comment              string          `json:"comment" form:"comment"`       // Client comment
+	Reset                int             `json:"reset" form:"reset"`           // Reset period in days
+	CreatedAt            int64           `json:"created_at,omitempty"`         // Creation timestamp
+	UpdatedAt            int64           `json:"updated_at,omitempty"`         // Last update timestamp
+	Username             string          `json:"username,omitempty"`
+	Key                  string          `json:"key,omitempty"`
+	CommonName           string          `json:"commonName,omitempty"`
+	Level                uint32          `json:"level,omitempty"`
+	ExpiresAt            int64           `json:"expiresAt,omitempty"`
+	ClientProof          json.RawMessage `json:"clientProof,omitempty"`
+	RawUUIDAuth          bool            `json:"rawUuidAuth,omitempty"`
+	UUIDHashPrefix       bool            `json:"uuidHashPrefix,omitempty"`
+	UUIDHashMiddle       bool            `json:"uuidHashMiddle,omitempty"`
+	RequireUUIDSessionID bool            `json:"requireUuidSessionId,omitempty"`
+	UUIDMetadataTrailer  bool            `json:"uuidMetadataTrailer,omitempty"`
+	UUIDIdentityKeys     bool            `json:"uuidIdentityKeys,omitempty"`
+	// Export-only material is persisted with the client but never passed to
+	// the native inbound account parser or dynamic account API.
+	Certificate   string `json:"certificate,omitempty"`
+	PrivateKey    string `json:"privateKey,omitempty"`
+	TLSCryptV2    string `json:"tlsCryptV2,omitempty"`
+	InnerUsername string `json:"innerUsername,omitempty"`
 }

@@ -94,8 +94,9 @@ func EmbeddedAssets() embed.FS {
 
 // Server represents the main web server for the 3x-ui panel with controllers, services, and scheduled jobs.
 type Server struct {
-	httpServer *http.Server
-	listener   net.Listener
+	httpServer             *http.Server
+	listener               net.Listener
+	restoreListenerRelease func()
 
 	index *controller.IndexController
 	panel *controller.XUIController
@@ -183,6 +184,7 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 	}
 
 	engine := gin.Default()
+	engine.Use(middleware.RestoreAdmission())
 
 	webDomain, err := s.settingService.GetWebDomain()
 	if err != nil {
@@ -316,9 +318,12 @@ func normalizeExistingGeositeFiles() {
 func (s *Server) startTask() {
 	normalizeExistingGeositeFiles()
 	s.customGeoService.EnsureOnStartup()
-	err := s.xrayService.RestartXray(true)
-	if err != nil {
-		logger.Warning("start xray failed:", err)
+	var err error
+	if !service.ConsumeRestoreStoppedReload() {
+		err = s.xrayService.RestartXray(true)
+		if err != nil {
+			logger.Warning("start xray failed:", err)
+		}
 	}
 	// Check whether xray is running every second
 	s.cron.AddJob("@every 1s", job.NewCheckXrayRunningJob())
@@ -415,7 +420,7 @@ func (s *Server) Start() (err error) {
 	if err != nil {
 		return err
 	}
-	s.cron = cron.New(cron.WithLocation(loc), cron.WithSeconds())
+	s.cron = cron.New(cron.WithLocation(loc), cron.WithSeconds(), cron.WithChain(middleware.RestoreJobAdmission))
 	s.cron.Start()
 
 	s.customGeoService = service.NewCustomGeoService()
@@ -463,6 +468,7 @@ func (s *Server) Start() (err error) {
 		logger.Info("Web server running HTTP on", listener.Addr())
 	}
 	s.listener = listener
+	s.restoreListenerRelease = service.RegisterRestoreListener("web", listenAddr, listener)
 
 	s.httpServer = &http.Server{
 		Handler: engine,
@@ -504,6 +510,10 @@ func (s *Server) Stop() error {
 	}
 	if s.listener != nil {
 		err2 = s.listener.Close()
+	}
+	if s.restoreListenerRelease != nil {
+		s.restoreListenerRelease()
+		s.restoreListenerRelease = nil
 	}
 	return common.Combine(err1, err2)
 }

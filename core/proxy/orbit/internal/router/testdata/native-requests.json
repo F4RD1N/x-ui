@@ -1,0 +1,43 @@
+{
+  "method": "Original native CreateRouteReq and FlatBuffer builder using synthetic inputs; no network.",
+  "referenceSHA256": "578959313b6181a61944e258bd08dbf985e2bdce9aad8ad7de9086af5ea02aab",
+  "networkRequests": 0,
+  "cases": [
+    {
+      "request": {
+        "Attempt": 0,
+        "Group": "",
+        "Metadata": 0,
+        "Option": false
+      },
+      "hex": "0c000000080008000000040008000000040000000000000000000000"
+    },
+    {
+      "request": {
+        "Attempt": 1,
+        "Group": "group-test",
+        "Metadata": 305419896,
+        "Option": true
+      },
+      "hex": "100000000c00140008000c00100007000c000000000000010100000008000000785634120a00000067726f75702d746573740000"
+    },
+    {
+      "request": {
+        "Attempt": -1,
+        "Group": "{\"region\":\"de\",\"group\":7}",
+        "Metadata": 4294967295,
+        "Option": false
+      },
+      "hex": "1000000000000a001000040008000c000a000000ffffffff08000000ffffffff190000007b22726567696f6e223a226465222c2267726f7570223a377d000000"
+    },
+    {
+      "request": {
+        "Attempt": 32767,
+        "Group": "test-\u4e16\u754c",
+        "Metadata": 7,
+        "Option": true
+      },
+      "hex": "100000000c00140008000c00100007000c00000000000001ff7f000008000000070000000b000000746573742de4b896e7958c00"
+    }
+  ]
+}

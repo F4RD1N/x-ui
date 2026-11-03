@@ -16,6 +16,7 @@
         confirm: null,
         outbound: new Outbound(),
         jsonMode: false,
+        jsonValid: true,
         link: '',
         cm: null,
         duplicateTag: false,
@@ -23,6 +24,8 @@
         activeKey: '1',
         tags: [],
         ok() {
+            this.check();
+            if (!this.isValid) return;
             ObjectUtil.execute(outModal.confirm, outModal.outbound.toJson());
         },
         show({ title='', okText='{{ i18n "sure" }}', outbound, confirm=(outbound)=>{}, isEdit=false, tags=[]  }) {
@@ -30,6 +33,7 @@
             this.okText = okText;
             this.confirm = confirm;
             this.jsonMode = false;
+            this.jsonValid = true;
             this.link = '';
             this.activeKey = '1';
             this.visible = true;
@@ -46,12 +50,13 @@
             outModal.confirmLoading = loading;
         },
         check(){
+            if (!this.jsonValid) { this.isValid = false; return; }
             if(outModal.outbound.tag == '' || outModal.tags.includes(outModal.outbound.tag)){
                 this.duplicateTag = true;
                 this.isValid = false;
             } else {
                 this.duplicateTag = false;
-                this.isValid = true;
+                this.isValid = !outModal.outbound.validationErrors.length;
             }
         },
         toggleJson(jsonTab) {
@@ -66,8 +71,19 @@
                 this.cm.on('change',editor => {
                     value = editor.getValue();
                     if(this.isJsonString(value)){
-                        this.outbound = Outbound.fromJson(JSON.parse(value));
-                        this.check();
+                        try {
+                            const parsed = JSON.parse(value);
+                            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Outbound must be an object');
+                            this.outbound = Outbound.fromJson(parsed);
+                            this.jsonValid = true;
+                            this.check();
+                        } catch (error) {
+                            this.jsonValid = false;
+                            this.isValid = false;
+                        }
+                    } else {
+                        this.jsonValid = false;
+                        this.isValid = false;
                     }
                 });
                 this.activeKey = '2';

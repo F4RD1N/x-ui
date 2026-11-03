@@ -1,0 +1,13 @@
+syntax = "proto3";
+package xray.proxy.anytls;
+option go_package = "github.com/xtls/xray-core/proxy/anytls";
+import "common/protocol/user.proto";
+message Account {
+  string password = 1;
+  bool uuid_hash_middle = 2;
+}
+message ServerConfig {
+  repeated xray.common.protocol.User users = 1;
+  uint32 handshake_timeout = 2;
+  uint32 max_streams = 3;
+}
