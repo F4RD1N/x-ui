@@ -1190,6 +1190,8 @@ dns_rollback() {
     fi
     systemctl daemon-reload 2>/dev/null
     systemctl disable --now unbound >/dev/null 2>&1
+    # the cache was not on before: the panel must not take it for on
+    dns_ours || rm -rf "$dns_state"
 }
 
 dns_on() {
@@ -1275,7 +1277,35 @@ EOF
     [[ -f $anti_abuse_unit && -f $anti_abuse_nft ]] && anti_abuse_reload
     rm -f "$conf.prev"
     LOGI "DNS cache on: unbound at 127.0.0.1, forwarding to ${servers[*]}."
+    dns_core_follow
+    # The names anti-abuse refuses, from the copy it keeps.
+    [[ -f $anti_abuse_unit ]] && anti_abuse_domains load
     return $rc
+}
+
+# dns_core_follow starts the core again when its config does not follow the
+# DNS cache: users' DNS (port 53) goes to the cache while it is on, and must
+# not once it is gone. The panel decides when it builds the config.
+dns_core_follow() {
+    local cfg="${xui_folder}/bin/config.json" want=0 has=0
+    systemctl is-active --quiet x-ui || return 0
+    [[ -f $cfg ]] || return 0
+    if [[ -d $dns_state ]]; then
+        local i
+        for i in 1 2 3 4 5; do
+            dns_answers 127.0.0.1 && { want=1; break; }
+            sleep 1
+        done
+    fi
+    grep -q '"xui-dns-cache"' "$cfg" && has=1
+    [[ $want == "$has" ]] && return 0
+    if systemctl reload x-ui >/dev/null 2>&1; then
+        if [[ $want == 1 ]]; then
+            LOGI "Users' DNS now goes to the DNS cache (Xray restarted)."
+        else
+            LOGI "Users' DNS no longer goes to the DNS cache (Xray restarted)."
+        fi
+    fi
 }
 
 # dns_auto is the installer's: on, unless "x-ui dns off" turned it off or it
@@ -1319,6 +1349,11 @@ dns_status() {
         echo -e "DNS cache: ${red}not answering${plain} (unbound $(systemctl is-active unbound 2>/dev/null); see: systemctl status unbound)"
     fi
     echo "  Forwards to: $(awk '$1 == "forward-addr:" { printf "%s%s", sep, $2; sep = ", " }' "$conf")"
+    if grep -qs '"xui-dns-cache"' "${xui_folder}/bin/config.json"; then
+        echo "  Users' DNS:  answered here (the core sends port 53 to the cache)"
+    else
+        echo "  Users' DNS:  not sent here yet (x-ui restart-xray)"
+    fi
     if dns_ours; then
         echo "  resolv.conf: $(awk '$1 == "nameserver" { printf "%s%s", sep, $2; sep = ", " }' /etc/resolv.conf)"
     else
@@ -1354,11 +1389,14 @@ dns_off() {
     fi
     systemctl daemon-reload 2>/dev/null
     rm -rf "$dns_state"
+    # anti-abuse's refused names live next to the cache's config
+    grep -qsF "$anti_abuse_domains_header" "$(dirname "$conf")/$anti_abuse_domains_name" && rm -f "$(dirname "$conf")/$anti_abuse_domains_name"
     if [[ ${1:-} != keep ]]; then
         mkdir -p "$(dirname "$dns_off_marker")" && : >"$dns_off_marker"
     fi
     # Anti-abuse lets through the private resolvers resolv.conf names again.
     [[ -f $anti_abuse_unit && -f $anti_abuse_nft ]] && anti_abuse_reload
+    dns_core_follow
     LOGI "DNS cache off; /etc/resolv.conf: $(awk '$1 == "nameserver" { printf "%s%s", sep, $2; sep = ", " }' /etc/resolv.conf 2>/dev/null)."
 }
 
@@ -1468,6 +1506,25 @@ anti_abuse_lists_timer="/etc/systemd/system/x-ui-anti-abuse-lists.timer"
 # taken: the last copy stays).
 anti_abuse_sources="${XUI_THREAT_SOURCES:-drop4 https://www.spamhaus.org/drop/drop_v4.json 500
 drop6 https://www.spamhaus.org/drop/drop_v6.json 10}"
+# Sinkholes: where researchers point seized botnet domains to count the
+# infected devices that still call them. Spamhaus XBL lists the IPs those
+# connections come from, so they are refused like the lists. From Emerging
+# Threats' rules, only the ones still named as sinkholes or inside their
+# operators' own networks: Microsoft, BitSight (AnubisNetworks), CERT.PL,
+# Dr.Web, Zinkhole, Fitsec, snkhole, Kaspersky.
+# Names that serve only malware, phishing and botnets (HaGeZi's Threat
+# Intelligence Feeds, mini: about 190,000), refused by the DNS cache, which
+# answers users' DNS: an infected device cannot look up where to call home.
+# Fetched with the lists; needs the cache and about 2 GB of memory (the list
+# takes about 80 MB of the cache's). Names listed one per line in
+# anti_abuse_domains_allow are never refused.
+anti_abuse_domains_url="${XUI_THREAT_DOMAINS_URL:-https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/tif.mini-onlydomains.txt}"
+anti_abuse_domains_least="${XUI_THREAT_DOMAINS_LEAST:-50000}"
+anti_abuse_domains_min_mb="${XUI_THREAT_DOMAINS_MIN_MB:-1800}"
+anti_abuse_domains_name="x-ui-threats.conf"
+anti_abuse_domains_header="# Written by \"x-ui anti-abuse\""
+anti_abuse_domains_allow="/etc/x-ui/anti-abuse-allow-domains"
+anti_abuse_sinkholes="199.2.137.0/24 207.46.90.0/24 131.253.18.11 131.253.18.12 195.22.26.192/26 35.205.61.67 148.81.111.111 91.233.244.106 176.31.62.76 193.166.255.171 166.78.144.80 95.211.172.143"
 
 # anti_abuse_uplinks prints the interfaces the default routes leave through.
 anti_abuse_uplinks() {
@@ -1890,7 +1947,8 @@ EOF
 
     echo -e "${green}Anti-abuse is on:${plain}
   Refused: outgoing TCP ${anti_abuse_tcp_ports} and UDP ${anti_abuse_udp_ports}
-  Refused: $(anti_abuse_threat_count) botnet and criminal networks (Spamhaus DROP), fetched again every 6 hours
+  Refused: $(anti_abuse_threat_count) botnet, criminal and sinkhole networks (Spamhaus DROP, known sinkholes), fetched again every 6 hours
+  Refused by the DNS cache: $(anti_abuse_domain_count) malware, phishing and botnet names (needs x-ui dns and about 2 GB of memory)
   Refused: private networks through $(anti_abuse_uplinks | paste -sd, -)
   Scans refused: over ${anti_abuse_wide%%/*} new hosts/s on a port, ${anti_abuse_deep%%/*} new ports/s on a host
   Dead hosts: refused for ${anti_abuse_dead_for} when ${anti_abuse_dead_waiting}+ connection attempts wait and none works
@@ -1980,9 +2038,12 @@ anti_abuse_lists() {
             fi
         done <<<"$anti_abuse_sources"
     fi
-    entries=$(while read -r name _; do
-        [[ -n $name && -f ${anti_abuse_lists_dir}/${name} ]] && anti_abuse_entries "${anti_abuse_lists_dir}/${name}"
-    done <<<"$anti_abuse_sources" | sort -u)
+    entries=$({
+        while read -r name _; do
+            [[ -n $name && -f ${anti_abuse_lists_dir}/${name} ]] && anti_abuse_entries "${anti_abuse_lists_dir}/${name}"
+        done <<<"$anti_abuse_sources"
+        tr ' ' '\n' <<<"$anti_abuse_sinkholes"
+    } | grep . | sort -u)
     v4=$(grep -v : <<<"$entries" | grep . | paste -sd, - | sed 's/,/, /g')
     v6=$(grep : <<<"$entries" | paste -sd, - | sed 's/,/, /g')
     n4=$(grep -vc : <<<"$entries")
@@ -2002,6 +2063,11 @@ anti_abuse_lists() {
         return 1
     fi
     mv -f "${anti_abuse_threats}.new" "$anti_abuse_threats"
+    if [[ ${1:-fetch} == load ]]; then
+        anti_abuse_domains load
+    else
+        anti_abuse_domains fetch
+    fi
     if [[ ${1:-} == timer ]]; then
         anti_abuse_spamhaus | while read -r ip listed; do
             logger -t x-ui-anti-abuse "${ip} is on Spamhaus ${listed}: https://check.spamhaus.org/results/?query=${ip}"
@@ -2015,6 +2081,88 @@ anti_abuse_lists() {
 # XBL"), or nothing when it is on none. It asks Spamhaus's own name servers,
 # which do not answer through big public resolvers. Without dig it returns 1;
 # when Spamhaus does not answer, 2.
+anti_abuse_domains_conf() {
+    local d
+    d=$(dns_conf_dir) || d=/etc/unbound/unbound.conf.d
+    echo "$d/$anti_abuse_domains_name"
+}
+
+# anti_abuse_domains [fetch|load|off] keeps the DNS cache's list of refused
+# names: fetched again (fetch), written next to the cache's config from the
+# copy kept (load) and loaded into the cache when it changed. Off, without
+# the cache or without the memory for it, the list is taken out.
+anti_abuse_domains() {
+    local conf mem n
+    conf=$(anti_abuse_domains_conf)
+    mem=$(($(awk '/^MemTotal:/ { print $2 }' /proc/meminfo) / 1024))
+    # a memory limit smaller than the machine (a container, a slice) counts
+    local limit
+    limit=$(cat /sys/fs/cgroup/memory.max 2>/dev/null)
+    [[ $limit =~ ^[0-9]+$ ]] && ((limit / 1048576 < mem)) && mem=$((limit / 1048576))
+    if [[ ${1:-fetch} == off ]] || ! grep -qsF "$dns_header" "$(dns_conf)" || ((mem < anti_abuse_domains_min_mb)); then
+        if grep -qsF "$anti_abuse_domains_header" "$conf"; then
+            rm -f "$conf"
+            systemctl is-active --quiet unbound && systemctl reload-or-restart unbound >/dev/null 2>&1
+        fi
+        return 0
+    fi
+    mkdir -p "$anti_abuse_lists_dir" || return 1
+    # Fetched once a day at most: each new list reloads the cache, which
+    # empties it.
+    if [[ ${1:-fetch} != load && ( ! -s ${anti_abuse_lists_dir}/domains || -n $(find "${anti_abuse_lists_dir}/domains" -mmin +1380 2>/dev/null) || -n ${XUI_THREAT_DOMAINS_URL:-} ) ]]; then
+        if curl -fsSL --connect-timeout 10 --max-time 120 -o "${anti_abuse_lists_dir}/domains.new" "$anti_abuse_domains_url" 2>/dev/null &&
+            (($(grep -cvE '^[[:space:]]*(#|$)' "${anti_abuse_lists_dir}/domains.new") >= anti_abuse_domains_least)); then
+            mv -f "${anti_abuse_lists_dir}/domains.new" "${anti_abuse_lists_dir}/domains"
+        else
+            rm -f "${anti_abuse_lists_dir}/domains.new"
+            logger -t x-ui-anti-abuse "refused names: could not fetch a good copy of ${anti_abuse_domains_url}; the last copy stays"
+        fi
+    fi
+    [[ -s ${anti_abuse_lists_dir}/domains ]] || return 0
+    {
+        echo "${anti_abuse_domains_header} from ${anti_abuse_domains_url}; \"x-ui anti-abuse off\" removes it."
+        echo "server:"
+        tr -d '\r' <"${anti_abuse_lists_dir}/domains" | tr 'A-Z' 'a-z' |
+            grep -E '^([a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?\.)+[a-z0-9-]{2,63}$' |
+            { if [[ -s $anti_abuse_domains_allow ]]; then grep -vxFf <(tr -d '\r ' <"$anti_abuse_domains_allow" | tr 'A-Z' 'a-z' | sed 's/\.$//' | grep .); else cat; fi; } |
+            awk '!seen[$1]++ { printf "    local-zone: \"%s.\" always_nxdomain\n", $1 }'
+        # an allowed name under a listed one: the closer zone wins
+        if [[ -s $anti_abuse_domains_allow ]]; then
+            tr -d '\r ' <"$anti_abuse_domains_allow" | tr 'A-Z' 'a-z' | sed 's/\.$//' |
+                grep -E '^([a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?\.)+[a-z0-9-]{2,63}$' |
+                awk '!seen[$1]++ { printf "    local-zone: \"%s.\" transparent\n", $1 }'
+        fi
+    } >"${conf}.new"
+    n=$(grep -c 'always_nxdomain' "${conf}.new")
+    if ((n == 0)); then
+        # all of it on the allow list
+        rm -f "${conf}.new"
+        anti_abuse_domains off
+        return 0
+    fi
+    if cmp -s "${conf}.new" "$conf"; then
+        rm -f "${conf}.new"
+        return 0
+    fi
+    [[ -f $conf ]] && mv -f "$conf" "${conf}.prev"
+    mv -f "${conf}.new" "$conf"
+    if ! unbound-checkconf >/dev/null 2>&1; then
+        rm -f "$conf"
+        [[ -f ${conf}.prev ]] && mv -f "${conf}.prev" "$conf"
+        logger -t x-ui-anti-abuse "unbound rejected the refused names; the ones before stay"
+        return 1
+    fi
+    rm -f "${conf}.prev"
+    systemctl is-active --quiet unbound && systemctl reload-or-restart unbound >/dev/null 2>&1
+    logger -t x-ui-anti-abuse "the DNS cache refuses ${n} names that serve malware, phishing and botnets"
+    return 0
+}
+
+# anti_abuse_domain_count prints how many names the DNS cache refuses.
+anti_abuse_domain_count() {
+    grep -c 'always_nxdomain' "$(anti_abuse_domains_conf)" 2>/dev/null || echo 0
+}
+
 anti_abuse_spamhaus() {
     command -v dig >/dev/null 2>&1 || return 1
     local ip q codes lists
@@ -2070,6 +2218,11 @@ anti_abuse_status() {
     barred=$({ nft list set inet "$anti_abuse_table" barred4; nft list set inet "$anti_abuse_table" barred6; } 2>/dev/null |
         grep -oE '[0-9a-f.:]+ \. [0-9]+' | sed 's/ \. /:/' | paste -sd' ' -)
     echo "  Brute force:      $(anti_abuse_counter brute_force) attempts refused; refused for ${anti_abuse_brute_for} now: ${barred:-none}"
+    if grep -qsF "$anti_abuse_domains_header" "$(anti_abuse_domains_conf)"; then
+        echo "  Refused names:    $(anti_abuse_domain_count) (malware, phishing, botnets; the DNS cache answers users' DNS)"
+    else
+        echo "  Refused names:    off (needs the DNS cache, x-ui dns, and about 2 GB of memory)"
+    fi
     echo "  Threat lists:     $(anti_abuse_threat_count) networks ($(date -r "$anti_abuse_threats" '+%F %R' 2>/dev/null || echo "not fetched yet")); $(anti_abuse_counter threats) packets refused"
     local listed src
     listed=$(anti_abuse_spamhaus)
@@ -2133,6 +2286,7 @@ anti_abuse_off() {
         systemctl disable --now x-ui-anti-abuse-lists.timer >/dev/null 2>&1
         rm -f "$anti_abuse_lists_timer" "$anti_abuse_lists_unit"
     fi
+    anti_abuse_domains off
     rm -rf "$anti_abuse_lists_dir"
     if [[ -f $anti_abuse_unit ]]; then
         systemctl disable --now x-ui-anti-abuse >/dev/null 2>&1

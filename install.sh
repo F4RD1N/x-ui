@@ -27,7 +27,7 @@
 #     databases, SIP, mail, ...) and hosts that do not answer are refused;
 #     2 failed SSH logins = a ban.
 #   - "x-ui dns": a local DNS cache (unbound) in front of the fastest
-#     resolvers this server reaches.
+#     resolvers this server reaches; users' DNS (port 53) is answered by it.
 #   - BBR with fq, unless another congestion control was chosen; and on a
 #     fresh install of a machine with 2 GiB of RAM or less, a 1 GiB swapfile.
 # "x-ui anti-abuse off" and "x-ui dns off" are remembered: updates keep them

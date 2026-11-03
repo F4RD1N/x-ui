@@ -162,6 +162,27 @@ curl -s -o /dev/null -m 15 -w '%{http_code}' --socks5-hostname 127.0.0.1:$port h
 SH
 }
 
+# dns_via <port> <udp|tcp> <name> <status> asks a DNS server that does not
+# exist (192.0.2.53) for the name through the VPN (the WebSocket inbound on
+# 8444), and checks the answer's status: the server's DNS cache answers.
+dns_via() {
+    docker exec -i "$C" bash -s "$@" <<'SH'
+port=$1 net=$2 name=$3 want=$4
+cat >/root/client-$port.json <<J
+{"log":{"loglevel":"warning"},
+ "inbounds":[{"listen":"127.0.0.1","port":$port,"protocol":"dokodemo-door","settings":{"address":"192.0.2.53","port":53,"network":"tcp,udp"}}],
+ "outbounds":[{"protocol":"vless","settings":{"vnext":[{"address":"127.0.0.1","port":8444,
+   "users":[{"id":"6c0f6f3e-2b1d-4f4e-9d55-0d2f6a9b7e21","encryption":"none"}]}]},
+   "streamSettings":{"network":"ws","wsSettings":{"path":"/dns"}}}]}
+J
+nohup /usr/local/x-ui/bin/xray-linux-amd64 run -c /root/client-$port.json >/root/client-$port.log 2>&1 &
+for _ in $(seq 1 10); do ss -ltn | grep -q ":$port " && break; sleep 1; done
+tcp=""; [[ $net == tcp ]] && tcp=+tcp
+out=$(dig -p "$port" @127.0.0.1 $tcp +time=8 +tries=1 "$name" 2>&1)
+echo "$out" | grep -q "status: $want" || { echo "    $(echo "$out" | grep -m1 -E "status:|timed out|refused")"; exit 1; }
+SH
+}
+
 # core_limit prints the GOMEMLIMIT entries of the panel's core (not the test
 # client, which runs the same binary).
 core_limit() {
@@ -269,6 +290,17 @@ run_distro() {
     check "  a client with path /feed/966695/assets/recent/media gets through" test "$(ws_any_via 10811 /feed/966695/assets/recent/media)" = 204
     check "  a client with another path and early data (?ed=2560) too" test "$(ws_any_via 10812 '/x/y/z?ed=2560')" = 204
 
+    # ---- users' DNS goes to the DNS cache ------------------------------------
+    check "users' DNS goes to the DNS cache" in_c 'grep -q "\"xui-dns-cache\"" /usr/local/x-ui/bin/config.json && x-ui dns status | grep -q "answered here"'
+    check "  a query to a DNS server that does not exist is answered (UDP)" dns_via 10813 udp www.google.com NOERROR
+    check "  ...and over TCP" dns_via 10814 tcp www.google.com NOERROR
+    in_c 'printf "# test\nexample.org\n" >/root/test-domains.txt'
+    check "  the cache refuses a listed name (and below it)" in_c 'XUI_THREAT_DOMAINS_MIN_MB=0 XUI_THREAT_DOMAINS_LEAST=1 XUI_THREAT_DOMAINS_URL=file:///root/test-domains.txt x-ui anti-abuse lists && dig +time=5 +tries=1 @127.0.0.1 www.example.org | grep -q "status: NXDOMAIN" && x-ui anti-abuse status | grep -q "Refused names:    1 "'
+    check "  ...also to users through the VPN" dns_via 10815 udp www.example.org NXDOMAIN
+    check "  ...not one allowed under a listed name, while the rest stays refused" in_c 'echo www.example.org >/etc/x-ui/anti-abuse-allow-domains && XUI_THREAT_DOMAINS_MIN_MB=0 x-ui anti-abuse lists load && dig +time=5 +tries=1 @127.0.0.1 www.example.org | grep -q "status: NOERROR" && dig +time=5 +tries=1 @127.0.0.1 mail.example.org | grep -q "status: NXDOMAIN"; r=$?; rm -f /etc/x-ui/anti-abuse-allow-domains; exit $r'
+    check "  ...not a name on the allow list" in_c 'echo example.org >/etc/x-ui/anti-abuse-allow-domains && XUI_THREAT_DOMAINS_MIN_MB=0 x-ui anti-abuse lists load && dig +time=5 +tries=1 @127.0.0.1 www.example.org | grep -q "status: NOERROR"; r=$?; rm -f /etc/x-ui/anti-abuse-allow-domains; exit $r'
+    check "  without the memory for it, the list is taken out" in_c 'XUI_THREAT_DOMAINS_MIN_MB=0 x-ui anti-abuse lists load && grep -q example.org /etc/unbound/unbound.conf.d/x-ui-threats.conf && x-ui anti-abuse lists load && [[ ! -e /etc/unbound/unbound.conf.d/x-ui-threats.conf ]]'
+
     # ---- BBR (host setup forced on in the container) -------------------------
     check "BBR replaces cubic" in_c 'XUI_HOST_SETUP_IN_CONTAINER=1 x-ui host-setup update | grep -q "BBR: on (was cubic)" && [[ $(sysctl -n net.ipv4.tcp_congestion_control) == bbr ]] && grep -q "tcp_congestion_control = bbr" /etc/sysctl.d/60-x-ui.conf'
     check "BBR left alone the second time" in_c 'XUI_HOST_SETUP_IN_CONTAINER=1 x-ui host-setup update | grep -q "BBR: already on"'
@@ -280,6 +312,7 @@ run_distro() {
     in_c 'x-ui anti-abuse off >/dev/null; x-ui dns off >/dev/null'
     check "anti-abuse off: table gone" in_c '! nft list table inet xui_anti_abuse >/dev/null 2>&1 && [[ ! -e /etc/fail2ban/jail.d/x-ui-anti-abuse.conf ]]'
     check "anti-abuse off: threat lists and their timer gone" in_c '[[ ! -e /etc/x-ui/anti-abuse-lists && ! -e /etc/systemd/system/x-ui-anti-abuse-lists.timer ]]'
+    check "dns off: users' DNS no longer goes to the cache" in_c 'for i in $(seq 1 20); do grep -q "\"xui-dns-cache\"" /usr/local/x-ui/bin/config.json || exit 0; sleep 1; done; exit 1'
     check "dns off: resolv.conf back as it was" in_c 'diff <(readlink /etc/resolv.conf; cat /etc/resolv.conf) <(readlink /root/resolv.conf.before; cat /root/resolv.conf.before) >/dev/null && ! systemctl is-active --quiet unbound'
     in_c 'cat > /usr/local/bin/curl <<"SH"
 #!/bin/bash
@@ -300,6 +333,7 @@ chmod +x /usr/local/bin/curl'
     check "dns kept off by the update" in_c '! systemctl is-active --quiet unbound && grep -q "DNS cache: kept off" /root/update.log'
     check "x-ui anti-abuse on brings it back" in_c 'x-ui anti-abuse on >/dev/null && nft list table inet xui_anti_abuse >/dev/null && [[ ! -e /etc/x-ui/anti-abuse.off ]]'
     check "x-ui dns on brings it back" in_c 'x-ui dns on >/dev/null && awk "\$1==\"nameserver\"{print \$2; exit}" /etc/resolv.conf | grep -qx 127.0.0.1'
+    check "  ...and users' DNS goes to it again" in_c 'for i in $(seq 1 20); do grep -q "\"xui-dns-cache\"" /usr/local/x-ui/bin/config.json && exit 0; sleep 1; done; exit 1'
 
     # ---- a panel from before this version keeps its template -----------------
     in_c "python3 -c \"

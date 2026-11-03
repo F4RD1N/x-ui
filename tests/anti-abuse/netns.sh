@@ -288,8 +288,9 @@ lists "$(sources "file://$work/feeds/drop4.json")" || { echo "FAIL anti-abuse li
 threat_checks "threat lists loaded" || rc=1
 set4=$(in_srv nft list set inet xui_anti_abuse threats4)
 set6=$(in_srv nft list set inet xui_anti_abuse threats6)
-if [[ $set4 != *10.0.0.0* && $set4 != *11.0.0.0/4* && $set6 == *2001:db9::/32* && $(grep -c . <<<"$(grep '^# networks: 4$' "$work/lists/threats.nft")") == 1 ]]; then
-    echo "ok   private and too-wide entries left out; 4 networks"
+# 4 from the sources, 12 built-in sinkholes
+if [[ $set4 != *10.0.0.0* && $set4 != *11.0.0.0/4* && $set6 == *2001:db9::/32* && $set4 == *148.81.111.111* && $set4 == *199.2.137.0/24* && $(grep -c . <<<"$(grep '^# networks: 16$' "$work/lists/threats.nft")") == 1 ]]; then
+    echo "ok   private and too-wide entries left out; sinkholes in; 16 networks"
 else
     echo "FAIL threat sets: $set4 $set6 $(grep '^# networks' "$work/lists/threats.nft")"; rc=1
 fi

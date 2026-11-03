@@ -114,6 +114,7 @@ func (s *XrayService) buildXrayConfig(templateConfig string) (*xray.Config, erro
 		return nil, err
 	}
 	xrayConfig.OutboundConfigs = withDirectMark(xrayConfig.OutboundConfigs)
+	withDNSCache(xrayConfig)
 
 	s.inboundService.AddTraffic(nil, nil)
 

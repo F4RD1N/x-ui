@@ -333,6 +333,8 @@ func (s *Server) startTask() {
 		// An inbound added while the core runs reaches it over the API, with
 		// no restart: its port is reserved here.
 		s.xrayService.SyncReservedPorts()
+		// Users' DNS follows the DNS cache when it stops or comes back.
+		s.xrayService.CheckDNSCache()
 		if s.xrayService.IsNeedRestartAndSetFalse() {
 			err := s.xrayService.RestartXray(false)
 			if err != nil {
