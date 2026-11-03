@@ -127,6 +127,54 @@ func (s *InboundService) checkPortExist(listen string, port int, ignoreId int) (
 	return count > 0, nil
 }
 
+// clientsWithNumericTgID makes a string tgId a number: older panels, the
+// stock UI and many API scripts send "" (or the digits as a string), and
+// databases they wrote keep it. "" and anything not a number become 0.
+func clientsWithNumericTgID(settings []byte) []byte {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(settings, &m) != nil {
+		return settings
+	}
+	raw, ok := m["clients"]
+	if !ok {
+		return settings
+	}
+	var clients []map[string]json.RawMessage
+	if json.Unmarshal(raw, &clients) != nil {
+		return settings
+	}
+	changed := false
+	for _, c := range clients {
+		v, ok := c["tgId"]
+		if !ok {
+			continue
+		}
+		var str string
+		if json.Unmarshal(v, &str) != nil {
+			continue
+		}
+		n, err := strconv.ParseInt(strings.ReplaceAll(str, " ", ""), 10, 64)
+		if err != nil {
+			n = 0
+		}
+		c["tgId"] = json.RawMessage(strconv.FormatInt(n, 10))
+		changed = true
+	}
+	if !changed {
+		return settings
+	}
+	b, err := json.Marshal(clients)
+	if err != nil {
+		return settings
+	}
+	m["clients"] = b
+	out, err := json.Marshal(m)
+	if err != nil {
+		return settings
+	}
+	return out
+}
+
 func (s *InboundService) GetClients(inbound *model.Inbound) ([]model.Client, error) {
 	if inbound == nil {
 		return nil, fmt.Errorf("inbound is nil")
@@ -134,7 +182,7 @@ func (s *InboundService) GetClients(inbound *model.Inbound) ([]model.Client, err
 	var settings *struct {
 		Clients []model.Client `json:"clients"`
 	}
-	if err := json.Unmarshal([]byte(inbound.Settings), &settings); err != nil {
+	if err := json.Unmarshal(clientsWithNumericTgID([]byte(inbound.Settings)), &settings); err != nil {
 		return nil, fmt.Errorf("invalid inbound clients: %w", err)
 	}
 	if settings == nil {
