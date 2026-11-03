@@ -10,6 +10,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -409,6 +410,156 @@ func TestNativeServerUDPLossReorderDuplicateBulk(t *testing.T) {
 	}
 	if !bytes.Equal(want, got) {
 		t.Fatal("loss/reorder transfer corrupted")
+	}
+}
+
+// downlinkDispatcher hands back a link whose downlink the test drives directly
+// and whose uplink it ignores, so a test can push data the mieru client never
+// reads and observe whether the wire reader keeps draining the underlay.
+type downlinkDispatcher struct{ ready chan buf.Writer }
+
+func (*downlinkDispatcher) Type() interface{} { return routing.DispatcherType() }
+func (*downlinkDispatcher) Start() error      { return nil }
+func (*downlinkDispatcher) Close() error      { return nil }
+func (d *downlinkDispatcher) Dispatch(context.Context, xnet.Destination) (*transport.Link, error) {
+	downR, downW := pipe.New()
+	_, upW := pipe.New()
+	d.ready <- downW
+	return &transport.Link{Reader: downR, Writer: upW}, nil
+}
+func (*downlinkDispatcher) DispatchLink(context.Context, xnet.Destination, *transport.Link) error {
+	return errors.New("downlinkDispatcher does not dial")
+}
+
+// On the TCP underlay the sole wire reader must keep draining into a bounded
+// buffer even while the application is not reading, so a transiently slow
+// consumer on one direction cannot stall the other and truncate a full-duplex
+// stream. The old code required the receive queue to fully empty before the
+// next segment was delivered, so the reader stopped after the first segment
+// and left the rest stuck in the underlay.
+func TestNativeServerTCPReaderKeepsDrainingWhileAppIsSlow(t *testing.T) {
+	s := nativeTestServer(t, "tcp", nativeTestUser("synthetic-user", "synthetic-password", "drain@test", false))
+	d := &downlinkDispatcher{ready: make(chan buf.Writer, 1)}
+	c, _, _ := nativeConnect(t, s, "tcp", "synthetic-user", "synthetic-password", false, d, nil)
+	addr, _ := nativebridge.Address(xnet.TCPDestination(xnet.DomainAddress("drain.invalid"), 443))
+	if err := socksRequest(c, 1, addr); err != nil {
+		t.Fatal(err)
+	}
+	var downW buf.Writer
+	select {
+	case downW = <-d.ready:
+	case <-time.After(5 * time.Second):
+		t.Fatal("dispatcher was not invoked")
+	}
+	// Push many distinct downlink segments the application never reads; each
+	// small write with a gap becomes its own mieru segment.
+	const seg = 2 << 10
+	const count = 32
+	const total = seg * count
+	go func() {
+		for i := 0; i < count; i++ {
+			b := buf.New()
+			_, _ = b.Write(randomBytes(seg))
+			if downW.WriteMultiBuffer(buf.MultiBuffer{b}) != nil {
+				return
+			}
+			time.Sleep(3 * time.Millisecond)
+		}
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	var queued int
+	for time.Now().Before(deadline) {
+		c.mu.Lock()
+		queued = c.queued
+		c.mu.Unlock()
+		if queued >= total {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if queued < total {
+		t.Fatalf("wire reader stalled with the app not reading: buffered %d of %d bytes", queued, total)
+	}
+}
+
+// When a TCP session's pending receive budget is full, the shared underlay
+// reader must backpressure (pause) until the session drains, never abort the
+// session. Aborting left the client hung waiting for a reply the underlay
+// never delivered, truncating a full-duplex transfer.
+func TestInboundSessionBackpressuresInsteadOfAborting(t *testing.T) {
+	s := &inboundSession{done: make(chan struct{}), incoming: make(chan segment, 256), room: make(chan struct{}, 1), budget: new(atomic.Int64)}
+	payload := make([]byte, 1000)
+	for s.enqueue(segment{payload: payload}) {
+	}
+	// A further segment must block, not drop or abort.
+	blocked := make(chan bool, 1)
+	go func() { blocked <- s.enqueueBlocking(segment{payload: payload}, nil) }()
+	select {
+	case <-blocked:
+		t.Fatal("enqueueBlocking returned while full; it must backpressure")
+	case <-time.After(150 * time.Millisecond):
+	}
+	// Draining one segment frees capacity; the blocked enqueue must resume.
+	s.dequeue(<-s.incoming)
+	select {
+	case ok := <-blocked:
+		if !ok {
+			t.Fatal("enqueueBlocking failed after capacity was freed")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("enqueueBlocking did not resume after a dequeue")
+	}
+	// A full-queue enqueueBlocking must give up once the session ends.
+	for s.enqueue(segment{payload: payload}) {
+	}
+	ended := make(chan bool, 1)
+	go func() { ended <- s.enqueueBlocking(segment{payload: payload}, nil) }()
+	time.Sleep(50 * time.Millisecond)
+	close(s.done)
+	select {
+	case ok := <-ended:
+		if ok {
+			t.Fatal("enqueueBlocking reported success for an ended session")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("enqueueBlocking did not return after the session ended")
+	}
+}
+
+// Reaching the per-session UDP destination cap must evict only the coldest
+// flow, never tear down the whole session. Fanning out past the cap once
+// returned an error whose deferred cleanup closed the session and dropped
+// every working destination with it.
+func TestNativeServerUDPDestinationCapEvictsLRU(t *testing.T) {
+	s := nativeTestServer(t, "udp", nativeTestUser("synthetic-user", "synthetic-password", "fanout@test", false))
+	d := &nativeEchoDispatcher{}
+	c, _, _ := nativeConnect(t, s, "udp", "synthetic-user", "synthetic-password", false, d, nil)
+	addr, _ := nativebridge.Address(xnet.UDPDestination(xnet.AnyIP, 0))
+	if err := socksRequest(c, 3, addr); err != nil {
+		t.Fatal(err)
+	}
+	pc := &packetConn{Conn: c}
+	_ = c.SetReadDeadline(time.Now().Add(20 * time.Second))
+	const dests = maxUDPDestinations + 6
+	for i := 0; i < dests; i++ {
+		target := xnet.UDPDestination(xnet.ParseAddress(fmt.Sprintf("192.0.2.%d", i+1)), 5353)
+		want := []byte(fmt.Sprintf("fan-out datagram %d", i))
+		if err := pc.WritePacket(want, target); err != nil {
+			t.Fatalf("write to destination %d: %v", i, err)
+		}
+		got, reply, err := pc.ReadPacket()
+		if err != nil {
+			t.Fatalf("destination %d past the cap tore down the session: %v", i, err)
+		}
+		if !bytes.Equal(want, got) || reply.Address.String() != target.Address.String() || reply.Port != target.Port {
+			t.Fatalf("destination %d echo mismatch: %q from %v", i, got, reply)
+		}
+	}
+	if got := len(d.snapshot()); got != dests {
+		t.Fatalf("dispatched %d destinations, want %d", got, dests)
+	}
+	if c.ended() {
+		t.Fatalf("session ended after fan-out: %v", c.error())
 	}
 }
 

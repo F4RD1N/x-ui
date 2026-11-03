@@ -105,6 +105,12 @@ const (
 	closeDrainWait = 2 * time.Second
 	closeAttempts  = 3
 	closeWait      = 200 * time.Millisecond
+
+	// tcpRecvBuffer bounds the payload buffered for Read on the TCP underlay.
+	// The sole wire reader fills up to this before it waits, so a transiently
+	// slow reader cannot stop it draining the underlay (which would deadlock a
+	// full-duplex stream); at the cap TCP flow control backpressures the peer.
+	tcpRecvBuffer = 512 << 10
 )
 
 // UDP liveness, as in the reference. Both ends of a UDP session send an ACK
@@ -677,13 +683,19 @@ func (c *Conn) pushLocked(p []byte) {
 	}
 }
 
-// deliver queues a TCP payload (or the opening payload) for Read. TCP needs no
-// acknowledgements, so it waits until the previous payload was read, the
-// backpressure the old pipe gave. It reports false when the session ended.
+// deliver queues a TCP payload (or the opening payload) for Read. TCP carries
+// no acknowledgements of its own, so backpressure is the underlay's: the sole
+// wire reader keeps draining into a bounded buffer and only waits once that
+// buffer is full, which then stalls the kernel socket and, through TCP flow
+// control, the peer's writer. Requiring the queue to fully empty instead
+// deadlocked a full-duplex stream, whose reader is transiently backpressured
+// by the opposite direction and cannot drain between segments; the wire reader
+// then stopped and the peer's write deadline truncated the transfer. It
+// reports false when the session ended.
 func (c *Conn) deliver(p []byte) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for c.queued > 0 && !c.ended() {
+	for c.queued >= tcpRecvBuffer && !c.ended() {
 		c.cond.Wait()
 	}
 	if c.ended() {

@@ -582,7 +582,18 @@ func (s *Server) relayUDP(ctx context.Context, conn *Conn, dispatcher routing.Di
 		r := routes[key]
 		if r == nil {
 			if len(routes) >= maxUDPDestinations {
-				return errors.New("Mieru UDP destination limit reached")
+				// Evict the least-recently-used flow rather than tearing down
+				// the whole session: reaching the per-session fan-out cap must
+				// drop only the coldest destination, not every working one.
+				var evict string
+				var oldest int64
+				for k, rr := range routes {
+					if evict == "" || rr.last.Load() < oldest {
+						evict, oldest = k, rr.last.Load()
+					}
+				}
+				routes[evict].close()
+				delete(routes, evict)
 			}
 			routeCtx, routeCancel := context.WithCancel(privateRouteContext(ctx))
 			link, e := dispatcher.Dispatch(routeCtx, dest)

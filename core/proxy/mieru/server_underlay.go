@@ -65,7 +65,7 @@ func (s *Server) serveUnderlay(ctx context.Context, w *wire, first segment, user
 			sessionCtx, sessionCancel := context.WithCancel(ctx)
 			sessionCtx = privateRouteContext(sessionCtx)
 
-			entry = &inboundSession{parent: w.conn, done: make(chan struct{}), incoming: make(chan segment, 256), cancel: sessionCancel, budget: budget}
+			entry = &inboundSession{parent: w.conn, done: make(chan struct{}), incoming: make(chan segment, 256), room: make(chan struct{}, 1), cancel: sessionCancel, budget: budget}
 			childWire := &wire{conn: entry, username: w.username, password: w.password, udp: w.udp, custom: w.custom, server: true, parent: w, incoming: entry.incoming, sessionDone: entry.done, dequeue: entry.dequeue}
 			childWire.lastWrite.Store(monoNow())
 			conn, err := acceptSession(childWire, seg)
@@ -86,9 +86,18 @@ func (s *Server) serveUnderlay(ctx context.Context, w *wire, first segment, user
 			return nil
 		}
 		// A slow stream cannot consume unbounded per-session or underlay
-		// payload bytes. UDP overflow is recovered by its reliable transport.
-		if !entry.enqueue(seg) && !w.udp {
-			entry.conn.abort(errors.New("Mieru session receive queue exhausted"))
+		// payload bytes. UDP overflow is recovered by its reliable transport,
+		// so a datagram that does not fit is simply dropped. TCP has no such
+		// recovery: dropping (or aborting the session, which leaves the client
+		// hung waiting for a reply the underlay never delivers) would truncate
+		// the stream. Instead backpressure the underlay, pausing this reader
+		// until the session drains; the return direction keeps flowing on its
+		// own writer, so a full-duplex echo cannot deadlock. The bounded wait
+		// ends if the session or the whole underlay (idle timeout) does.
+		if w.udp {
+			entry.enqueue(seg)
+		} else if !entry.enqueueBlocking(seg, ctx.Done()) {
+			return nil
 		}
 
 		return nil
@@ -112,6 +121,7 @@ type inboundSession struct {
 	parent   net.Conn
 	done     chan struct{}
 	incoming chan segment
+	room     chan struct{} // signals that a dequeue freed pending capacity
 	cancel   context.CancelFunc
 	conn     *Conn
 	once     sync.Once
@@ -128,6 +138,35 @@ func (s *inboundSession) dequeue(seg segment) {
 	n := segmentCost(seg)
 	s.bytes.Add(-n)
 	s.budget.Add(-n)
+	// Wake a reader backpressured in enqueueBlocking; best effort, a missed
+	// signal is covered by that loop's periodic retry.
+	if s.room != nil {
+		select {
+		case s.room <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// enqueueBlocking is enqueue for the TCP underlay: rather than dropping the
+// segment when the session's pending budget is full, it pauses until a
+// dequeue frees capacity, so the shared underlay reader backpressures the
+// peer instead of truncating the stream. It returns false once the session or
+// the underlay (done) has ended.
+func (s *inboundSession) enqueueBlocking(seg segment, done <-chan struct{}) bool {
+	for {
+		if s.enqueue(seg) {
+			return true
+		}
+		select {
+		case <-s.done:
+			return false
+		case <-done:
+			return false
+		case <-s.room:
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 func (s *inboundSession) enqueue(seg segment) bool {
 	s.queueMu.Lock()
