@@ -38,6 +38,10 @@
                 app.$message.error("AnyTLS inbound requires TCP with TLS.");
                 return;
             }
+            if (inModal.inbound.protocol === Protocols.ANYTLS && !inModal.inbound.stream.tls.certs.some(cert => (cert.cert && cert.key) || (cert.certFile && cert.keyFile))) {
+                app.$message.error("AnyTLS certificate and private key are required.");
+                return;
+            }
             ObjectUtil.execute(inModal.confirm, inModal.inbound, inModal.dbInbound);
         },
         show({
@@ -89,14 +93,14 @@
             const settings = inbound.settings;
             if (this.nativeProfileController && this.nativeProfileSettings !== settings) this.cancelNativeDefaults();
             if (!this.visible || this.isEdit || !inbound.isNative || !settings.needsProfile || settings.generating || (settings.profileAttempted && !retry)) return false;
-            const snapshot = JSON.stringify(inbound.toJson());
+            if (!settings.profileSnapshot) settings.profileSnapshot = JSON.stringify(inbound.toJson());
+            if (settings.profileIdentityError) return false;
             this.cancelNativeDefaults();
             const controller = new AbortController();
             const token = this.nativeProfileToken;
             this.nativeProfileController = controller;
             this.nativeProfileSettings = settings;
             settings.profileAttempted = true;
-            if (!settings.profileSnapshot) settings.profileSnapshot = snapshot;
             settings.generating = true;
             settings.generationError = '';
             settings.generationNotice = '';
@@ -104,28 +108,24 @@
             try {
                 const request = {
                     kind: 'inbound-profile', protocol: inbound.protocol,
-                    serverName: window.location.hostname.replace(/^\[|\]$/g, ''),
                     email: settings.clients[0]?.email || '',
                 };
-                const listen = String(inbound.listen || '').trim().replace(/^\[|\]$/g, '');
-                if (listen && !['0.0.0.0', '::', '::0'].includes(listen)) {
-                    const ipv4 = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(listen) && listen.split('.').every(part => Number(part) <= 255);
-                    let ipv6 = false;
-                    try { ipv6 = listen.includes(':') && new URL('http://[' + listen + ']/').hostname !== ''; } catch (_) {}
-                    if (ipv4 || ipv6) request.serverAddress = listen;
-                }
+                if (['anytls', 'openvpn'].includes(inbound.protocol) && settings.data.clientExport?.serverName) request.serverName = settings.data.clientExport.serverName;
+                if (inbound.protocol === Protocols.ORBIT && settings.data.clientExport?.address) request.serverAddress = settings.data.clientExport.address;
                 if (inbound.protocol === Protocols.DNSTT && settings.data.domain) request.domain = settings.data.domain;
                 if (inbound.protocol === Protocols.SHADOWTLS && settings.data.handshake?.address) request.handshakeAddress = settings.data.handshake.address;
                 const generated = await Inbound.NativeSettings.requestCredentials(request, controller.signal);
                 if (this.nativeProfileToken !== token || this.inbound !== inbound || this.inbound.settings !== settings || !this.visible || this.isEdit) return false;
+                const identity = Inbound.NativeSettings.canonicalServerIdentity;
+                if ((inbound.protocol === Protocols.ANYTLS && identity(request.serverName) !== identity(settings.data.clientExport?.serverName)) || (inbound.protocol === Protocols.ORBIT && identity(request.serverAddress) !== identity(settings.data.clientExport?.address))) throw new Error('Server identity changed. Your entries were kept. Generate again.');
                 const before = JSON.parse(settings.profileSnapshot);
                 const profile = Inbound.NativeSettings.mergeGeneratedProfile(inbound.protocol, generated, before, inbound.toJson());
                 const supplied = Inbound.fromJson({...before, settings: generated.settings, streamSettings: generated.streamSettings || before.streamSettings});
-                if (supplied.settings.validationErrors.length) throw new Error('The generated settings were incomplete. Try again.');
+                if (supplied.settings.generatedProfileErrors.length) throw new Error('The generated settings were incomplete. Try again.');
                 if (inbound.protocol === Protocols.ANYTLS && (supplied.stream.network !== 'tcp' || supplied.stream.security !== 'tls' || !supplied.stream.tls.certs.some(cert => cert.cert && cert.key))) throw new Error('The generated certificate was incomplete. Try again.');
                 const next = Inbound.fromJson(profile);
                 if (generated.publicKey) next.settings.generatedPublicKey = generated.publicKey;
-                next.settings.generationNotice = next.settings.validationErrors.length ? '' : 'Settings are ready.';
+                next.settings.generationNotice = next.settings.validationErrors.length ? 'Credentials are ready. Complete the required fields.' : 'Settings are ready.';
                 next.settings.rememberClientBindings();
                 next.settings.modeDefaultsPending = true;
                 this.inbound = next;
@@ -147,7 +147,7 @@
             if (!this.visible || !this.inbound.isNative || !settings.modeDefaultsPending || settings.generating) return false;
             settings.modeDefaultsPending = false;
             settings.modeDefaultsFailed = false;
-            const ready = await settings.fillMissingModeDefaults({serverName: window.location.hostname.replace(/^\[|\]$/g, '')});
+            const ready = await settings.fillMissingModeDefaults();
             if (this.inbound.settings === settings) settings.modeDefaultsFailed = !ready;
             return ready;
         },

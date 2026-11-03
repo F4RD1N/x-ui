@@ -50,7 +50,6 @@ func GenerateNativeCredentials(r NativeCredentialRequest) (map[string]string, er
 		return map[string]string{
 			"privateKey": base64.RawURLEncoding.EncodeToString(key.Bytes()), "publicKey": public,
 			"shortId": hex.EncodeToString(shortID), "key": connection,
-			"target": "www.microsoft.com:443", "serverName": "www.microsoft.com",
 		}, nil
 	case "dnstt":
 		key, err := ecdh.X25519().GenerateKey(rand.Reader)

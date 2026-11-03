@@ -25,17 +25,18 @@ function profile(request, serial) {
       Object.assign(client,{password:uuid}); Object.assign(settings,{handshakeTimeout:10,maxStreams:128,clientExport:{serverName:request.serverName,ca:pem}});
       result.streamSettings={network:'tcp',security:'tls',tlsSettings:{minVersion:'1.2',certificates:[{certificate:pem.split('\n'),key:key.split('\n')}]}}; break;
     case 'orbit':
-      Object.assign(client,{key:'vck1_'+'A'.repeat(86)}); Object.assign(settings,{transport:'tcp',handshakeTimeout:15,maxSessions:1000,maxFlows:128,udpIdleTimeout:60,tls:{certificate:pem.split('\n'),key:key.split('\n')},clientExport:{serverName:request.serverName}}); break;
+      Object.assign(client,{key:'vck1_'+'A'.repeat(86)}); Object.assign(settings,{transport:'tcp',handshakeTimeout:15,maxSessions:1000,maxFlows:128,udpIdleTimeout:60,tls:{certificate:pem.split('\n'),key:key.split('\n')},clientExport:{address:request.serverAddress}}); break;
     case 'openvpn':
       Object.assign(client,{commonName:'client-'+uuid,certificate:pem,privateKey:key,tlsCryptV2:wrap('client')});
-      Object.assign(settings,{network:'udp',certificates:{ca:pem,cert:pem,key,tlsCryptV2:wrap('server')},crypto:{dataCiphers:['AES-256-GCM','AES-128-GCM','CHACHA20-POLY1305'],authHash:'SHA256'},tunnel:{ipv4:'10.88.0.0/24',dns:['1.1.1.1'],mtu:1400},limits:{maxSessions:128,maxSessionsPerIP:16,maxFlowsPerSession:256,handshakeSeconds:15,idleSeconds:120},renegotiationSeconds:3600}); break;
+      Object.assign(settings,{network:'udp',certificates:{ca:pem,cert:pem,key,tlsCryptV2:wrap('server')},clientExport:{issuerPrivateKey:key},crypto:{dataCiphers:['AES-256-GCM','AES-128-GCM','CHACHA20-POLY1305'],authHash:'SHA256'},tunnel:{ipv4:'10.88.0.0/24',dns:[],mtu:1400},limits:{maxSessions:128,maxSessionsPerIP:16,maxFlowsPerSession:256,handshakeSeconds:15,idleSeconds:120},renegotiationSeconds:3600}); break;
     case 'mieru':
       Object.assign(client,{username:uuid,password:'22222222-3333-4444-8555-666666666666'}); Object.assign(settings,{transport:'tcp',handshakeTimeout:10}); break;
     case 'dnstt':
-      Object.assign(client,{id:uuid}); Object.assign(settings,{domain:request.domain || 'fixture-'+serial+'.tunnel.invalid',privateKey:'11'.repeat(32),inner:{protocol:'vless'},mtu:1232,handshakeTimeout:30,maxSessions:256,maxStreams:128});
-      result.publicKey='22'.repeat(32); break;
+      Object.assign(client,{id:uuid}); Object.assign(settings,{domain:request.domain || '',privateKey:'11'.repeat(32),inner:{protocol:'vless'},mtu:1232,handshakeTimeout:30,maxSessions:256,maxStreams:128});
+      result.publicKey='22'.repeat(32);if(!settings.domain)result.requirements=[{field:'domain',message:'A DNS tunnel name is required'}];break;
     case 'shadowtls':
-      Object.assign(client,{password:uuid}); Object.assign(settings,{version:3,strict:true,handshakeTimeout:10,handshake:{address:request.handshakeAddress || 'www.microsoft.com',port:443},inner:{protocol:'shadowsocks',settings:{network:'tcp',method:'2022-blake3-aes-256-gcm',password:Buffer.alloc(32,1).toString('base64'),clients:[{email:client.email,level:0,password:Buffer.alloc(32,2).toString('base64')}]}}}); break;
+      Object.assign(client,{password:uuid}); Object.assign(settings,{version:3,strict:true,handshakeTimeout:10,handshake:{address:request.handshakeAddress || '',port:443},inner:{protocol:'shadowsocks',settings:{network:'tcp',method:'2022-blake3-aes-256-gcm',password:Buffer.alloc(32,1).toString('base64'),clients:[{email:client.email,level:0,password:Buffer.alloc(32,2).toString('base64')}]}}});
+      if(!settings.handshake.address)result.requirements=[{field:'handshake.address',message:'A TLS handshake target is required'}];break;
     default: throw new Error('Unexpected profile protocol '+request.protocol);
   }
   return result;
@@ -68,6 +69,7 @@ const server=http.createServer(async(req,res)=>{
     if(mode==='malformed')obj.settings.clients=[];
     if(mode==='wrong-protocol')obj.protocol='vmess';
     if(mode==='bad-anytls')delete obj.streamSettings;
+    if(mode==='bad-dnstt-key'){obj.settings.privateKey='invalid';obj.requirements.push({field:'privateKey',message:'DNSTT private key must contain 64 hex characters'});}
     setTimeout(()=>json(res,{success:true,obj}),35);return;
   }
   if(/\/panel\/api\/inbounds\/(add|update\/\d+|import)$/.test(url.pathname)){
@@ -89,7 +91,17 @@ function field(page,label){return page.locator('.ant-modal:visible .ant-form-ite
 async function choose(page,protocol){await field(page,'protocol').locator('.ant-select').click();await page.locator('.ant-select-dropdown:visible .ant-select-dropdown-menu-item').getByText(protocol,{exact:true}).click();await page.waitForFunction(protocol=>inModal.inbound.protocol===protocol,protocol);}
 async function open(page){await page.getByRole('button',{name:/pages\.inbounds\.addInbound$/}).click();await page.locator('.ant-modal:visible').waitFor({state:'visible'});}
 async function close(page){await page.locator('.ant-modal:visible .ant-modal-close').click();await page.waitForFunction(()=>!inModal.visible);await page.waitForTimeout(220);}
-async function ready(page){await page.waitForFunction(()=>inModal.inbound.isNative&&!inModal.inbound.settings.generating&&(inModal.inbound.settings.generationNotice||inModal.inbound.settings.generationError));}
+async function ready(page){await page.waitForFunction(()=>inModal.inbound.isNative&&!inModal.inbound.settings.generating&&!inModal.inbound.settings.modeDefaultsPending&&(!inModal.inbound.settings.needsProfile||inModal.inbound.settings.generationError));}
+async function fill(page,label,value){const input=field(page,label).locator('input, textarea').first();await input.fill(value);await input.press('Tab');}
+async function supplyIdentity(page,protocol,value){
+  if(!['orbit','anytls'].includes(protocol))return;
+  const before=requests.length;
+  await fill(page,protocol==='orbit'?'Client server address':'Client server name',value||(protocol==='orbit'?'192.0.2.45':'chosen.example.invalid'));
+  await page.waitForTimeout(80);assert.equal(requests.length,before,protocol+' typing identity does not generate implicitly');
+  await page.getByRole('button',{name:'Generate credentials',exact:true}).click();
+}
+async function chooseProfile(page,protocol){await choose(page,protocol);await supplyIdentity(page,protocol);}
+async function retryProfile(page){const requiresIdentity=await page.evaluate(()=>inModal.inbound.settings.profileRequiresIdentity);await page.getByRole('button',{name:requiresIdentity?'Generate credentials':'Retry generation',exact:true}).click();}
 function saveButton(page){return page.locator('.ant-modal:visible .ant-modal-footer button.ant-btn-primary');}
 function dbRow(protocol='mieru'){
   const generated=profile({protocol,email:'saved@example.invalid',serverName:'saved.example.invalid',domain:'saved.example.invalid'},99);
@@ -110,26 +122,47 @@ function dbRow(protocol='mieru'){
   assert.equal(await page.evaluate(()=>inModal.inbound.isNative),false);await choose(page,'vmess');await page.waitForTimeout(80);assert.equal(requests.length,0,'VMess must not request native material');await close(page);
   checks.push({defaultVmessNoGeneration:true});
   for(const protocol of ['orbit','dnstt','openvpn','anytls','shadowtls','mieru']){
-    mode='hold';await open(page);const before=requests.length;await choose(page,protocol);await until(()=>requests.length===before+1,protocol+' request');
+    mode='hold';await open(page);const before=requests.length;await choose(page,protocol);
+    if(['orbit','anytls'].includes(protocol)){
+      await page.waitForTimeout(100);assert.equal(requests.length,before,protocol+' waits for explicit certificate identity');
+      assert.equal(await page.evaluate(()=>inModal.inbound.settings.generating),false);
+      assert.equal(await page.evaluate(()=>inModal.inbound.settings.needsProfile),true);
+      assert.equal(await page.getByRole('button',{name:'Generate credentials',exact:true}).isDisabled(),true,protocol+' Generate requires a valid explicit identity');
+      const saveBefore=submissions.length;if(!await saveButton(page).isDisabled())await saveButton(page).click();await page.waitForTimeout(80);assert.equal(submissions.length,saveBefore,protocol+' cannot save without explicit identity');
+      // A listener address must never become a client certificate identity implicitly.
+      await fill(page,'monitor','192.0.2.99');await page.waitForTimeout(80);assert.equal(requests.length,before,protocol+' listen does not infer identity');
+      await supplyIdentity(page,protocol);
+    }
+    await until(()=>requests.length===before+1,protocol+' request');
     assert.equal(await saveButton(page).isDisabled(),true,protocol+' save disabled during generation');
     const original=await page.evaluate(()=>inModal.inbound.clients[0]._clientBaseToJson());
     deferred.shift()();await ready(page);
     const state=await page.evaluate(()=>({settings:inModal.inbound.settings.toJson(),stream:inModal.inbound.stream.toJson(),errors:inModal.inbound.settings.validationErrors,error:inModal.inbound.settings.generationError,publicKey:inModal.inbound.settings.generatedPublicKey}));
     assert.equal(state.error,'',protocol+' valid response applied');
     for(const [name,value] of Object.entries(original))assert.deepEqual(state.settings.clients[0][name],name==='tgId'&&value===''?0:value,protocol+' client metadata '+name+' retained with typed empty Telegram ID');
-    assert.equal(requests.at(-1).body.email,original.email);assert.equal(requests.at(-1).body.serverName,'127.0.0.1');
+    assert.equal(requests.at(-1).body.email,original.email);
+    assert.equal(requests.at(-1).body.serverName,protocol==='anytls'?'chosen.example.invalid':undefined);
+    assert.equal(requests.at(-1).body.serverAddress,protocol==='orbit'?'192.0.2.45':undefined);
     if(protocol==='dnstt'){
       assert.equal(state.settings.privateKey,'11'.repeat(32));assert.equal(state.publicKey,'22'.repeat(32));
-      assert.match(state.settings.domain,/\.tunnel\.invalid$/);
+      assert.equal(state.settings.domain,'');assert.equal(await page.evaluate(()=>inModal.inbound.settings.needsProfile),false);
     }
-    assert.deepEqual(state.errors,[],protocol+' generated validation');
+    if(['dnstt','shadowtls'].includes(protocol)){
+      assert.ok(state.errors.some(error=>protocol==='dnstt'?/DNS tunnel name/.test(error):/TLS handshake target/.test(error)),protocol+' explicit required field error');
+      const saved=submissions.length;if(!await saveButton(page).isDisabled())await saveButton(page).click();await page.waitForTimeout(80);assert.equal(submissions.length,saved,protocol+' incomplete deployment blocked');
+      const beforeFill=requests.length;await fill(page,protocol==='dnstt'?'Tunnel name':'Handshake TLS target',protocol==='dnstt'?'dns.chosen.example.invalid':'cover.chosen.example.invalid');
+      assert.equal(requests.length,beforeFill,protocol+' external field edit keeps generated keys without another request');
+      assert.deepEqual(await page.evaluate(()=>inModal.inbound.settings.validationErrors),[],protocol+' explicit values satisfy validation');
+      const current=await page.evaluate(()=>inModal.inbound.settings.toJson());assert.equal(protocol==='dnstt'?current.privateKey:current.inner.settings.password,protocol==='dnstt'?'11'.repeat(32):Buffer.alloc(32,1).toString('base64'));
+    }else assert.deepEqual(state.errors,[],protocol+' generated validation');
     if(protocol==='anytls'){assert.equal(state.stream.security,'tls');assert.ok(state.stream.tlsSettings.certificates[0].certificate.length);}
-    if(protocol==='openvpn'){assert.match(state.settings.certificates.tlsCryptV2,/server key/);assert.match(state.settings.clients[0].tlsCryptV2,/client key/);assert.equal(state.settings.clients[0].certificate,pem);}
-    if(protocol==='shadowtls'){assert.equal(state.settings.inner.protocol,'shadowsocks');assert.equal(state.settings.inner.settings.clients[0].email,state.settings.clients[0].email);}
+    if(protocol==='openvpn'){assert.match(state.settings.certificates.tlsCryptV2,/server key/);assert.match(state.settings.clients[0].tlsCryptV2,/client key/);assert.equal(state.settings.clients[0].certificate,pem);assert.deepEqual(state.settings.tunnel.dns,[]);assert.equal(await field(page,'DNS servers (one per line)').locator('textarea').inputValue(),'');}
+    if(protocol==='shadowtls'){assert.equal(state.settings.handshake.address,'');assert.equal(state.settings.inner.protocol,'shadowsocks');assert.equal(state.settings.inner.settings.clients[0].email,state.settings.clients[0].email);}
     const saved=submissions.length;await saveButton(page).click();await until(()=>submissions.length===saved+1,protocol+' real create click');
     const payload=submissions.at(-1);assert.equal(payload.path,'/fixture/panel/api/inbounds/add');assert.equal(payload.data.protocol,protocol);const submitted=JSON.parse(payload.data.settings);assert.equal(submitted.clients[0].email,original.email);
     assert.equal(Object.hasOwn(submitted,'needsProfile'),false);assert.equal(Object.hasOwn(submitted,'generationNotice'),false);
-    await page.waitForFunction(()=>!inModal.visible);await page.waitForTimeout(220);assert.equal(requests.length,before+1,protocol+' no extra generation');checks.push({protocol,automaticDefaults:true,pendingSaveDisabled:true,metadataPreserved:true,realCreate:true});
+    if(protocol==='dnstt')assert.equal(submitted.domain,'dns.chosen.example.invalid');if(protocol==='shadowtls')assert.equal(submitted.handshake.address,'cover.chosen.example.invalid');if(protocol==='openvpn')assert.deepEqual(submitted.tunnel.dns,[]);
+    await page.waitForFunction(()=>!inModal.visible);await page.waitForTimeout(220);assert.equal(requests.length,before+1,protocol+' no extra generation');checks.push({protocol,cryptoGenerated:true,explicitDeploymentOnly:true,pendingSaveDisabled:true,metadataPreserved:true,realCreate:true});
   }
   // Edit, import-shaped modal, and clone must retain stored keys and unknown metadata.
   mode='ok';dataset=[dbRow()];await page.evaluate(()=>app.getDBInbounds());const preserveBefore=requests.length;
@@ -143,9 +176,9 @@ function dbRow(protocol='mieru'){
   assert.equal(submissions.at(-1).path,'/fixture/panel/api/inbounds/import');assert.equal(submissions.at(-1).data.data,importedText);assert.equal(requests.length,preserveBefore,'actual import must not generate');await page.waitForFunction(()=>!promptModal.visible);await page.waitForTimeout(220);
   const beforeClone=submissions.length;await page.evaluate(()=>{const row=app.dbInbounds.find(row=>row.id===91);return app.cloneInbound(row.toInbound(),row);});await until(()=>submissions.length===beforeClone+1,'clone submission');assert.equal(requests.length,preserveBefore);const cloned=JSON.parse(submissions.at(-1).data.settings);assert.deepEqual(cloned.futureOption,{retain:'saved'});assert.equal(cloned.clients[0].username,uuid);assert.notEqual(cloned.clients[0].email,'saved@example.invalid');checks.push({editImportClonePreserved:true,noGeneration:true});
   // A late server reply must not overwrite another protocol or a closed/new form.
-  mode='hold';await open(page);await choose(page,'orbit');await until(()=>deferred.length===1,'pending switch');await choose(page,'vmess');deferred.shift()();await page.waitForTimeout(100);assert.equal(await page.evaluate(()=>inModal.inbound.protocol),'vmess');await close(page);
+  mode='hold';await open(page);await chooseProfile(page,'orbit');await until(()=>deferred.length===1,'pending switch');await choose(page,'vmess');deferred.shift()();await page.waitForTimeout(100);assert.equal(await page.evaluate(()=>inModal.inbound.protocol),'vmess');await close(page);
   await open(page);await choose(page,'openvpn');await until(()=>deferred.length===1,'pending close');await close(page);deferred.shift()();await open(page);await page.waitForTimeout(100);assert.equal(await page.evaluate(()=>inModal.inbound.protocol),defaultProtocol);assert.equal(await page.evaluate(()=>inModal.inbound.isNative),false);await close(page);checks.push({lateSwitchIgnored:true,lateCloseIgnored:true});
-  await open(page);await choose(page,'orbit');await until(()=>deferred.length===1,'pending native switch');await choose(page,'anytls');await until(()=>deferred.length===2,'second native request');deferred.shift()();await page.waitForTimeout(80);assert.equal(await page.evaluate(()=>inModal.inbound.protocol),'anytls');assert.equal(await page.evaluate(()=>inModal.inbound.settings.generating),true);deferred.shift()();await ready(page);assert.equal(await page.evaluate(()=>inModal.inbound.stream.security),'tls');assert.equal(await page.evaluate(()=>inModal.inbound.settings.toJson().clients[0].key),undefined);await close(page);checks.push({lateNativeSwitchIgnored:true});
+  await open(page);await chooseProfile(page,'orbit');await until(()=>deferred.length===1,'pending native switch');await chooseProfile(page,'anytls');await until(()=>deferred.length===2,'second native request');deferred.shift()();await page.waitForTimeout(80);assert.equal(await page.evaluate(()=>inModal.inbound.protocol),'anytls');assert.equal(await page.evaluate(()=>inModal.inbound.settings.generating),true);deferred.shift()();await ready(page);assert.equal(await page.evaluate(()=>inModal.inbound.stream.security),'tls');assert.equal(await page.evaluate(()=>inModal.inbound.settings.toJson().clients[0].key),undefined);await close(page);checks.push({lateNativeSwitchIgnored:true});
   // Safe edits merge with fresh credentials; intentional credential edits are never overwritten.
   for(const protocol of ['mieru','shadowtls']){
     await open(page);await choose(page,protocol);await until(()=>deferred.length===1,'pending safe edit');
@@ -162,9 +195,21 @@ function dbRow(protocol='mieru'){
   await field(page,'Password').locator('input').fill('deliberately-entered-password');await field(page,'Password').locator('input').press('Tab');deferred.shift()();await ready(page);
   assert.equal(await page.evaluate(()=>inModal.inbound.settings.toJson().clients[0].password),'deliberately-entered-password');assert.match(await page.evaluate(()=>inModal.inbound.settings.generationError),/credentials changed.*kept/i);assert.equal(await page.evaluate(()=>inModal.inbound.settings.generationNotice),'');await close(page);checks.push({pendingCredentialEditPreserved:true});
   // A failed network request is visible, recoverable, and cannot submit an incomplete form.
-  mode='network';await open(page);await choose(page,'orbit');await ready(page);assert.ok(await page.evaluate(()=>inModal.inbound.settings.generationError));const failureRequests=requests.length;mode='ok';await page.getByRole('button',{name:'Retry generation',exact:true}).click();await ready(page);assert.equal(await page.evaluate(()=>inModal.inbound.settings.generationError),'');assert.equal(requests.length,failureRequests+1);await close(page);checks.push({networkFailureRetry:true});
-  for(const malformed of ['malformed','wrong-protocol','bad-anytls']){
-    mode=malformed;await open(page);await choose(page,malformed==='bad-anytls'?'anytls':'orbit');await ready(page);assert.ok(await page.evaluate(()=>inModal.inbound.settings.generationError),malformed+' response rejected');assert.equal(await page.evaluate(()=>inModal.inbound.settings.generationNotice),'');await close(page);checks.push({malformedResponse:malformed,rejected:true});
+  mode='network';await open(page);await chooseProfile(page,'orbit');await ready(page);assert.ok(await page.evaluate(()=>inModal.inbound.settings.generationError));const failureRequests=requests.length;mode='ok';await retryProfile(page);await ready(page);assert.equal(await page.evaluate(()=>inModal.inbound.settings.generationError),'');assert.equal(requests.length,failureRequests+1);await close(page);checks.push({networkFailureRetry:true});
+  // Identity is explicit and can change between attempts, but an old reply must never bind a new identity.
+  mode='network';await open(page);await choose(page,'anytls');await supplyIdentity(page,'anytls','first.chosen.example.invalid');await ready(page);assert.ok(await page.evaluate(()=>inModal.inbound.settings.generationError));
+  await fill(page,'Client server name','second.chosen.example.invalid');mode='ok';await retryProfile(page);await ready(page);
+  assert.equal(requests.at(-1).body.serverName,'second.chosen.example.invalid');assert.equal(await page.evaluate(()=>inModal.inbound.settings.generationError),'');assert.equal(await page.evaluate(()=>inModal.inbound.settings.toJson().clientExport.serverName),'second.chosen.example.invalid');await close(page);checks.push({explicitIdentityRetry:true});
+  mode='hold';await open(page);await choose(page,'anytls');await supplyIdentity(page,'anytls','pending-first.example.invalid');await until(()=>deferred.length===1,'pending identity response');
+  await fill(page,'Client server name','pending-second.example.invalid');deferred.shift()();await ready(page);
+  assert.equal(await page.evaluate(()=>inModal.inbound.settings.toJson().clientExport.serverName),'pending-second.example.invalid');assert.ok(await page.evaluate(()=>inModal.inbound.settings.generationError),'stale identity response rejected');
+  mode='ok';await retryProfile(page);await ready(page);assert.equal(requests.at(-1).body.serverName,'pending-second.example.invalid');assert.equal(await page.evaluate(()=>inModal.inbound.settings.generationError),'');await close(page);checks.push({staleIdentityRejectedAndRetryWorks:true});
+  mode='network';await open(page);await choose(page,'anytls');await supplyIdentity(page,'anytls','manual-first.example.invalid');await ready(page);
+  await page.locator('.ant-modal:visible .ant-collapse-header').filter({hasText:'Client 1:'}).first().click();await fill(page,'Password','manual-password-kept-across-retry');await fill(page,'Client server name','manual-second.example.invalid');
+  mode='ok';await retryProfile(page);await ready(page);
+  assert.equal(await page.evaluate(()=>inModal.inbound.settings.toJson().clients[0].password),'manual-password-kept-across-retry');assert.match(await page.evaluate(()=>inModal.inbound.settings.generationError),/credentials changed.*kept/i);await close(page);checks.push({manualCredentialRetryGuard:true});
+  for(const malformed of ['malformed','wrong-protocol','bad-anytls','bad-dnstt-key']){
+    mode=malformed;await open(page);await chooseProfile(page,malformed==='bad-anytls'?'anytls':malformed==='bad-dnstt-key'?'dnstt':'orbit');await ready(page);assert.ok(await page.evaluate(()=>inModal.inbound.settings.generationError),malformed+' response rejected');assert.equal(await page.evaluate(()=>inModal.inbound.settings.generationNotice),'');await close(page);checks.push({malformedResponse:malformed,rejected:true});
   }
   for(const request of requests){assert.equal(request.method,'POST');assert.equal(request.headers['content-type'],'application/json');assert.equal(request.headers['x-requested-with'],'XMLHttpRequest');}
   assert.deepEqual(errors,[],'no browser page exceptions');assert.deepEqual(consoleErrors.filter(message=>!message.includes('net::ERR_EMPTY_RESPONSE')),[],'no unexpected browser console errors');

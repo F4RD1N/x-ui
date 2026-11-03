@@ -115,5 +115,13 @@ func TestNativeProfileOrbitRealityHTTP(t *testing.T) {
 		if result.Obj["privateKey"] == "" || result.Obj["publicKey"] == "" || len(result.Obj["shortId"]) != 16 || !strings.HasPrefix(result.Obj["key"], "vck1_") {
 			t.Fatal("Reality HTTP generation omitted its key material")
 		}
+		if len(result.Obj) != 4 {
+			t.Fatal("Reality HTTP generation must return cryptography only, without deployment defaults")
+		}
+		for _, field := range []string{"target", "serverName", "address", "host"} {
+			if _, exists := result.Obj[field]; exists {
+				t.Fatal("Reality HTTP generation invented deployment information")
+			}
+		}
 	}
 }

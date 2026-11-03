@@ -109,6 +109,37 @@ func TestNativeInboundProfilesHTTP(t *testing.T) {
 			}
 		})
 	}
+	for protocol, field := range map[string]string{"anytls": "serverName", "orbit": "serverAddress", "dnstt": "domain", "shadowtls": "handshake.address"} {
+		t.Run(protocol+"/missing-deployment-input", func(t *testing.T) {
+			body, _ := json.Marshal(map[string]any{"kind": "inbound-profile", "protocol": protocol})
+			w := request(true, string(body))
+			var response struct {
+				Success bool `json:"success"`
+				Obj     struct {
+					Requirements []struct {
+						Field string `json:"field"`
+					} `json:"requirements"`
+				} `json:"obj"`
+			}
+			if json.Unmarshal(w.Body.Bytes(), &response) != nil || !response.Success || w.Header().Get("Cache-Control") != "no-store" {
+				t.Fatal("partial profile HTTP response failed or allowed caching")
+			}
+			found := false
+			for _, requirement := range response.Obj.Requirements {
+				if requirement.Field == field {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("HTTP generation did not expose missing deployment input")
+			}
+			for _, fabricated := range []string{"vpn.internal", "www.microsoft.com", ".tunnel.invalid", "1.1.1.1", "example.com"} {
+				if bytes.Contains(w.Body.Bytes(), []byte(fabricated)) {
+					t.Fatal("HTTP generation guessed deployment values or request host")
+				}
+			}
+		})
+	}
 	for _, body := range []string{
 		`{"kind":"inbound-profile","protocol":"unknown"}`,
 		`{"kind":"inbound-profile","protocol":null}`,

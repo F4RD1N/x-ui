@@ -961,6 +961,13 @@
         available: false,
         current: '',
         latest: '',
+        confirmationOpen: false,
+        pollSerial: 0,
+        pollTimer: null,
+        pollWake: null,
+        pollAbort: null,
+        pollPromise: null,
+        disposed: false,
       },
       logModal,
       xraylogModal,
@@ -1052,46 +1059,217 @@
       // button carries its own loading state, because the page overlay is not
       // shown for this and the update takes a while to start.
       async updatePanel() {
-        if (this.panelUpdate.busy) return;
+        if (this.panelUpdate.busy || this.panelUpdate.confirmationOpen || this.panelUpdate.disposed) return;
         this.panelUpdate.busy = true;
         this.panelUpdate.busyText = 'Checking...';
-
-        const msg = await HttpUtil.get('/panel/api/server/checkUpdate');
+        try {
+          const msg = await HttpUtil.get('/panel/api/server/checkUpdate', undefined, {timeout: 25000});
+          if (this.panelUpdate.disposed || !msg?.success) return;
+          const info = msg.obj;
+          if (!info || typeof info.current !== 'string' || typeof info.latest !== 'string'
+              || typeof info.available !== 'boolean' || !info.latest.trim()) {
+            this.$message.error('The update check returned an invalid response.');
+            return;
+          }
+          this.panelUpdate.checked = true;
+          this.panelUpdate.current = info.current;
+          this.panelUpdate.latest = info.latest;
+          this.panelUpdate.available = info.available;
+          if (!info.available) {
+            this.$message.success(`Already on the latest version (v${info.current}).`);
+            return;
+          }
+          this.panelUpdate.confirmationOpen = true;
+          this.$confirm({
+            title: 'Update panel',
+            content: `Update from v${info.current} to v${info.latest}? `
+              + 'The panel and its Xray core are replaced together and the panel restarts. '
+              + 'Your database, inbounds and login are kept.',
+            okText: '{{ i18n "confirm"}}',
+            class: themeSwitcher.currentTheme,
+            cancelText: '{{ i18n "cancel"}}',
+            onCancel: () => { this.panelUpdate.confirmationOpen = false; },
+            onOk: () => this.startPanelUpdate(info.latest),
+          });
+        } catch (error) {
+          if (!this.panelUpdate.disposed) this.$message.error('Could not check for a panel update.');
+          this.panelUpdate.confirmationOpen = false;
+        } finally {
+          this.panelUpdate.busy = false;
+          this.panelUpdate.busyText = '';
+        }
+      },
+      cancelPanelUpdatePolling() {
+        this.panelUpdate.pollSerial++;
+        if (this.panelUpdate.pollTimer !== null) clearTimeout(this.panelUpdate.pollTimer);
+        if (this.panelUpdate.pollWake) this.panelUpdate.pollWake();
+        if (this.panelUpdate.pollAbort) this.panelUpdate.pollAbort.abort();
+        this.panelUpdate.pollTimer = null;
+        this.panelUpdate.pollWake = null;
+        this.panelUpdate.pollAbort = null;
         this.panelUpdate.busy = false;
         this.panelUpdate.busyText = '';
-        if (!msg.success) return;
-
-        const info = msg.obj;
-        this.panelUpdate.checked = true;
-        this.panelUpdate.current = info.current;
-        this.panelUpdate.latest = info.latest;
-        this.panelUpdate.available = info.available;
-
-        if (!info.available) {
-          this.$message.success(`Already on the latest version (v${info.current}).`);
-          return;
-        }
-
-        this.$confirm({
-          title: 'Update panel',
-          content: `Update from v${info.current} to v${info.latest}? `
-            + 'The panel and its Xray core are replaced together and the panel restarts. '
-            + 'Your database, inbounds and login are kept.',
-          okText: '{{ i18n "confirm"}}',
-          class: themeSwitcher.currentTheme,
-          cancelText: '{{ i18n "cancel"}}',
-          onOk: async () => {
-            this.panelUpdate.busy = true;
-            this.panelUpdate.busyText = 'Updating...';
-            const res = await HttpUtil.post('/panel/api/server/updatePanel');
-            if (!res.success) {
-              this.panelUpdate.busy = false;
-              this.panelUpdate.busyText = '';
-              return;
-            }
-            this.$message.success('Update started. The panel will restart shortly.');
-          },
+      },
+      waitPanelUpdatePoll() {
+        return new Promise(resolve => {
+          this.panelUpdate.pollWake = () => {
+            this.panelUpdate.pollTimer = null;
+            this.panelUpdate.pollWake = null;
+            resolve();
+          };
+          this.panelUpdate.pollTimer = setTimeout(this.panelUpdate.pollWake, 2000);
         });
+      },
+      async resumePanelUpdate() {
+        if (this.panelUpdate.busy || this.panelUpdate.confirmationOpen || this.panelUpdate.disposed) return false;
+        this.cancelPanelUpdatePolling();
+        const serial = this.panelUpdate.pollSerial;
+        this.panelUpdate.busy = true;
+        this.panelUpdate.busyText = 'Checking update status...';
+        let polling = false;
+        try {
+          const abort = new AbortController();
+          this.panelUpdate.pollAbort = abort;
+          const response = await axios.get('/panel/api/server/updatePanelStatus', {timeout: 5000, signal: abort.signal});
+          if (this.panelUpdate.disposed || serial !== this.panelUpdate.pollSerial) return false;
+          const status = response?.data?.obj;
+          if (!response?.data?.success || !status || typeof status.id !== 'string' || !status.id) return false;
+          if (status.state === 'running') {
+            polling = true;
+            this.$message.info('A panel update is already running. Checking its progress...');
+            this.panelUpdate.pollPromise = this.pollPanelUpdate(status.id, '', serial);
+            return true;
+          }
+          if (status.state === 'failed') {
+            this.$message.error(status.phase === 'interrupted'
+              ? 'The last panel update was interrupted. Check the update log.'
+              : 'The last panel update failed. Check the update log.');
+            return true;
+          }
+          return false;
+        } catch (error) {
+          return false; // A page load must not announce a failure for an unavailable status endpoint.
+        } finally {
+          if (!polling && serial === this.panelUpdate.pollSerial) {
+            this.panelUpdate.pollAbort = null;
+            this.panelUpdate.busy = false;
+            this.panelUpdate.busyText = '';
+          }
+        }
+      },
+      async startPanelUpdate(expectedVersion) {
+        if (this.panelUpdate.busy || this.panelUpdate.disposed) return;
+        this.panelUpdate.confirmationOpen = false;
+        this.cancelPanelUpdatePolling();
+        const serial = this.panelUpdate.pollSerial;
+        this.panelUpdate.busy = true;
+        this.panelUpdate.busyText = 'Starting update...';
+        let polling = false;
+        try {
+          // A lost response is ambiguous: never repeat this POST automatically.
+          const response = await axios.post('/panel/api/server/updatePanel', undefined, {timeout: 35000});
+          if (this.panelUpdate.disposed || serial !== this.panelUpdate.pollSerial) return;
+          const res = response?.data;
+          if (!res?.success) {
+            this.$message.error(typeof res?.msg === 'string' && res.msg
+              ? res.msg : 'The update request was not accepted. Check the panel update log.');
+            this.panelUpdate.busy = false;
+            await this.resumePanelUpdate();
+            return;
+          }
+          const job = res.obj;
+          if (!job || typeof job.id !== 'string' || !job.id || !['running', 'succeeded', 'failed'].includes(job.state)) {
+            this.$message.warning('The update request was accepted without a tracking ID. Reload later to check its result.');
+            return;
+          }
+          polling = true;
+          this.$message.info('Update accepted. Checking its progress...');
+          // Resolve the confirmation dialog after acceptance; progress stays on the button.
+          this.panelUpdate.pollPromise = this.pollPanelUpdate(job.id, expectedVersion, serial);
+        } catch (error) {
+          if (!this.panelUpdate.disposed && serial === this.panelUpdate.pollSerial) {
+            this.panelUpdate.busy = false;
+            const attached = await this.resumePanelUpdate();
+            if (!attached && !this.panelUpdate.disposed) {
+              this.$message.warning('Could not confirm the update request. It may still be running. Reload to check its status before trying again.');
+            }
+          }
+        } finally {
+          if (!polling && serial === this.panelUpdate.pollSerial) {
+            this.panelUpdate.busy = false;
+            this.panelUpdate.busyText = '';
+          }
+        }
+      },
+      async pollPanelUpdate(id, expectedVersion, serial) {
+        const deadline = Date.now() + 15 * 60 * 1000;
+        let unavailable = 0;
+        try {
+          while (!this.panelUpdate.disposed && serial === this.panelUpdate.pollSerial && Date.now() < deadline) {
+            try {
+              const abort = new AbortController();
+              this.panelUpdate.pollAbort = abort;
+              // Quiet GET polling avoids repeated network-error toasts during a normal restart.
+              const response = await axios.get('/panel/api/server/updatePanelStatus', {timeout: 5000, signal: abort.signal});
+              if (this.panelUpdate.disposed || serial !== this.panelUpdate.pollSerial) return;
+              const status = response?.data?.obj;
+              if (!response?.data?.success || !status || !['idle', 'running', 'succeeded', 'failed'].includes(status.state)) {
+                throw new Error('Update status is unavailable');
+              }
+              unavailable = 0;
+              if (status.id !== id) {
+                this.$message.warning('Update status no longer matches this request. Check the running version and update log.');
+                return;
+              }
+              if (status.state === 'failed') {
+                this.$message.error(status.phase === 'interrupted'
+                  ? 'The update was interrupted. Check the panel update log.'
+                  : 'The update failed. Check the panel update log.');
+                return;
+              }
+              if (status.state === 'succeeded') {
+                const current = typeof status.currentVersion === 'string' ? status.currentVersion.replace(/^v/, '') : '';
+                const expected = expectedVersion.replace(/^v/, '');
+                if (current && (!expected || current === expected)) {
+                  this.panelUpdate.current = current;
+                  if (expected) this.panelUpdate.available = false;
+                  this.$message.success(expected ? 'Panel update completed. Reloading...'
+                    : `Updater finished. Running version: ${current}. Reloading...`);
+                  window.location.reload();
+                } else {
+                  this.$message.warning('The updater finished, but the expected running version was not confirmed. Reload and check the version.');
+                }
+                return;
+              }
+              if (status.state === 'idle') {
+                this.$message.warning('Update status is no longer available. Check the running version and update log.');
+                return;
+              }
+              this.panelUpdate.busyText = status.phase === 'preparing' ? 'Starting updater...'
+                : status.phase === 'downloading' ? 'Downloading update...'
+                : status.phase === 'installing' ? 'Installing update...' : 'Updating...';
+            } catch (error) {
+              if (this.panelUpdate.disposed || serial !== this.panelUpdate.pollSerial) return;
+              unavailable++;
+              this.panelUpdate.busyText = 'Waiting for the panel...';
+              if (unavailable >= 12) {
+                this.$message.warning('The panel is still unavailable. The update result is unknown; reconnect and check its version and update log.');
+                return;
+              }
+            } finally {
+              if (serial === this.panelUpdate.pollSerial) this.panelUpdate.pollAbort = null;
+            }
+            await this.waitPanelUpdatePoll();
+          }
+          if (!this.panelUpdate.disposed && serial === this.panelUpdate.pollSerial) {
+            this.$message.warning('Update monitoring timed out. The updater may still be running; check its status before trying again.');
+          }
+        } finally {
+          if (serial === this.panelUpdate.pollSerial) {
+            this.panelUpdate.busy = false;
+            this.panelUpdate.busyText = '';
+          }
+        }
       },
       openGeofiles() {
         versionModal.show([]);
@@ -1376,7 +1554,12 @@
         }, 2000);
       },
     },
+    beforeDestroy() {
+      this.panelUpdate.disposed = true;
+      this.cancelPanelUpdatePolling();
+    },
     async mounted() {
+      this.resumePanelUpdate();
       if (window.location.protocol !== "https:") {
         this.showAlert = true;
       }

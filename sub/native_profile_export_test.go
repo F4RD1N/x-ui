@@ -327,14 +327,51 @@ func TestNativeProfileExportGeneratedProtocolMaterial(t *testing.T) {
 	}
 }
 
-func TestNativeProfileExportGeneratedDefaults(t *testing.T) {
-	for _, protocol := range []string{"orbit", "dnstt", "openvpn", "anytls", "shadowtls", "mieru"} {
+func TestNativeProfileExportGeneratedUsableDefaults(t *testing.T) {
+	for _, protocol := range []string{"orbit", "openvpn", "mieru"} {
 		t.Run(protocol, func(t *testing.T) {
 			request := service.NativeCredentialRequest{Kind: "inbound-profile", Protocol: protocol}
 			if protocol == "orbit" {
 				request.ServerAddress = "192.0.2.7"
 			}
 			profile, inbound, client := nativeProfileExportRequest(t, request)
+			if len(profile.Requirements) != 0 {
+				t.Fatal("usable generated profile still has missing deployment requirements")
+			}
+			if protocol == "openvpn" {
+				tunnel := nativeTestMap(t, profile.Settings["tunnel"])
+				if dns, present := tunnel["dns"]; present && dns != nil {
+					servers, ok := dns.([]any)
+					if !ok || len(servers) != 0 {
+						t.Fatal("OpenVPN generation invented a DNS resolver")
+					}
+				}
+				certificates := nativeTestMap(t, profile.Settings["certificates"])
+				blocks := nativeProfilePEMBlocks(certificates["cert"])
+				if len(blocks) != 1 {
+					t.Fatal("OpenVPN generated server leaf is missing")
+				}
+				leaf, err := x509.ParseCertificate(blocks[0].Bytes)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(leaf.DNSNames) != 0 || len(leaf.IPAddresses) != 0 {
+					t.Fatal("OpenVPN generation invented a certificate deployment identity")
+				}
+			} else if protocol == "orbit" {
+				material := nativeTestMap(t, profile.Settings["tls"])
+				blocks := nativeProfilePEMBlocks(material["certificate"])
+				if len(blocks) != 1 {
+					t.Fatal("Orbit generated server leaf is missing")
+				}
+				leaf, err := x509.ParseCertificate(blocks[0].Bytes)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(leaf.DNSNames) != 0 || len(leaf.IPAddresses) != 1 || leaf.IPAddresses[0].String() != "192.0.2.7" {
+					t.Fatal("IP-only Orbit request invented a DNS identity or lost its selected IP")
+				}
+			}
 			outs, err := nativeClientOutbounds(inbound, client, "192.0.2.7")
 			if err != nil {
 				t.Fatal(err)
@@ -352,6 +389,91 @@ func TestNativeProfileExportGeneratedDefaults(t *testing.T) {
 			}
 			if _, err := config.Build(); err != nil {
 				t.Fatalf("default generated subscriber configuration does not load: %v", err)
+			}
+		})
+	}
+}
+
+func TestNativeProfileExportIncompleteDeploymentRequirements(t *testing.T) {
+	for _, tc := range []struct {
+		protocol, field string
+	}{
+		{"anytls", "serverName"},
+		{"orbit", "serverAddress"},
+		{"dnstt", "domain"},
+		{"shadowtls", "handshake.address"},
+	} {
+		t.Run(tc.protocol, func(t *testing.T) {
+			profile, inbound, client := nativeProfileExportRequest(t, service.NativeCredentialRequest{Kind: "inbound-profile", Protocol: tc.protocol})
+			found := false
+			for _, requirement := range profile.Requirements {
+				if requirement.Field == tc.field && requirement.Message != "" {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("missing deployment identity was not reported as a requirement")
+			}
+			text := nativeTestJSONString(t, profile)
+			for _, invented := range []string{"vpn.internal", "tunnel.invalid", "www.microsoft.com", "1.1.1.1", "8.8.8.8"} {
+				if strings.Contains(text, invented) {
+					t.Fatalf("incomplete profile contains invented deployment value %s", invented)
+				}
+			}
+			switch tc.protocol {
+			case "anytls":
+				if client.Password == "" || len(nativeProfilePEMBlocks(profile.Settings)) != 0 || len(nativeProfilePEMBlocks(profile.StreamSettings)) != 0 {
+					t.Fatal("AnyTLS must retain authentication without inventing a server certificate")
+				}
+				stream := nativeTestMap(t, profile.StreamSettings)
+				if stream["network"] != "tcp" || stream["security"] != "tls" {
+					t.Fatal("incomplete AnyTLS profile lost its secure transport skeleton")
+				}
+			case "orbit":
+				if client.Key != "" || profile.Settings["transport"] != "tcp" || len(nativeProfilePEMBlocks(profile.Settings)) != 0 {
+					t.Fatal("Orbit generated an endpoint-bound key before its endpoint was supplied")
+				}
+			case "dnstt":
+				if profile.Settings["domain"] != "" || client.ID == "" {
+					t.Fatal("DNS tunnel must leave its domain blank and retain client authentication")
+				}
+				private, err := hex.DecodeString(profile.Settings["privateKey"].(string))
+				if err != nil {
+					t.Fatal(err)
+				}
+				key, err := ecdh.X25519().NewPrivateKey(private)
+				if err != nil || profile.PublicKey != hex.EncodeToString(key.PublicKey().Bytes()) {
+					t.Fatal("missing deployment domain discarded or corrupted generated DNS tunnel keys")
+				}
+			case "shadowtls":
+				if nativeTestMap(t, profile.Settings["handshake"])["address"] != "" || client.Password == "" {
+					t.Fatal("ShadowTLS must leave its cover blank and retain outer authentication")
+				}
+				inner := nativeTestMap(t, nativeTestMap(t, profile.Settings["inner"])["settings"])
+				selected := nativeTestMap(t, inner["clients"].([]any)[0])
+				serverKey, err := base64.StdEncoding.DecodeString(inner["password"].(string))
+				if err != nil || len(serverKey) != 32 {
+					t.Fatal("incomplete ShadowTLS profile lost its encrypted-inner server key")
+				}
+				userKey, err := base64.StdEncoding.DecodeString(selected["password"].(string))
+				if err != nil || len(userKey) != 32 || bytes.Equal(serverKey, userKey) || selected["email"] != client.Email {
+					t.Fatal("incomplete ShadowTLS profile lost its independent selected user key")
+				}
+			}
+			// Requirements stop incomplete profiles at the form/save boundary.
+			// An exporter may return an incomplete graph, but a missing domain,
+			// cover or Orbit account cannot build into a usable outbound.
+			// AnyTLS outbound syntax alone cannot prove server certificate setup.
+			if tc.protocol != "anytls" {
+				if outs, err := nativeClientOutbounds(inbound, client, "192.0.2.7"); err == nil {
+					var config conf.Config
+					if err := json.Unmarshal([]byte(nativeTestJSONString(t, map[string]any{"outbounds": outs})), &config); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := config.Build(); err == nil {
+						t.Fatal("incomplete deployment unexpectedly built a usable outbound")
+					}
+				}
 			}
 		})
 	}

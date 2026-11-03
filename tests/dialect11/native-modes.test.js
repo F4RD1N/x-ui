@@ -28,13 +28,13 @@ const orbit = () => ({transport: 'tcp', tls: {certificate: cert, key}, clients: 
 const dnstt = () => ({domain: 't.example', privateKey: '11'.repeat(32), inner: {protocol: 'vless'}, clients: [{email: 'existing', id: uuid, level: 2, custom: 'keep'}]});
 const openvpn = clients => ({network: 'udp', certificates: {ca: cert.join('\n'), cert: cert.join('\n'), key: key.join('\n')}, clientProof: {required: true}, clients});
 
-test('WSS fills only host/path and never fabricates an untrusted outer certificate', async () => {
+test('WSS fills its local path only, leaves external fields blank and never fabricates an outer certificate', async () => {
     const data = orbit(); data.transport = 'wss';
     const ctx = fixture('orbit', data);
     ctx.NativeSettings.requestCredentials = async () => {throw new Error('must not generate TLS material');};
     const before = plain(ctx.settings.toJson());
     assert.equal(await ctx.settings.fillMissingModeDefaults(), true);
-    assert.equal(ctx.settings.data.host, 'panel.example');
+    assert.equal(ctx.settings.data.host, undefined);
     assert.equal(ctx.settings.data.path, '/core');
     assert.equal(ctx.settings.data.outerTls, undefined);
     assert.deepEqual(plain(ctx.settings.data.tls), before.tls);
@@ -50,16 +50,16 @@ test('WSS preserves supplied certificate pair, host/path, and all client keys', 
     assert.deepEqual(plain(ctx.settings.toJson()), before);
 });
 
-test('IP-address panels get a DNS WebSocket Host while preserving the numeric inner certificate identity', async () => {
+test('IP-address panels never invent WebSocket Host or peer from their address', async () => {
     for (const transport of ['ws', 'wss']) for (const address of ['127.0.0.1', '192.0.2.9', '2001:db8::9']) {
         const data = orbit(); Object.assign(data, {transport, clientExport: {address}});
         const ctx = fixture('orbit', data);
         ctx.location.hostname = address.includes(':') ? `[${address}]` : address;
         assert.equal(await ctx.settings.fillMissingModeDefaults({serverName: address}), true);
-        assert.equal(ctx.settings.data.host, 'vpn.internal');
+        assert.equal(ctx.settings.data.host, undefined);
         assert.equal(ctx.settings.data.clientExport.address, address);
-        assert.equal(ctx.settings.data.clientExport.serverName, address);
-        assert.equal(ctx.settings.toJson().clientExport.serverName, address);
+        assert.equal(ctx.settings.data.clientExport.serverName, undefined);
+        assert.equal(ctx.settings.toJson().clientExport.serverName, undefined);
         assert.equal(ctx.settings.data.path, '/core');
         assert.deepEqual(plain(ctx.settings.data.tls), data.tls);
         assert.equal(ctx.settings.clients[0].data.key, data.clients[0].key);
@@ -70,14 +70,14 @@ test('IP-address panels get a DNS WebSocket Host while preserving the numeric in
     }
 });
 
-test('WebSocket defaults prefer valid explicit DNS and retain manual Host, peer and credentials', async () => {
+test('WebSocket generation ignores inferred names and retains explicit Host and peer fields', async () => {
     for (const transport of ['ws', 'wss']) {
         const data = orbit(); Object.assign(data, {transport, clientExport: {address: '192.0.2.9'}});
         const ctx = fixture('orbit', data);
         ctx.location.hostname = '127.0.0.1';
         assert.equal(await ctx.settings.fillMissingModeDefaults({serverName: 'custom.example'}), true);
-        assert.equal(ctx.settings.data.host, 'custom.example');
-        assert.equal(ctx.settings.data.clientExport.serverName, '192.0.2.9');
+        assert.equal(ctx.settings.data.host, undefined);
+        assert.equal(ctx.settings.data.clientExport.serverName, undefined);
         ctx.settings.data.host = 'manual.example';
         ctx.settings.data.clientExport.serverName = 'inner.example';
         ctx.settings.data.path = '';
@@ -86,7 +86,7 @@ test('WebSocket defaults prefer valid explicit DNS and retain manual Host, peer 
         assert.equal(ctx.settings.data.clientExport.serverName, 'inner.example');
         delete ctx.settings.data.host;
         assert.equal(await ctx.settings.fillMissingModeDefaults({serverName: 'replacement.example'}), true);
-        assert.equal(ctx.settings.data.host, 'inner.example');
+        assert.equal(ctx.settings.data.host, undefined);
     }
 });
 
@@ -111,11 +111,11 @@ test('WebSocket Host validation matches the client DNS grammar without overwriti
     }
 });
 
-test('Existing complete WebSocket paths gain only a missing numeric peer and do not replace manual peer', async () => {
+test('Existing WebSocket paths do not infer a missing peer or replace manual peer', async () => {
     const data = orbit(); Object.assign(data, {transport: 'ws', host: 'vpn.example', path: '/manual', clientExport: {address: '[2001:db8::5]'}});
     const ctx = fixture('orbit', data);
     assert.equal(await ctx.settings.fillMissingModeDefaults(), true);
-    assert.equal(ctx.settings.data.clientExport.serverName, '2001:db8::5');
+    assert.equal(ctx.settings.data.clientExport.serverName, undefined);
     assert.equal(ctx.settings.data.clientExport.address, '[2001:db8::5]');
     assert.equal(ctx.settings.data.path, '/manual');
     ctx.settings.data.clientExport.serverName = 'my-inner.example';
@@ -134,16 +134,21 @@ for (const partial of [{certificate: cert}, {key}]) test(`WSS refuses a partial 
 test('Reality requests missing X25519 material and preserves existing client keys and TLS', async () => {
     const data = orbit(); data.security = 'reality';
     const ctx = fixture('orbit', data);
-    let request;
-    ctx.NativeSettings.requestCredentials = async value => {request = plain(value); return {privateKey: 'B'.repeat(43), publicKey: 'C'.repeat(43), shortId: '0123456789abcdef', key: 'vck1_' + 'D'.repeat(86)};};
+    let request, calls = 0;
+    ctx.NativeSettings.requestCredentials = async value => {calls++; request = plain(value); return {privateKey: 'B'.repeat(43), publicKey: 'C'.repeat(43), shortId: '0123456789abcdef', key: 'vck1_' + 'D'.repeat(86), target: 'must-not-insert.example:443', serverName: 'must-not-insert.example'};};
     const before = plain(ctx.settings.toJson());
     const originalTLS = plain(ctx.settings.data.tls);
     assert.equal(await ctx.settings.fillMissingModeDefaults(), true);
     assert.deepEqual(request, {kind: 'orbit-reality'});
-    assert.deepEqual(plain(ctx.settings.data.reality), {privateKey: 'B'.repeat(43), shortIds: ['0123456789abcdef'], serverNames: ['www.microsoft.com'], dest: 'www.microsoft.com:443'});
+    assert.deepEqual(plain(ctx.settings.data.reality), {privateKey: 'B'.repeat(43), shortIds: ['0123456789abcdef']});
     assert.deepEqual(plain(ctx.settings.data.tls), originalTLS);
     assert.equal(ctx.settings.toJson().tls, undefined);
     assert.deepEqual(plain(ctx.settings.toJson().clients), before.clients);
+    assert.equal(await ctx.settings.fillMissingModeDefaults(), true);
+    assert.equal(calls, 1, 'missing deployment fields must not trigger repeated key generation');
+    assert.equal(ctx.settings.data.reality.dest, undefined);
+    assert.equal(ctx.settings.data.reality.serverNames, undefined);
+    assert.ok(ctx.settings.validationErrors.length, 'missing deployment fields still require user input');
 });
 
 test('Orbit emits only active mode fields and restores dormant identities without rotation', () => {
@@ -378,7 +383,7 @@ test('ShadowTLS same-mode partial keys are never overwritten and failed switches
     assert.deepEqual(plain(complete.settings.toJson()), switched);
 });
 
-test('complete modes return without setting busy state and WSS accepts explicit hostname option', async () => {
+test('external blanks cause no busy state and WSS ignores obsolete hostname inference option', async () => {
     const ctx = fixture('orbit', orbit());
     let writes = 0;
     Object.defineProperty(ctx.settings, 'generating', {get: () => false, set: () => {writes++;}});
@@ -387,5 +392,59 @@ test('complete modes return without setting busy state and WSS accepts explicit 
     const data = orbit(); data.transport = 'wss';
     const wss = fixture('orbit', data);
     assert.equal(await wss.settings.fillMissingModeDefaults({serverName: 'explicit.example'}), true);
-    assert.equal(wss.settings.data.host, 'explicit.example');
+    assert.equal(wss.settings.data.host, undefined);
+    assert.equal(wss.settings.data.path, '/core');
+    let repeatedWrites = 0;
+    Object.defineProperty(wss.settings, 'generating', {get: () => false, set: () => {repeatedWrites++;}});
+    assert.equal(await wss.settings.fillMissingModeDefaults(), true);
+    assert.equal(repeatedWrites, 0, 'a missing external Host must not repeat the local-path fill');
+});
+
+test('DNSTT account generation succeeds while domain and resolvers remain blank', async () => {
+    const data = dnstt(); data.domain = ''; data.inner.protocol = 'socks'; data.clientExport = {resolvers: []};
+    const ctx = fixture('dnstt', data);
+    assert.equal(await ctx.settings.fillMissingModeDefaults(), true);
+    assert.ok(ctx.settings.clients[0].data.password);
+    assert.equal(ctx.settings.clients[0].data.username, ctx.settings.clients[0].email);
+    assert.equal(ctx.settings.data.domain, '');
+    assert.deepEqual(plain(ctx.settings.data.clientExport), {resolvers: []});
+    assert.equal(ctx.settings.data.privateKey, data.privateKey);
+    assert.ok(ctx.settings.validationErrors.some(error => /DNS tunnel|domain/i.test(error)));
+});
+
+test('ShadowTLS credentials generate without inserting a blank handshake cover or TLS name', async () => {
+    const data = shadowTLS(); data.version = 2; data.handshake.address = ''; data.clientExport = {serverName: ''};
+    const ctx = fixture('shadowtls', data);
+    assert.equal(await ctx.settings.fillMissingModeDefaults(), true);
+    assert.match(ctx.settings.data.password, /^[0-9a-f-]{36}$/);
+    assert.deepEqual(plain(ctx.settings.data.handshake), data.handshake);
+    assert.deepEqual(plain(ctx.settings.data.clientExport), data.clientExport);
+    assert.ok(ctx.settings.validationErrors.some(error => /handshake target/i.test(error)));
+});
+
+test('Reality preserves explicit blank deployment fields and existing supplied deployment values', async () => {
+    for (const external of [{serverNames: [], dest: ''}, {serverNames: ['manual.example'], dest: 'manual.example:8443'}]) {
+        const data = orbit(); data.security = 'reality'; data.reality = {...external, privateKey: 'existing-private'};
+        data.clientExport = {address: '', serverName: '', resolvers: []};
+        const ctx = fixture('orbit', data);
+        assert.equal(await ctx.settings.fillMissingModeDefaults(), true);
+        assert.deepEqual(plain(ctx.settings.data.reality.serverNames), external.serverNames);
+        assert.equal(ctx.settings.data.reality.dest, external.dest);
+        assert.deepEqual(plain(ctx.settings.data.clientExport), data.clientExport);
+        assert.equal(ctx.settings.data.reality.privateKey, 'existing-private');
+        assert.match(ctx.settings.data.reality.shortIds[0], /^[0-9a-f]{16}$/);
+    }
+});
+
+test('async generation preserves edits to dormant fields excluded from active runtime JSON', async () => {
+    const data = orbit(); data.security = 'reality';
+    const ctx = fixture('orbit', data);
+    let resolve;
+    ctx.NativeSettings.requestCredentials = () => new Promise(done => {resolve = done;});
+    const pending = ctx.settings.fillMissingModeDefaults();
+    ctx.settings.data.tls.key = ['manual-dormant-key-edit'];
+    resolve({privateKey: 'B'.repeat(43), publicKey: 'C'.repeat(43), shortId: '0123456789abcdef'});
+    assert.equal(await pending, false);
+    assert.deepEqual(plain(ctx.settings.data.tls.key), ['manual-dormant-key-edit']);
+    assert.equal(ctx.settings.data.reality, undefined);
 });

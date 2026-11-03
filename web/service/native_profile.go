@@ -53,22 +53,27 @@ func GenerateNativeInboundProfile(r NativeCredentialRequest) (*NativeInboundProf
 		return nil, errors.New("invalid native profile port")
 	}
 	name := r.ServerName
-	if name == "" {
-		name = "vpn.internal"
-	}
-	name, err := nativeProfileHost(name)
-	if err != nil {
-		return nil, errors.New("serverName must be a DNS name or IP address")
+	var err error
+	if name != "" {
+		name, err = nativeProfileHost(name)
+		if err != nil {
+			return nil, errors.New("serverName must be a DNS name or IP address")
+		}
 	}
 	var serverIP net.IP
 	if r.Protocol == "orbit" {
 		address := r.ServerAddress
-		if address == "" {
+		if address == "" && net.ParseIP(name) != nil {
 			address = name
 		}
-		serverIP = net.ParseIP(address)
-		if serverIP == nil || (!serverIP.IsGlobalUnicast() && !serverIP.IsLoopback()) {
-			return nil, errors.New("Orbit requires a numeric unicast serverAddress")
+		if address != "" {
+			serverIP = nativeProfileIP(address)
+			if serverIP == nil || (!serverIP.IsGlobalUnicast() && !serverIP.IsLoopback()) {
+				return nil, errors.New("Orbit requires a numeric unicast serverAddress")
+			}
+			if name == "" {
+				name = serverIP.String()
+			}
 		}
 	}
 	email := strings.TrimSpace(r.Email)
@@ -91,14 +96,29 @@ func GenerateNativeInboundProfile(r NativeCredentialRequest) (*NativeInboundProf
 	result := &NativeInboundProfile{Protocol: r.Protocol, Settings: settings}
 	switch r.Protocol {
 	case "anytls", "orbit", "openvpn":
+		if r.Protocol == "anytls" {
+			client["password"] = id
+			settings["handshakeTimeout"], settings["maxStreams"] = 10, 128
+			if name == "" {
+				result.StreamSettings = map[string]any{"network": "tcp", "security": "tls", "tlsSettings": map[string]any{"minVersion": "1.2"}}
+				result.Requirements = append(result.Requirements, NativeProfileRequirement{"serverName", "Enter the server DNS name or IP address before generating its certificate."})
+				return result, nil
+			}
+		}
+		if r.Protocol == "orbit" {
+			settings["transport"], settings["handshakeTimeout"] = "tcp", 15
+			settings["maxSessions"], settings["maxFlows"], settings["udpIdleTimeout"] = 1000, 128, 60
+			if serverIP == nil {
+				result.Requirements = append(result.Requirements, NativeProfileRequirement{"serverAddress", "Enter the server IP address before generating its certificate and client key."})
+				return result, nil
+			}
+		}
 		pki, err := newNativeProfilePKI(name, serverIP)
 		if err != nil {
 			return nil, err
 		}
 		switch r.Protocol {
 		case "anytls":
-			client["password"] = id
-			settings["handshakeTimeout"], settings["maxStreams"] = 10, 128
 			settings["clientExport"] = map[string]any{"serverName": name, "ca": pki.caPEM}
 			result.StreamSettings = map[string]any{"network": "tcp", "security": "tls", "tlsSettings": map[string]any{
 				"minVersion": "1.2", "certificates": []any{map[string]any{
@@ -111,8 +131,6 @@ func GenerateNativeInboundProfile(r NativeCredentialRequest) (*NativeInboundProf
 				return nil, errors.New("Orbit connection key generation failed")
 			}
 			client["key"] = key
-			settings["transport"], settings["handshakeTimeout"] = "tcp", 15
-			settings["maxSessions"], settings["maxFlows"], settings["udpIdleTimeout"] = 1000, 128, 60
 			settings["tls"] = map[string]any{"certificate": nativeProfilePEMLines(pki.serverPEM), "key": nativeProfilePEMLines(pki.serverKeyPEM)}
 			settings["clientExport"] = map[string]any{"address": serverIP.String()}
 		case "openvpn":
@@ -138,7 +156,7 @@ func GenerateNativeInboundProfile(r NativeCredentialRequest) (*NativeInboundProf
 			settings["network"] = "udp"
 			settings["certificates"] = map[string]any{"ca": pki.caPEM, "cert": pki.serverPEM, "key": pki.serverKeyPEM, "tlsCryptV2": string(serverWrap.MarshalPEM())}
 			settings["crypto"] = map[string]any{"dataCiphers": []string{"AES-256-GCM", "AES-128-GCM", "CHACHA20-POLY1305"}, "authHash": "SHA256"}
-			settings["tunnel"] = map[string]any{"ipv4": "10.88.0.0/24", "dns": []string{"1.1.1.1"}, "mtu": 1400}
+			settings["tunnel"] = map[string]any{"ipv4": "10.88.0.0/24", "dns": []string{}, "mtu": 1400}
 			settings["limits"] = map[string]any{"maxSessions": 128, "maxSessionsPerIP": 16, "maxFlowsPerSession": 256, "handshakeSeconds": 15, "idleSeconds": 120}
 			settings["renegotiationSeconds"] = 3600
 		}
@@ -161,7 +179,7 @@ func GenerateNativeInboundProfile(r NativeCredentialRequest) (*NativeInboundProf
 				return nil, errors.New("domain must be a DNS tunnel name")
 			}
 		} else {
-			domain = strings.ReplaceAll(id, "-", "") + ".tunnel.invalid"
+			result.Requirements = append(result.Requirements, NativeProfileRequirement{"domain", "Enter the DNS tunnel domain configured for this deployment."})
 		}
 		client["id"] = id
 		settings["domain"], settings["privateKey"] = domain, hex.EncodeToString(key.Bytes())
@@ -169,12 +187,14 @@ func GenerateNativeInboundProfile(r NativeCredentialRequest) (*NativeInboundProf
 		settings["mtu"], settings["handshakeTimeout"], settings["maxSessions"], settings["maxStreams"] = 1232, 30, 256, 128
 		result.PublicKey = hex.EncodeToString(key.PublicKey().Bytes())
 	case "shadowtls":
-		address := "www.microsoft.com"
+		address := ""
 		if r.HandshakeAddress != "" {
 			address, err = nativeProfileHost(r.HandshakeAddress)
 			if err != nil {
 				return nil, errors.New("handshakeAddress must be a TLS server DNS name or IP address")
 			}
+		} else {
+			result.Requirements = append(result.Requirements, NativeProfileRequirement{"handshake.address", "Enter the TLS handshake target for this deployment."})
 		}
 		serverKey, err := nativeProfileRandom(32)
 		if err != nil {
@@ -212,11 +232,28 @@ func nativeProfileUUID() (string, error) {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[:4], b[4:6], b[6:8], b[8:10], b[10:]), nil
 }
 
+// nativeProfileIP normalizes an explicitly supplied IP without resolving or
+// inferring an endpoint. Brackets are accepted only around an IPv6 literal.
+func nativeProfileIP(input string) net.IP {
+	address := strings.TrimSpace(input)
+	if strings.HasPrefix(address, "[") || strings.HasSuffix(address, "]") {
+		if !strings.HasPrefix(address, "[") || !strings.HasSuffix(address, "]") {
+			return nil
+		}
+		address = address[1 : len(address)-1]
+		if !strings.Contains(address, ":") {
+			return nil
+		}
+	}
+	return net.ParseIP(address)
+}
+
 func nativeProfileHost(input string) (string, error) {
-	host := strings.TrimSuffix(strings.TrimSpace(input), ".")
-	if ip := net.ParseIP(host); ip != nil {
+	host := strings.TrimSpace(input)
+	if ip := nativeProfileIP(host); ip != nil {
 		return ip.String(), nil
 	}
+	host = strings.TrimSuffix(host, ".")
 	if host == "" || len(host) > 253 {
 		return "", errors.New("invalid host")
 	}
@@ -265,7 +302,11 @@ func newNativeProfilePKI(name string, additionalIPs ...net.IP) (*nativeProfilePK
 		return nil, errors.New("CA certificate generation failed")
 	}
 	p := &nativeProfilePKI{ca: parsed, caKey: key, caPEM: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))}
-	p.serverPEM, p.serverKeyPEM, err = p.issue(name, name, true, additionalIPs...)
+	commonName := name
+	if commonName == "" {
+		commonName = "Native VPN server " + serial.Text(16)
+	}
+	p.serverPEM, p.serverKeyPEM, err = p.issue(commonName, name, true, additionalIPs...)
 	return p, err
 }
 
@@ -300,7 +341,7 @@ func (p *nativeProfilePKI) issue(commonName, host string, server bool, additiona
 		cert.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
 		if ip := net.ParseIP(host); ip != nil {
 			cert.IPAddresses = []net.IP{ip}
-		} else {
+		} else if host != "" {
 			cert.DNSNames = []string{host}
 		}
 		for _, additional := range additionalIPs {

@@ -50,7 +50,7 @@ type ServerCrypto struct {
 type ServerTunnel struct {
 	IPv4 string   `json:"ipv4,omitempty"`
 	IPv6 string   `json:"ipv6,omitempty"`
-	DNS  []string `json:"dns,omitempty"`
+	DNS  []string `json:"dns"`
 	MTU  int      `json:"mtu,omitempty"`
 }
 type ServerProofPolicy struct {

@@ -88,6 +88,18 @@ warn() { echo -e "${yellow}$*${plain}"; }
 
 [[ $EUID -ne 0 ]] && die "This installer must run as root."
 
+# Serialize panel, CLI and direct installer runs before recovery/stage cleanup.
+# A panel worker passes its locked FD 9. Verify the descriptor's inode before
+# reusing it; an environment marker alone never bypasses lock acquisition.
+xui_update_lock="/run/lock/x-ui-update.lock"
+command -v flock >/dev/null 2>&1 || die "flock is required to safely install or update x-ui."
+mkdir -p /run/lock || die "Cannot create the updater lock directory."
+if [[ "${XUI_UPDATE_LOCK_FD:-}" != 9 || ! -e "/proc/$$/fd/9" || ! "/proc/$$/fd/9" -ef "$xui_update_lock" ]]; then
+    exec 9>"$xui_update_lock" || die "Cannot open the updater lock."
+fi
+flock -n 9 || die "Another x-ui installation or update is already running."
+export XUI_UPDATE_LOCK_FD=9
+
 # A run that was killed half-way may have left the previous panel moved
 # aside: put it back first.
 if [[ ! -e "$xui_folder" && -d "$xui_folder.old" ]]; then
@@ -180,13 +192,13 @@ fetch_tarball() {
 
     local tag="$XUI_TAG"
     if [[ -z "$tag" ]]; then
-        tag=$(curl -4fsSL "https://api.github.com/repos/${XUI_REPO}/releases/latest" \
+        tag=$(curl -4fsSL --connect-timeout 15 --max-time 60 --retry 2 --retry-max-time 120 "https://api.github.com/repos/${XUI_REPO}/releases/latest" \
               | grep -m1 '"tag_name"' | cut -d '"' -f 4)
         [[ -z "$tag" ]] && die "Could not determine the latest release of ${XUI_REPO}."
     fi
     local url="https://github.com/${XUI_REPO}/releases/download/${tag}/x-ui-linux-${ARCH}.tar.gz"
     info "Downloading ${tag} for ${ARCH}"
-    curl -4fL --retry 3 -o "$dest" "$url" || die "Download failed: $url"
+    curl -4fL --connect-timeout 20 --max-time 900 --retry 2 --retry-max-time 1800 -o "$dest" "$url" || die "Download failed: $url"
 }
 
 # ---- install ---------------------------------------------------------------

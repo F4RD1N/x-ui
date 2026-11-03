@@ -12,7 +12,9 @@
 </a-form>
 <a-space direction="vertical" :style="{ marginBottom: '12px', width: '100%' }">
   <span v-if="inbound.settings.generating">Generating settings…</span>
-  <a-button v-if="!isEdit && inbound.settings.needsProfile && inbound.settings.generationError" :loading="inbound.settings.generating" @click="inModal.initializeNativeDefaults(true)">Retry generation</a-button>
+  <a-alert v-if="!isEdit && inbound.settings.needsProfile && inbound.settings.profileIdentityError" type="info" show-icon :message="inbound.settings.profileIdentityError"></a-alert>
+  <a-button v-if="!isEdit && inbound.settings.needsProfile && inbound.settings.profileRequiresIdentity" :disabled="!!inbound.settings.profileIdentityError" :loading="inbound.settings.generating" @click="inModal.initializeNativeDefaults(true)">Generate credentials</a-button>
+  <a-button v-else-if="!isEdit && inbound.settings.needsProfile && inbound.settings.generationError" :loading="inbound.settings.generating" @click="inModal.initializeNativeDefaults(true)">Retry generation</a-button>
   <a-button v-if="inbound.settings.modeDefaultsFailed && inbound.settings.generationError" :loading="inbound.settings.generating" @click="inModal.retryNativeModeDefaults()">Retry generation</a-button>
   <template v-if="inbound.protocol === Protocols.DNSTT">
     <a-button :loading="inbound.settings.generating" @click="inbound.settings.generateCredentials('dnstt')">Regenerate key pair</a-button>

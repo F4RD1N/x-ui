@@ -33,7 +33,7 @@
             help: 'Delegate this domain to the server DNS listener. VLESS is the default authenticated inner proxy. SOCKS inner mode carries TCP only. Keep the private key unchanged when editing or restoring.',
         },
         openvpn: {
-            defaults: () => ({network: 'udp', certificates: {ca: '', cert: '', key: ''}, crypto: {dataCiphers: ['AES-256-GCM', 'AES-128-GCM', 'CHACHA20-POLY1305'], authHash: 'SHA256'}, tunnel: {ipv4: '10.88.0.0/24', dns: ['1.1.1.1'], mtu: 1400}, clientProof: {required: false}, limits: {maxSessions: 128, maxSessionsPerIP: 16, maxFlowsPerSession: 256, handshakeSeconds: 15, idleSeconds: 120}, renegotiationSeconds: 3600}),
+            defaults: () => ({network: 'udp', certificates: {ca: '', cert: '', key: ''}, crypto: {dataCiphers: ['AES-256-GCM', 'AES-128-GCM', 'CHACHA20-POLY1305'], authHash: 'SHA256'}, tunnel: {ipv4: '10.88.0.0/24', dns: [], mtu: 1400}, clientProof: {required: false}, limits: {maxSessions: 128, maxSessionsPerIP: 16, maxFlowsPerSession: 256, handshakeSeconds: 15, idleSeconds: 120}, renegotiationSeconds: 3600}),
             fields: [select('network', 'Transport', ['udp', 'tcp']), field('certificates.ca', 'CA certificate PEM', 'textarea'), field('certificates.cert', 'Server certificate PEM', 'textarea'), field('certificates.key', 'Server private key PEM', 'textarea'), field('certificates.tlsAuth', 'Optional tls-auth key', 'textarea'), select('certificates.keyDirection', 'tls-auth key direction', ['', 0, 1]), field('certificates.tlsCrypt', 'Optional tls-crypt key', 'textarea'), field('certificates.tlsCryptV2', 'Optional tls-crypt-v2 server key', 'textarea'), field('crypto.dataCiphers', 'Data ciphers (one per line)', 'lines'), field('crypto.authHash', 'Authentication hash'), field('tunnel.ipv4', 'IPv4 tunnel subnet'), field('tunnel.ipv6', 'Optional IPv6 subnet'), field('tunnel.dns', 'DNS servers (one per line)', 'lines'), number('tunnel.mtu', 'Tunnel MTU', 1280, 8000), field('clientProof.required', 'Require client proof for every client', 'boolean'), number('limits.maxSessions', 'Maximum sessions', 0, 4096), number('limits.maxSessionsPerIP', 'Sessions per source IP', 0, 4096), number('limits.maxFlowsPerSession', 'Flows per session', 0, 4096), number('limits.handshakeSeconds', 'Handshake timeout (seconds)', 0, 120), number('limits.idleSeconds', 'Idle timeout (seconds)', 0, 86400), number('renegotiationSeconds', 'Renegotiation interval (seconds)', 0, 86400)],
             help: 'OpenVPN handles its own TLS and TCP/UDP transport. Each client common name must match its issued certificate. Optional client proof requires a matching client key; it does not replace certificate validation. Configure at most one TLS control-channel key format.',
         },
@@ -226,6 +226,20 @@
             return typeof value === 'string' && value.length > 0 && value.length <= 253 && /[a-z]/i.test(value)
                 && value.split('.').every(label => label.length > 0 && label.length <= 63 && /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(label));
         }
+        static numericServerAddress(value) {
+            if (typeof value !== 'string') return '';
+            const text = value.trim().replace(/^\[([^\]]+)\]$/, '$1');
+            if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(text) && text.split('.').every(part => Number(part) <= 255 && (part.length === 1 || part[0] !== '0'))) return text;
+            if (text.includes(':')) {
+                try { return new URL(`http://[${text}]/`).hostname.slice(1, -1); } catch (_) { /* Invalid IPv6 is not an identity. */ }
+            }
+            return '';
+        }
+        static canonicalServerIdentity(value) {
+            if (typeof value !== 'string') return '';
+            const text = value.trim().replace(/\.$/, '');
+            return Inbound.NativeSettings.numericServerAddress(text) || text.toLowerCase();
+        }
         static async requestCredentials(request, signal) {
             const prefix = typeof basePath === 'string' ? basePath : '/';
             const response = await fetch(prefix.replace(/\/?$/, '/') + 'panel/api/server/native/credentials', {
@@ -241,7 +255,7 @@
         static mergeGeneratedProfile(protocol, generated, before, current) {
             if (generated.protocol !== protocol || !object(generated.settings) || !Array.isArray(generated.settings.clients) || generated.settings.clients.length !== 1) throw new Error('The generated settings were incomplete. Try again.');
             if (current.settings.clients?.length !== 1) throw new Error('Client credentials changed. Your entries were kept.');
-            const protectedPaths = ['privateKey', 'tls', 'outerTls', 'certificates', 'reality', 'inner', 'clientExport'];
+            const protectedPaths = ['privateKey', 'tls', 'outerTls', 'certificates', 'reality.privateKey', 'reality.shortIds', 'inner', 'clientExport.ca', 'clientExport.issuerPrivateKey'];
             if (protectedPaths.some(path => !same(getPath(before.settings, path), getPath(current.settings, path)))) throw new Error('Connection credentials changed. Your entries were kept.');
             const beforeClient = before.settings.clients[0], currentClient = current.settings.clients[0];
             if (['id', 'username', 'password', 'key', 'commonName', 'certificate', 'privateKey', 'tlsCryptV2', 'clientProof', 'innerUsername'].some(key => !same(beforeClient[key], currentClient[key]))) throw new Error('Client credentials changed. Your entries were kept.');
@@ -249,7 +263,17 @@
             const beforeSettings = {...before.settings}, currentSettings = {...current.settings};
             delete beforeSettings.clients;
             delete currentSettings.clients;
+            if (beforeSettings.clientExport === undefined && object(currentSettings.clientExport)) beforeSettings.clientExport = {};
             const settings = mergeUntouched(beforeSettings, currentSettings, generated.settings);
+            // Only the form supplies deployment values. Generated trust and
+            // account material may be added alongside those explicit choices.
+            for (const path of ['domain', 'handshake.address', 'handshake.port', 'host', 'clientExport.serverName', 'clientExport.address', 'clientExport.resolvers', 'tunnel.dns', 'reality.serverNames', 'reality.dest']) {
+                const value = getPath(currentSettings, path);
+                if (value !== undefined) setPath(settings, path, clone(value));
+                else if (getPath(settings, path) !== undefined) setPath(settings, path, undefined);
+            }
+            if (['anytls', 'orbit'].includes(protocol) && currentSettings.clientExport?.serverName) settings.clientExport.serverName = Inbound.NativeSettings.canonicalServerIdentity(currentSettings.clientExport.serverName);
+            if (protocol === 'orbit' && currentSettings.clientExport?.address) settings.clientExport.address = Inbound.NativeSettings.canonicalServerIdentity(currentSettings.clientExport.address);
             settings.clients = [mergeUntouched(beforeClient, currentClient, generated.settings.clients[0])];
             const oldEmail = generated.settings.clients[0].email, newEmail = currentClient.email;
             settings.clients[0].email = newEmail;
@@ -289,6 +313,19 @@
             return this.protocol === 'orbit' && this.data.transport === 'quic' ? text + ' Warning: this QUIC compatibility mode exposes bearer credentials to a passive network observer. Use TCP, WS, WSS or TCP Reality for TLS-protected credentials.' : text;
         }
         get canBulkCreate() { return ['anytls', 'mieru', 'dnstt'].includes(this.protocol); }
+        get profileRequiresIdentity() { return ['anytls', 'orbit'].includes(this.protocol); }
+        get profileIdentityError() {
+            if (!this.needsProfile) return '';
+            if (this.protocol === 'anytls') {
+                const name = typeof this.data.clientExport?.serverName === 'string' ? this.data.clientExport.serverName.trim().replace(/\.$/, '') : '';
+                if (!Inbound.NativeSettings.isOrbitDNSHost(name) && !Inbound.NativeSettings.numericServerAddress(name)) return 'Enter a client server name or IP before generating credentials.';
+            }
+            if (this.protocol === 'orbit') {
+                const address = Inbound.NativeSettings.numericServerAddress(this.data.clientExport?.address);
+                if (!address || ['0.0.0.0', '::'].includes(address)) return 'Enter a numeric client server address before generating credentials.';
+            }
+            return '';
+        }
         get fields() {
             const fields = protocols[this.protocol].fields.filter(descriptor => !descriptor.show || descriptor.show(this.data));
             if (['anytls', 'openvpn'].includes(this.protocol)) fields.push(field('clientExport.serverName', 'Client server name'), field('clientExport.ca', 'Client CA certificate', 'textarea'));
@@ -407,9 +444,12 @@
                 this.fieldError = '';
             } catch (error) { this.invalidAdvancedJSON = raw; this.advancedError = error.message; }
         }
-        get validationErrors() {
+        get validationErrors() { return this.validateSettings(false); }
+        get generatedProfileErrors() { return this.validateSettings(true); }
+        validateSettings(allowMissingDeployment) {
             const errors = [this.advancedError, this.fieldError].filter(Boolean);
             const data = this.data;
+            if (this.needsProfile && this.profileIdentityError) errors.push(this.profileIdentityError);
             if (!this.clients.length && !(this.protocol === 'shadowtls' && (data.version || 3) !== 3)) errors.push('At least one client is required');
             this.clients.forEach((client, index) => client.validationErrors.forEach(error => errors.push(`Client ${index + 1}: ${error}`)));
             const ids = (this.protocol === 'shadowtls' && (data.version || 3) !== 3 ? [] : this.clients.map(client => Inbound.nativeCredentialId(this.protocol, client))).filter(Boolean);
@@ -424,7 +464,8 @@
                 if (descriptor.type === 'boolean' && typeof value !== 'boolean') errors.push(`${descriptor.label} must be true or false`);
             });
             if (this.protocol === 'dnstt') {
-                if (typeof data.domain !== 'string' || !data.domain.includes('.') || /\s/.test(data.domain)) errors.push('A DNS tunnel name is required');
+                const domain = typeof data.domain === 'string' ? data.domain.replace(/\.$/, '') : '';
+                if (!(allowMissingDeployment && (data.domain === undefined || data.domain === '')) && (!domain.includes('.') || !Inbound.NativeSettings.isOrbitDNSHost(domain))) errors.push('A valid DNS tunnel name is required');
                 if (!/^[0-9a-f]{64}$/i.test(data.privateKey || '')) errors.push('DNSTT private key must contain 64 hex characters');
                 const socks = data.inner?.protocol === 'socks';
                 if (this.clients.some(client => socks ? !client.data.username : !client.data.id)) errors.push('Client credentials must match the selected inner protocol');
@@ -436,7 +477,8 @@
                 if (data.clientProof?.required && this.clients.some(client => !client.data.clientProof?.keyId || !client.data.clientProof?.key)) errors.push('Every client must have a client proof key when proof is required');
             }
             if (this.protocol === 'shadowtls') {
-                if (!data.handshake?.address) errors.push('A TLS handshake target is required');
+                const target = data.handshake?.address;
+                if (!(allowMissingDeployment && (target === undefined || target === '')) && (typeof target !== 'string' || target !== target.trim() || (!Inbound.NativeSettings.isOrbitDNSHost(target.replace(/\.$/, '')) && !Inbound.NativeSettings.numericServerAddress(target)))) errors.push('A valid TLS handshake target is required');
                 if (data.version === 2 && !data.password) errors.push('ShadowTLS v2 requires a shared password');
                 if ((data.version || 3) !== 3 && data.inner?.protocol === 'socks' && this.clients.some(client => (client.totalGB > 0 || client.limitIp > 0) && client.data.innerUsername !== client.email)) errors.push('ShadowTLS v1/v2 inner SOCKS username must match client email when traffic or IP limits are enabled');
                 const inner = data.inner;

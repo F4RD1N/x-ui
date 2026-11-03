@@ -27,7 +27,8 @@ type ServerController struct {
 	serverService  service.ServerService
 	settingService service.SettingService
 
-	lastStatus *service.Status
+	lastStatus   *service.Status
+	panelUpdates panelUpdateBackend
 }
 
 // NewServerController creates a new ServerController, initializes routes, and starts background tasks.
@@ -55,6 +56,7 @@ func (a *ServerController) initRouter(g *gin.RouterGroup) {
 	g.POST("/stopXrayService", a.stopXrayService)
 	g.POST("/restartXrayService", a.restartXrayService)
 	g.POST("/updatePanel", a.updatePanel)
+	g.GET("/updatePanelStatus", a.panelUpdateStatus)
 	g.POST("/updateGeofile", a.updateGeofile)
 	g.POST("/updateGeofile/:fileName", a.updateGeofile)
 	g.POST("/logs/:count", a.getLogs)
@@ -224,13 +226,6 @@ func (a *ServerController) checkUpdate(c *gin.Context) {
 		return
 	}
 	jsonObj(c, info, nil)
-}
-
-// updatePanel starts a background update to the latest release. The panel is
-// stopped and restarted by the updater, so this returns before it finishes.
-func (a *ServerController) updatePanel(c *gin.Context) {
-	err := a.serverService.UpdatePanel()
-	jsonMsg(c, "Update panel", err)
 }
 
 // getConfigJson retrieves the Xray configuration as JSON.

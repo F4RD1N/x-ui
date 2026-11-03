@@ -16,13 +16,13 @@ assert os.environ.get('D11_HOST_NETNS') and os.readlink('/proc/self/ns/net')!=os
 subprocess.run(['ip','link','set','lo','up'],check=True)
 subprocess.run(['ip','address','add','198.18.0.1/32','dev','lo'],check=True)
 spec=importlib.util.spec_from_file_location('panel_e2e',HERE/'panel-e2e.py');h=importlib.util.module_from_spec(spec);spec.loader.exec_module(h)
-p=argparse.ArgumentParser();p.add_argument('--panel',type=pathlib.Path,required=True);p.add_argument('--core',type=pathlib.Path,required=True);p.add_argument('--captured',type=pathlib.Path,required=True);p.add_argument('--work',type=pathlib.Path,required=True);args=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--panel',type=pathlib.Path,required=True);p.add_argument('--core',type=pathlib.Path,required=True);p.add_argument('--captured',type=pathlib.Path,required=True);p.add_argument('--work',type=pathlib.Path,required=True);p.add_argument('--case-prefix',help='Replay only captured cases with this explicit prefix');args=p.parse_args()
 assert not args.work.exists();args.work.mkdir(mode=0o700,parents=True)
 posts=json.loads(args.captured.read_text());groups={}
 for post in posts:
-    if post['case'].startswith(('standalone-add-client-','actual-clone-submit-','telegram-input-validation')):
+    if post['case'].startswith(args.case_prefix if args.case_prefix else ('standalone-add-client-','actual-clone-submit-','telegram-input-validation')):
         groups.setdefault(post['case'],[]).append(post)
-assert len(groups)>=12, 'need all six Add Client and all six clone cases'
+assert len(groups)>=(1 if args.case_prefix else 12), 'need matching focused cases, or all six Add Client and all six clone cases'
 results=[]
 def record(name,ok,detail=''):
     results.append({'name':name,'ok':ok,'detail':str(detail)[:1500]});print(('PASS ' if ok else 'FAIL ')+name+(': '+str(detail)[:250] if detail else ''),flush=True)
@@ -40,6 +40,13 @@ try:
                     assert obj['id']==post['responseId'], 'fresh DB ID differs from browser fixture; payload was not rewritten'
                 rows=panel.api('GET','/panel/api/inbounds/list')
                 assert rows,'mutation not persisted'
+                if route.endswith('/add'):
+                    submitted=json.loads(post['data']['settings'])
+                    saved=json.loads(next(r for r in rows if r['id']==obj['id'])['settings'])
+                    # Deployment input and generated material must survive the
+                    # real storage boundary exactly, including explicit DNS [].
+                    for key in ('domain','host','path','reality','handshake','tunnel','clientExport','tls','outerTls','certificates'):
+                        assert saved.get(key)==submitted.get(key), 'saved deployment/material field differs: '+key
                 if route.endswith('/addClient'):
                     row=next(r for r in rows if r['id']==int(post['data']['id']))
                     settings=json.loads(row['settings']);assert len(settings['clients'])==2,'second client did not persist'

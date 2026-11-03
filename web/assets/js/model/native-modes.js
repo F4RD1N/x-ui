@@ -17,17 +17,7 @@
         return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
     };
     const present = value => Array.isArray(value) ? value.some(item => String(item).trim()) : typeof value === 'string' && value.trim() !== '';
-    const serverName = (data, options) => [data.clientExport?.serverName, options.serverName, typeof location !== 'undefined' && location.hostname]
-        .find(value => Inbound.NativeSettings.isOrbitDNSHost(value)) || 'vpn.internal';
-    const numericAddress = value => {
-        if (typeof value !== 'string') return '';
-        const text = value.trim().replace(/^\[([^\]]+)\]$/, '$1');
-        if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(text) && text.split('.').every(part => Number(part) <= 255 && (part.length === 1 || part[0] !== '0'))) return text;
-        if (text.includes(':')) {
-            try { return new URL(`http://[${text}]/`).hostname.slice(1, -1); } catch (_) { /* Invalid IPv6 is not a peer default. */ }
-        }
-        return '';
-    };
+    const snapshot = settings => JSON.stringify({data: settings.data, clients: settings.clients.map(client => client.toJson())});
     const ss2022Sizes = {'2022-blake3-aes-128-gcm': 16, '2022-blake3-aes-256-gcm': 32, '2022-blake3-chacha20-poly1305': 32};
     const aeadMethods = ['aes-128-gcm', 'aes-256-gcm', 'chacha20-poly1305', 'xchacha20-poly1305', 'chacha20-ietf-poly1305', 'xchacha20-ietf-poly1305', 'aead_aes_128_gcm', 'aead_aes_256_gcm', 'aead_chacha20_poly1305', 'aead_xchacha20_poly1305'];
 
@@ -110,10 +100,9 @@
     function needsWork(settings) {
         const data = settings.data;
         if (settings.protocol === 'orbit') {
-            if (['ws', 'wss'].includes(data.transport) && (!data.host || !data.path)) return true;
-            if (['ws', 'wss'].includes(data.transport) && !present(data.clientExport?.serverName) && numericAddress(data.clientExport?.address)) return true;
+            if (['ws', 'wss'].includes(data.transport) && !data.path) return true;
             if (data.transport === 'wss' && present(data.outerTls?.certificate) !== present(data.outerTls?.key)) return true;
-            return data.security === 'reality' && (data.transport !== 'tcp' || !present(data.reality?.privateKey) || !data.reality?.serverNames?.length || !data.reality?.shortIds?.length || !data.reality?.dest);
+            return data.security === 'reality' && (data.transport !== 'tcp' || !present(data.reality?.privateKey) || !data.reality?.shortIds?.length);
         }
         if (settings.protocol === 'dnstt') {
             const inner = data.inner?.protocol || 'vless';
@@ -140,7 +129,7 @@
         return false;
     }
 
-    Inbound.NativeSettings.prototype.fillMissingModeDefaults = async function (options = {}) {
+    Inbound.NativeSettings.prototype.fillMissingModeDefaults = async function () {
         if (this.generating) return false;
         if (!needsWork(this)) {
             this.generationError = '';
@@ -149,7 +138,7 @@
         this.generating = true;
         this.generationError = '';
         this.generationNotice = '';
-        const before = JSON.stringify(this.toJson());
+        const before = snapshot(this);
         const protocol = this.protocol;
         const data = clone(this.data);
         const clients = this.clients.map(client => ({client, data: clone(client.data), cache: {...(dormant.get(client) || {})}}));
@@ -158,23 +147,13 @@
         try {
             let nextShadow;
             if (protocol === 'orbit') {
-                // WS HTTP Host and WSS outer TLS need a DNS name. The pinned
-                // inner identity remains the generated numeric certificate SAN.
-                if (['ws', 'wss'].includes(data.transport) && !present(data.clientExport?.serverName)) {
-                    const peer = numericAddress(data.clientExport?.address);
-                    if (peer) data.clientExport = {...data.clientExport, serverName: peer};
-                }
                 if (data.transport === 'wss') {
                     const hasCert = present(data.outerTls?.certificate), hasKey = present(data.outerTls?.key);
                     if (hasCert !== hasKey) throw new Error('Provide both the WSS certificate and private key.');
                     // The current Orbit client uses system CA trust. Generated
                     // self-signed outer certificates would make WSS unusable.
-                    if (!data.host) data.host = serverName(data, options);
-                    if (!data.path) data.path = '/core';
-                } else if (data.transport === 'ws') {
-                    if (!data.host) data.host = serverName(data, options);
-                    if (!data.path) data.path = '/core';
                 }
+                if (['ws', 'wss'].includes(data.transport) && !data.path) data.path = '/core';
                 if (data.security === 'reality') {
                     if (data.transport !== 'tcp') throw new Error('Reality requires TCP.');
                     data.reality = {...(data.reality || {})};
@@ -184,8 +163,6 @@
                         data.reality.privateKey = generated.privateKey;
                         if (!Array.isArray(data.reality.shortIds) || !data.reality.shortIds.length) data.reality.shortIds = [generated.shortId];
                     } else if (!Array.isArray(data.reality.shortIds) || !data.reality.shortIds.length) data.reality.shortIds = [hex(random(8))];
-                    if (!Array.isArray(data.reality.serverNames) || !data.reality.serverNames.length) data.reality.serverNames = ['www.microsoft.com'];
-                    if (!data.reality.dest) data.reality.dest = 'www.microsoft.com:443';
                 }
             } else if (protocol === 'dnstt') {
                 const inner = data.inner?.protocol || 'vless';
@@ -230,7 +207,7 @@
                 if (new Set(ids).size !== ids.length) throw new Error('Client proof key IDs must be unique.');
             }
             if (controller.signal.aborted) throw new Error('Credential generation timed out. Try again.');
-            if (this.protocol !== protocol || JSON.stringify(this.toJson()) !== before) throw new Error('Settings changed during generation. Try again.');
+            if (this.protocol !== protocol || snapshot(this) !== before) throw new Error('Settings changed during generation. Try again.');
             this.data = data;
             for (const entry of clients) {
                 entry.client.data = entry.data;

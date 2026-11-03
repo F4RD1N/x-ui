@@ -28,12 +28,20 @@ SPEC = importlib.util.spec_from_file_location('panel_e2e', HERE / 'panel-e2e.py'
 h = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(h)
 PROTOCOLS = ('orbit', 'dnstt', 'openvpn', 'anytls', 'shadowtls', 'mieru')
+DEPLOYMENT_INPUTS = {
+    'orbit': {'serverAddress': '127.0.0.1'},
+    'dnstt': {'domain': 'tunnel.example.test'},
+    'openvpn': {},
+    'anytls': {'serverName': 'e2e.test'},
+    'shadowtls': {'handshakeAddress': '127.0.0.1'},
+    'mieru': {},
+}
 
 
-def request_profile(panel, protocol, domain_host=False):
+def request_profile(panel, protocol, domain_host=False, explicit=True):
     request = {'kind': 'inbound-profile', 'protocol': protocol}
-    if protocol == 'shadowtls':
-        request['handshakeAddress'] = '127.0.0.1'
+    if explicit:
+        request.update(DEPLOYMENT_INPUTS[protocol])
     client, url = panel.http, panel.url
     if domain_host:
         # Authenticate the actual hostname separately: session cookies are
@@ -56,11 +64,45 @@ def request_profile(panel, protocol, domain_host=False):
     h.require(value.get('success'), value.get('msg', 'profile generation rejected'))
     profile = value.get('obj')
     h.require(isinstance(profile, dict) and profile.get('protocol') == protocol, 'unexpected profile response')
-    h.require(not profile.get('requirements'), 'automatic defaults left unmet prerequisites')
-    if protocol == 'dnstt':
-        h.require(profile['settings'].get('domain', '').endswith('.tunnel.invalid'), 'default direct tunnel domain was not generated')
+    if explicit:
+        h.require(not profile.get('requirements'), 'explicit deployment inputs left unmet prerequisites')
+        if protocol == 'dnstt':
+            h.require(profile['settings'].get('domain') == DEPLOYMENT_INPUTS['dnstt']['domain'], 'explicit tunnel domain was changed')
+        if protocol == 'openvpn':
+            h.require(profile['settings']['tunnel'].get('dns') == [], 'OpenVPN invented external DNS values')
     h.require(len(profile['settings']['clients']) == 1, 'profile must generate exactly one account')
     return profile
+
+
+
+def check_missing_deployment_inputs(panel):
+    expected = {'orbit': 'serverAddress', 'anytls': 'serverName', 'dnstt': 'domain', 'shadowtls': 'handshake.address'}
+    for protocol in PROTOCOLS:
+        partial = request_profile(panel, protocol, explicit=False)
+        fields = {item['field'] for item in partial.get('requirements', [])}
+        h.require(fields == ({expected[protocol]} if protocol in expected else set()), 'wrong missing deployment requirements: ' + protocol)
+        settings = partial['settings']
+        if protocol == 'orbit':
+            h.require('tls' not in settings and 'clientExport' not in settings and not settings['clients'][0].get('key'),
+                      'Orbit inferred an endpoint/certificate/key without explicit input')
+        elif protocol == 'anytls':
+            h.require('clientExport' not in settings and not partial['streamSettings']['tlsSettings'].get('certificates'),
+                      'AnyTLS inferred a certificate identity without explicit input')
+        elif protocol == 'dnstt':
+            h.require(settings['domain'] == '' and not settings.get('clientExport', {}).get('resolvers'),
+                      'DNSTT invented domain or resolver values')
+        elif protocol == 'shadowtls':
+            h.require(settings['handshake']['address'] == '', 'ShadowTLS invented a cover target')
+        elif protocol == 'openvpn':
+            h.require(settings['tunnel'].get('dns') == [], 'OpenVPN invented DNS servers')
+        h.result('profile.missing-deployment-inputs.' + protocol, True)
+    # A domain-hosted panel must not fill in protocol endpoint/TLS identity.
+    for protocol in ('orbit', 'anytls'):
+        partial = request_profile(panel, protocol, domain_host=True, explicit=False)
+        h.require({item['field'] for item in partial.get('requirements', [])} == {expected[protocol]},
+                  'HTTP hostname was silently used as deployment input')
+        h.require('clientExport' not in partial['settings'], 'panel hostname leaked into generated endpoint metadata')
+        h.result('profile.no-host-inference.' + protocol, True)
 
 
 def generate_cases(panel, work):
@@ -70,9 +112,9 @@ def generate_cases(panel, work):
         h.write_json(work / (protocol + '-profile.json'), profile)
         other = request_profile(panel, protocol)
         if protocol == 'orbit':
-            h.require(profile['settings']['clientExport']['address'] == '127.0.0.1', 'domain-hosted panel did not derive numeric Orbit endpoint')
-            h.require(other['settings']['clientExport']['address'] == '127.0.0.1', 'IP-hosted panel did not derive numeric Orbit endpoint')
-            h.result('profile.orbit-domain-and-ip-panel-endpoints', True)
+            h.require(profile['settings']['clientExport']['address'] == '127.0.0.1', 'explicit numeric Orbit endpoint was changed by panel hostname')
+            h.require(other['settings']['clientExport']['address'] == '127.0.0.1', 'explicit numeric Orbit endpoint was changed by numeric panel host')
+            h.result('profile.orbit-explicit-endpoint-independent-of-panel-host', True)
         first_user, next_user = profile['settings']['clients'][0], other['settings']['clients'][0]
         h.require(first_user['subId'] != next_user['subId'], 'new profiles reused subscription identity')
         field = {'orbit': 'key', 'dnstt': 'id', 'openvpn': 'privateKey', 'anytls': 'password',
@@ -92,6 +134,7 @@ def generate_cases(panel, work):
             case['negative_tlscryptv2'] = next_user['tlsCryptV2']
         cases.append(case)
     h.write_json(work / 'fixture-edits.json', {c['protocol']: c['fixture_edits'] for c in cases})
+    h.write_json(work / 'explicit-deployment-inputs.json', DEPLOYMENT_INPUTS)
     return cases
 
 
@@ -261,6 +304,7 @@ def main(args):
     panel.init()
     panel.start()
     h.result('profile.isolated-panel-login', True)
+    check_missing_deployment_inputs(panel)
     initial_cases = generate_cases(panel, work)
     exports = configure(panel, initial_cases, work)
     cases = add_generated_clients(panel, initial_cases, exports, work)

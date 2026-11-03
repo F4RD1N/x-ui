@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -22,10 +21,6 @@ func (a *ServerController) nativeCredentials(c *gin.Context) {
 		return
 	}
 	if request.Kind == "inbound-profile" {
-		if err := prepareNativeProfileAddress(c.Request.Context(), c.Request.Host, &request, net.DefaultResolver.LookupIPAddr); err != nil {
-			jsonObj(c, nil, err)
-			return
-		}
 		result, err := service.GenerateNativeInboundProfile(request)
 		jsonObj(c, result, err)
 		return

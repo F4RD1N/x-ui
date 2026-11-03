@@ -8,7 +8,7 @@ const crypto=require('node:crypto');
 const assert=require('node:assert/strict');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const root=path.resolve(__dirname,'../..');
-const sourceFiles=['web/assets/js/model/inbound.js','web/assets/js/model/native-inbound.js','web/assets/js/model/native-creation.js','web/assets/js/model/native-modes.js','web/assets/js/model/dbinbound.js','web/html/inbounds.html','web/html/modals/inbound_modal.html','web/html/modals/client_modal.html','web/html/form/protocol/native.html','web/html/form/client.html'];
+const sourceFiles=['web/assets/js/model/inbound.js','web/assets/js/model/outbound.js','web/assets/js/model/native-inbound.js','web/assets/js/model/native-creation.js','web/assets/js/model/native-modes.js','web/assets/js/model/dbinbound.js','web/html/inbounds.html','web/html/modals/inbound_modal.html','web/html/modals/client_modal.html','web/html/form/protocol/native.html','web/html/form/client.html','web/service/native_profile.go','web/service/native_credentials.go','sub/native_export.go'];
 const sourceHashes=()=>Object.fromEntries(sourceFiles.map(file=>[file,crypto.createHash('sha256').update(fs.readFileSync(path.join(root,file))).digest('hex')]));
 const sourceBefore=sourceHashes();
 const work=process.env.REVIEW_OUTPUT||fs.mkdtempSync(path.join(os.tmpdir(),'native-defaults-review-'));
@@ -73,9 +73,24 @@ async function load(initialRows=[]){
  await page.goto('http://127.0.0.1:'+server.address().port+'/review/panel/inbounds');
  await page.waitForFunction(()=>typeof app!=='undefined'&&app.loadingStates.fetched&&!app.loadingStates.spinning);
 }
-async function openNew(protocol){
+// These are explicitly supplied, isolated test deployment values. They are not
+// production defaults, and the no-input tests below verify the form stays blank.
+async function openNew(protocol, supply=true){
  await page.getByRole('button',{name:/pages\.inbounds\.addInbound$/}).click();
  await page.evaluate(({protocol,port})=>{inModal.inbound.protocol=protocol;inModal.inbound.port=port;},{protocol,port:nextPort++});
+ // Let the protocol-change watcher see the untouched form before entering data,
+ // just as separate user interactions do.
+ await page.waitForTimeout(20);
+ if(!supply)return;
+ await page.evaluate(protocol=>{
+  const port=inModal.inbound.port;const settings=inModal.inbound.settings;
+  const set=(path,value)=>{const field=settings.fields.find(f=>f.path===path);if(!field)throw new Error('Missing deployment field '+path);settings.setField(field,value);};
+  if(protocol==='anytls')set('clientExport.serverName','127.0.0.1');
+  if(protocol==='orbit')set('clientExport.address','127.0.0.1');
+  if(protocol==='dnstt'){set('domain','tunnel.review.test');set('clientExport.resolvers',JSON.stringify([{transport:'udp',address:'127.0.0.1:'+port}]));}
+  if(protocol==='shadowtls')set('handshake.address','127.0.0.1');
+ },protocol);
+ if(supply&&['anytls','orbit'].includes(protocol))await page.getByRole('button',{name:'Generate credentials',exact:true}).click();
 }
 async function settled(){await page.waitForFunction(()=>inModal.inbound.isNative&&!inModal.inbound.settings.generating&&!inModal.inbound.settings.modeDefaultsPending&&(!inModal.inbound.settings.needsProfile||inModal.inbound.settings.generationError),{},{timeout:10000});await page.waitForTimeout(30);}
 async function state(){return page.evaluate(()=>({json:inModal.inbound.toJson(),errors:inModal.inbound.settings.validationErrors,generating:inModal.inbound.settings.generating,error:inModal.inbound.settings.generationError,needs:inModal.inbound.settings.needsProfile}));}
@@ -103,6 +118,71 @@ async function check(name,fn){if(process.env.REVIEW_ONLY&&!name.includes(process
  page=await browser.newPage({viewport:{width:1440,height:1000}});
  page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});
  await page.addInitScript(()=>{localStorage.setItem('isRefreshEnabled','false');window.WebSocket=class{static OPEN=1;static CLOSED=3;constructor(){this.readyState=1;setTimeout(()=>this.onopen?.({}),10);}send(){}close(){this.readyState=3;}};});
+ await check('explicit-identity-normalization-and-trust',async()=>{
+  for(const [protocol,input,expected,label] of [['anytls',' 127.0.0.1 ','127.0.0.1','ipv4'],['anytls',' [::1] ','::1','ipv6'],['anytls',' VPN.REVIEW.TEST. ','vpn.review.test','dns'],['orbit',' [::1] ','::1','orbit-ipv6']]){
+   caseName='explicit-identity-normalization-and-trust-'+label;
+   await load();await openNew(protocol,false);const fieldPath=protocol==='anytls'?'clientExport.serverName':'clientExport.address';
+   await page.evaluate(({fieldPath,input})=>{const settings=inModal.inbound.settings;settings.setField(settings.fields.find(f=>f.path===fieldPath),input);},{fieldPath,input});
+   await page.getByRole('button',{name:'Generate credentials',exact:true}).click();await settled();const ready=await state();assert.deepEqual(ready.errors,[]);
+   assert.equal(protocol==='anytls'?ready.json.settings.clientExport.serverName:ready.json.settings.clientExport.address,expected,'explicit identity must serialize in canonical form');
+   if(protocol==='anytls'){assert.match(ready.json.settings.clientExport.ca,/BEGIN CERTIFICATE/);assert.ok(ready.json.streamSettings.tlsSettings.certificates[0].certificate.length);}
+   fs.writeFileSync(path.join(work,'identity-'+label+'-inbound.json'),JSON.stringify(ready.json));
+   await page.locator('.ant-modal:visible .ant-modal-footer button.ant-btn-primary').click();await page.waitForFunction(()=>!inModal.visible&&app.dbInbounds.length===1);
+   assert.equal(JSON.parse(saves.at(-1).data.settings).clientExport[protocol==='anytls'?'serverName':'address'],expected,'actual Create body must contain canonical explicit identity');
+  }
+ });
+ await check('explicit-identity-pending-equivalent-input-preserves-generation',async()=>{
+  await load();await openNew('anytls',false);delay=200;const count=calls.length;
+  await page.evaluate(()=>{const settings=inModal.inbound.settings;settings.setField(settings.fields.find(f=>f.path==='clientExport.serverName'),' 127.0.0.1 ');});
+  await page.getByRole('button',{name:'Generate credentials',exact:true}).click();await page.waitForFunction(()=>inModal.inbound.settings.generating);
+  await page.evaluate(()=>{const settings=inModal.inbound.settings;settings.setField(settings.fields.find(f=>f.path==='clientExport.serverName'),'127.0.0.1');});
+  await settled();const ready=await state();assert.deepEqual(ready.errors,[]);assert.equal(ready.error,'');assert.equal(calls.length-count,1);assert.equal(ready.json.settings.clientExport.serverName,'127.0.0.1');assert.match(ready.json.settings.clientExport.ca,/BEGIN CERTIFICATE/);
+ });
+ for(const protocol of protocols){
+  await check('manual-prerequisites-blank-'+protocol,async()=>{
+   await load();const count=calls.length,beforeSaves=saves.length;await openNew(protocol,false);
+   await page.waitForFunction(()=>inModal.inbound.isNative&&!inModal.inbound.settings.generating&&!inModal.inbound.settings.modeDefaultsPending);
+   await page.waitForTimeout(60);const blank=await state(),settings=blank.json.settings;
+   const optional=value=>value===undefined||value===''||(Array.isArray(value)&&value.length===0);
+   for(const value of [settings.domain,settings.host,settings.clientExport?.address,settings.clientExport?.serverName,settings.clientExport?.resolvers,settings.handshake?.address,settings.reality?.dest,settings.reality?.serverNames])assert.ok(optional(value),'real deployment prerequisite was automatically filled');
+   if(protocol==='openvpn'){assert.deepEqual(settings.tunnel.dns,[]);assert.equal(settings.tunnel.ipv4,'10.88.0.0/24');complete(protocol,settings);}
+   if(protocol==='mieru')complete(protocol,settings);
+   if(protocol==='dnstt')assert.match(settings.privateKey,/^[a-f0-9]{64}$/i);
+   if(protocol==='shadowtls')assert.ok(settings.clients[0].password&&settings.inner.settings.password);
+   assert.equal(calls.length-count,['anytls','orbit'].includes(protocol)?0:1,'only crypto independent of deployment identity may be generated');
+   for(const call of calls.slice(count))for(const key of ['serverName','serverAddress','domain','handshakeAddress'])assert.ok(!call.request[key],'request must not infer '+key+' from panel location');
+   if(['anytls','orbit','dnstt','shadowtls'].includes(protocol)){
+    assert.ok(blank.errors.length,'missing required deployment fields must be invalid');await page.evaluate(()=>inModal.ok());assert.equal(saves.length,beforeSaves,'blank deployment prerequisites cannot save');
+    const setInput=async(label,value)=>{const field=page.locator('.ant-modal:visible .ant-form-item').filter({has:page.locator('.ant-form-item-label',{hasText:label})}).locator('input,textarea').first();await field.fill(value);await field.press('Tab');};
+    if(protocol==='anytls')await setInput('Client server name','127.0.0.1');
+    if(protocol==='orbit')await setInput('Client server address','127.0.0.1');
+    if(['anytls','orbit'].includes(protocol)){await page.waitForTimeout(60);assert.equal(calls.length-count,0,'typing identity must not issue or rotate certificates');await page.getByRole('button',{name:'Generate credentials',exact:true}).click();}
+    if(protocol==='dnstt'){await setInput('Tunnel name','tunnel.review.test');await setInput('DNS resolvers JSON',JSON.stringify([{transport:'udp',address:'127.0.0.1:'+blank.json.port}]));}
+    if(protocol==='shadowtls')await setInput('Handshake TLS target','127.0.0.1');
+    await settled();const ready=await state();assert.deepEqual(ready.errors,[]);complete(protocol,ready.json.settings);assert.equal(calls.length-count,1,'manual completion cannot rotate previously generated credentials');
+    if(['dnstt','shadowtls'].includes(protocol)){assert.deepEqual(ready.json.settings.clients,settings.clients);assert.equal(ready.json.settings.privateKey,settings.privateKey);assert.deepEqual(ready.json.settings.inner,settings.inner);}
+    if(protocol==='anytls')assert.equal(calls.at(-1).request.serverName,'127.0.0.1');
+    if(protocol==='orbit')assert.equal(calls.at(-1).request.serverAddress,'127.0.0.1');
+    await page.waitForTimeout(60);assert.equal(calls.length-count,1,'valid identity must generate once only');
+   }
+  });
+ }
+ await check('outbound-manual-deployment-models-all-six',async()=>{
+  const isolated=await browser.newPage();try{
+   await isolated.addScriptTag({path:path.join(root,'web/assets/js/util/index.js')});await isolated.addScriptTag({path:path.join(root,'web/assets/js/model/outbound.js')});
+   const checks=await isolated.evaluate(()=>{
+    let checked=0;const empty=value=>value===undefined||value===''||(Array.isArray(value)&&value.length===0);
+    for(const protocol of ['orbit','dnstt','openvpn','anytls','shadowtls','mieru']){
+     const model=new Outbound('review',protocol),data=model.settings;
+     for(const field of ['address','server.address','domain','host','peer','serverName','tlsSettings.serverName','reality.serverName','resolver','clientProof.keyFile']){if(!empty(data.read(field)))throw new Error(protocol+' invents '+field);checked++;}
+     if(!data.validationErrors.length)throw new Error(protocol+' blank outbound is saveable');
+     if(protocol==='dnstt'&&data.resolvers.some(item=>item.address))throw new Error('DNSTT resolver must remain blank');
+     if(protocol==='openvpn'){data.setProofEnabled(true);data.setProofKeyMode('keyFile');if(data.read('clientProof.keyFile')!=='')throw new Error('Proof path must be blank');}
+     if(protocol==='orbit'){data.write('transport','ws');data.write('security','reality');if(data.read('host')||data.read('reality.serverName')||data.read('peer'))throw new Error('Orbit mode change invented prerequisites');}
+    }return checked;
+   });assert.equal(checks,60);
+  }finally{await isolated.close();}
+ });
  for(const protocol of protocols){
   await check('new-edit-clone-restore-'+protocol,async()=>{
    await load();const start=calls.length;await openNew(protocol);await settled();const s=await state();assert.deepEqual(s.errors,[]);complete(protocol,s.json.settings);assert.equal(calls.length-start,1,'one automatic profile request');
@@ -117,7 +197,7 @@ async function check(name,fn){if(process.env.REVIEW_ONLY&&!name.includes(process
   });
  }
  await check('negative-and-safe-profile-merges-all-six',async()=>{
-  await load();const profiles=Object.fromEntries(protocols.map(protocol=>[protocol,generate({kind:'inbound-profile',protocol,serverName:'127.0.0.1',email:'generated@example.invalid'}).obj]));
+  await load();const profiles=Object.fromEntries(protocols.map(protocol=>[protocol,generate({kind:'inbound-profile',protocol,serverName:'127.0.0.1',serverAddress:'127.0.0.1',domain:'tunnel.review.test',handshakeAddress:'127.0.0.1',email:'generated@example.invalid'}).obj]));
   const proof=await page.evaluate(profiles=>{
    const clone=o=>JSON.parse(JSON.stringify(o));let checks=0;
    for(const [protocol,generated] of Object.entries(profiles)){
@@ -149,7 +229,7 @@ async function check(name,fn){if(process.env.REVIEW_ONLY&&!name.includes(process
  });
  await check('switch-protocol-cancels-stale-result',async()=>{
   await load();delay=200;await openNew('orbit');await page.waitForFunction(()=>inModal.inbound.settings.generating);
-  await page.evaluate(()=>{inModal.inbound.protocol='anytls';});await settled();await sleep(250);const s=await state();assert.equal(s.json.protocol,'anytls');assert.deepEqual(s.errors,[]);assert.ok(s.json.settings.clients[0].password);assert.equal(s.json.settings.clients[0].key,undefined);
+  await page.evaluate(()=>{inModal.inbound.protocol='anytls';});await page.waitForTimeout(20);await page.evaluate(()=>{const settings=inModal.inbound.settings;settings.setField(settings.fields.find(f=>f.path==='clientExport.serverName'),'127.0.0.1');});await page.getByRole('button',{name:'Generate credentials',exact:true}).click();await settled();await sleep(250);const s=await state();assert.equal(s.json.protocol,'anytls');assert.deepEqual(s.errors,[]);assert.ok(s.json.settings.clients[0].password);assert.equal(s.json.settings.clients[0].key,undefined);
  });
  await check('close-reopen-cancels-stale-result',async()=>{
   await load();delay=200;await openNew('orbit');await page.waitForFunction(()=>inModal.inbound.settings.generating);
@@ -161,7 +241,7 @@ async function check(name,fn){if(process.env.REVIEW_ONLY&&!name.includes(process
  });
  await check('malformed-response-retry-recovers',async()=>{
   await load();mode='malformed';await openNew('anytls');await settled();assert.ok((await state()).error);assert.equal((await state()).generating,false);
-  mode='success';await page.getByRole('button',{name:'Retry generation',exact:true}).click();await settled();assert.deepEqual((await state()).errors,[]);
+  mode='success';await page.getByRole('button',{name:'Generate credentials',exact:true}).click();await settled();assert.deepEqual((await state()).errors,[]);
  });
  await check('telegram-input-validation-does-not-break-render',async()=>{
   await load();await openNew('anytls');await settled();await page.evaluate(()=>{app.tgBotEnable=true;});await page.locator('.ant-collapse-header').filter({hasText:'Client 1:'}).first().click();
@@ -227,7 +307,7 @@ async function check(name,fn){if(process.env.REVIEW_ONLY&&!name.includes(process
  });
  await check('optional-orbit-reality-roundtrip-core-valid',async()=>{
   await load();await openNew('orbit');await settled();const original=await state();
-  await page.evaluate(()=>inModal.inbound.settings.setField(inModal.inbound.settings.fields.find(f=>f.path==='security'),'reality'));await settled();const reality=await state();assert.deepEqual(reality.errors,[]);assert.match(reality.json.settings.reality.privateKey,/^[A-Za-z0-9_-]{43}$/);assert.equal(reality.json.settings.clients[0].key,original.json.settings.clients[0].key);
+  await page.evaluate(()=>inModal.inbound.settings.setField(inModal.inbound.settings.fields.find(f=>f.path==='security'),'reality'));await settled();const pendingReality=await state();assert.ok(!pendingReality.json.settings.reality.serverNames?.length&&!pendingReality.json.settings.reality.dest,'Reality deployment names and destination must remain blank');await changeNativeField('reality.serverNames','cover.review.test');await changeNativeField('reality.dest','127.0.0.1:443');const reality=await state();assert.deepEqual(reality.errors,[]);assert.match(reality.json.settings.reality.privateKey,/^[A-Za-z0-9_-]{43}$/);assert.equal(reality.json.settings.clients[0].key,original.json.settings.clients[0].key);
   await page.evaluate(()=>inModal.inbound.settings.setField(inModal.inbound.settings.fields.find(f=>f.path==='security'),''));await settled();const restored=await state();assert.deepEqual(restored.errors,[]);assert.equal(restored.json.settings.clients[0].key,original.json.settings.clients[0].key);
   validateOrbitSettings(restored.json.settings,'orbit-reality-roundtrip');
   assert.equal(restored.json.settings.reality,undefined,'inactive Reality settings must not be emitted for ordinary TLS');
@@ -235,20 +315,20 @@ async function check(name,fn){if(process.env.REVIEW_ONLY&&!name.includes(process
  });
  await check('optional-orbit-websocket-roundtrip-core-valid',async()=>{
   await load();await openNew('orbit');await settled();const original=await state();
-  await changeNativeField('transport','ws');const ws=await state();assert.deepEqual(ws.errors,[]);assert.ok(ws.json.settings.host&&ws.json.settings.path);validateOrbitSettings(ws.json.settings,'orbit-ws');
+  await changeNativeField('transport','ws');const missingWS=await state();assert.ok(!missingWS.json.settings.host&&!missingWS.json.settings.clientExport?.serverName,'WS Host and peer must remain blank');assert.ok(missingWS.errors.length);await changeNativeField('host','ws.review.test');await changeNativeField('clientExport.serverName','127.0.0.1');const ws=await state();assert.deepEqual(ws.errors,[]);assert.ok(ws.json.settings.host&&ws.json.settings.path);validateOrbitSettings(ws.json.settings,'orbit-ws');
   await page.locator('.ant-modal:visible .ant-modal-footer button.ant-btn-primary').click();await page.waitForFunction(()=>!inModal.visible&&app.dbInbounds.length===1);await page.evaluate(()=>app.openEditInbound(app.dbInbounds[0].id));
   await changeNativeField('transport','tcp');const tcp=await state();assert.deepEqual(tcp.errors,[]);validateOrbitSettings(tcp.json.settings,'orbit-ws-to-tcp');assert.ok(!tcp.json.settings.host&&!tcp.json.settings.path);assert.equal(tcp.json.settings.clients[0].key,original.json.settings.clients[0].key);
   await changeNativeField('transport','ws');const again=await state();assert.equal(again.json.settings.host,ws.json.settings.host);assert.equal(again.json.settings.path,ws.json.settings.path);
  });
  await check('optional-orbit-wss-to-ws-preserves-dormant-certificate',async()=>{
   await load();await openNew('orbit');await settled();const original=await state();
-  await changeNativeField('transport','wss');await changeNativeField('outerTls.certificate',original.json.settings.tls.certificate.join('\n'));await changeNativeField('outerTls.key',original.json.settings.tls.key.join('\n'));const wss=await state();assert.deepEqual(wss.errors,[]);validateOrbitSettings(wss.json.settings,'orbit-wss-fixture');
+  await changeNativeField('transport','wss');await changeNativeField('host','ws.review.test');await changeNativeField('clientExport.serverName','127.0.0.1');await changeNativeField('outerTls.certificate',original.json.settings.tls.certificate.join('\n'));await changeNativeField('outerTls.key',original.json.settings.tls.key.join('\n'));const wss=await state();assert.deepEqual(wss.errors,[]);validateOrbitSettings(wss.json.settings,'orbit-wss-fixture');
   await changeNativeField('transport','ws');const ws=await state();assert.deepEqual(ws.errors,[]);validateOrbitSettings(ws.json.settings,'orbit-wss-to-ws');assert.equal(ws.json.settings.outerTls,undefined);
   await changeNativeField('transport','wss');const restored=await state();assert.deepEqual(restored.json.settings.outerTls,wss.json.settings.outerTls);assert.deepEqual(restored.errors,[]);validateOrbitSettings(restored.json.settings,'orbit-wss-restored');
  });
  await check('optional-orbit-wss-tcp-quic-wss-core-valid',async()=>{
   await load();await openNew('orbit');await settled();const original=await state();
-  await changeNativeField('transport','wss');await changeNativeField('outerTls.certificate',original.json.settings.tls.certificate.join('\n'));await changeNativeField('outerTls.key',original.json.settings.tls.key.join('\n'));await changeNativeField('clientExport.serverName','127.0.0.1');const wss=await state();assert.deepEqual(wss.errors,[]);validateOrbitSettings(wss.json.settings,'orbit-wss-start');
+  await changeNativeField('transport','wss');await changeNativeField('host','ws.review.test');await changeNativeField('clientExport.serverName','127.0.0.1');await changeNativeField('outerTls.certificate',original.json.settings.tls.certificate.join('\n'));await changeNativeField('outerTls.key',original.json.settings.tls.key.join('\n'));await changeNativeField('clientExport.serverName','127.0.0.1');const wss=await state();assert.deepEqual(wss.errors,[]);validateOrbitSettings(wss.json.settings,'orbit-wss-start');
   for(const mode of ['tcp','quic']){await changeNativeField('transport',mode);const s=await state();assert.deepEqual(s.errors,[]);assert.ok(!s.json.settings.host&&!s.json.settings.path&&!s.json.settings.outerTls);assert.equal(s.json.settings.clientExport?.serverName,undefined);assert.equal(s.json.settings.clients[0].key,wss.json.settings.clients[0].key);validateOrbitSettings(s.json.settings,'orbit-wss-to-'+mode);}
   await changeNativeField('transport','wss');const restored=await state();assert.deepEqual(restored.errors,[]);assert.deepEqual(restored.json.settings.outerTls,wss.json.settings.outerTls);assert.equal(restored.json.settings.host,wss.json.settings.host);assert.equal(restored.json.settings.path,wss.json.settings.path);assert.equal(restored.json.settings.clientExport.serverName,wss.json.settings.clientExport.serverName);validateOrbitSettings(restored.json.settings,'orbit-wss-final-restored');
  });

@@ -23,6 +23,7 @@ import (
 
 	"github.com/google/uuid"
 	coreconf "github.com/xtls/xray-core/infra/conf"
+	"github.com/xtls/xray-core/proxy/openvpn"
 	"github.com/xtls/xray-core/proxy/openvpn/ovpn/ctlwrap"
 	"github.com/xtls/xray-core/proxy/orbit"
 )
@@ -268,7 +269,7 @@ func TestNativeProfileCertificateIPNames(t *testing.T) {
 }
 
 func TestNativeProfileOrbitRequiresUsableNumericEndpoint(t *testing.T) {
-	for _, address := range []string{"", "vpn.example.test", "https://192.0.2.7", "192.0.2.7:443", "192.0.2.7/32", "0.0.0.0", "::", "224.0.0.1", "ff02::1", "169.254.1.2", "fe80::1"} {
+	for _, address := range []string{"vpn.example.test", "https://192.0.2.7", "192.0.2.7:443", "192.0.2.7/32", "0.0.0.0", "::", "224.0.0.1", "ff02::1", "169.254.1.2", "fe80::1"} {
 		request := profileTestRequest("orbit")
 		request.ServerAddress = address
 		if profile, err := GenerateNativeInboundProfile(request); err == nil || profile != nil {
@@ -286,6 +287,142 @@ func TestNativeProfileOrbitRequiresUsableNumericEndpoint(t *testing.T) {
 		if leaf.VerifyHostname(address) != nil || leaf.VerifyHostname(request.ServerName) != nil {
 			t.Fatal("Orbit endpoint selection lost endpoint IP or supplied DNS SAN")
 		}
+	}
+}
+
+func TestNativeProfileMissingDeploymentInputsRemainExplicit(t *testing.T) {
+	for protocol, required := range map[string]string{"anytls": "serverName", "orbit": "serverAddress", "dnstt": "domain", "shadowtls": "handshake.address"} {
+		t.Run(protocol, func(t *testing.T) {
+			profile, err := GenerateNativeInboundProfile(NativeCredentialRequest{Kind: "inbound-profile", Protocol: protocol})
+			if err != nil || profile == nil {
+				t.Fatalf("partial cryptographic profile generation failed: %v", err)
+			}
+			found := false
+			for _, requirement := range profile.Requirements {
+				if requirement.Field == required && requirement.Message != "" {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("partial profile did not identify missing %s", required)
+			}
+			client := profileTestClient(t, profile.Settings)
+			if client["enable"] != true || profileTestString(t, client["email"]) == "" || profileTestString(t, client["subId"]) == "" {
+				t.Fatal("partial profile lost its generated panel account")
+			}
+			encoded, _ := json.Marshal(profile)
+			for _, fabricated := range []string{"vpn.internal", "www.microsoft.com", ".tunnel.invalid", "1.1.1.1"} {
+				if strings.Contains(string(encoded), fabricated) {
+					t.Fatal("partial profile invented external deployment information")
+				}
+			}
+			switch protocol {
+			case "anytls":
+				profileTestString(t, client["password"])
+				tlsSettings := profileTestObject(t, profile.StreamSettings["tlsSettings"])
+				if profile.StreamSettings["network"] != "tcp" || profile.StreamSettings["security"] != "tls" || tlsSettings["certificates"] != nil || profile.Settings["clientExport"] != nil {
+					t.Fatal("AnyTLS without identity must preserve its TLS skeleton without inventing a certificate")
+				}
+			case "orbit":
+				if profile.Settings["transport"] != "tcp" || profile.Settings["tls"] != nil || profile.Settings["clientExport"] != nil || client["key"] != nil {
+					t.Fatal("Orbit without endpoint must defer its certificate and bound client key")
+				}
+			case "dnstt":
+				if profile.Settings["domain"] != "" || profile.Settings["clientExport"] != nil {
+					t.Fatal("DNSTT without a deployment domain invented a domain or resolver")
+				}
+				private, err := hex.DecodeString(profileTestString(t, profile.Settings["privateKey"]))
+				if err != nil || len(private) != 32 {
+					t.Fatal("partial DNSTT profile lost private key")
+				}
+				key, err := ecdh.X25519().NewPrivateKey(private)
+				if err != nil || profile.PublicKey != hex.EncodeToString(key.PublicKey().Bytes()) {
+					t.Fatal("partial DNSTT key pair is inconsistent")
+				}
+				if id, err := uuid.Parse(profileTestString(t, client["id"])); err != nil || id == uuid.Nil {
+					t.Fatal("partial DNSTT profile lost authenticated inner UUID")
+				}
+			case "shadowtls":
+				if profileTestObject(t, profile.Settings["handshake"])["address"] != "" || profile.Settings["clientExport"] != nil {
+					t.Fatal("ShadowTLS without a cover endpoint invented a target or SNI")
+				}
+				outerSecret := profileTestString(t, client["password"])
+				inner := profileTestObject(t, profile.Settings["inner"])
+				settings := profileTestObject(t, inner["settings"])
+				innerClient := profileTestClient(t, settings)
+				serverKey, err := base64.StdEncoding.Strict().DecodeString(profileTestString(t, settings["password"]))
+				if err != nil || len(serverKey) != 32 {
+					t.Fatal("partial ShadowTLS profile lost inner server key")
+				}
+				userKey, err := base64.StdEncoding.Strict().DecodeString(profileTestString(t, innerClient["password"]))
+				if err != nil || len(userKey) != 32 || bytes.Equal(serverKey, userKey) || outerSecret == settings["password"] || outerSecret == innerClient["password"] || innerClient["email"] != client["email"] {
+					t.Fatal("partial ShadowTLS encrypted account binding or independent secrets lost")
+				}
+			}
+		})
+	}
+}
+
+func TestNativeProfileOpenVPNWithoutIdentityDoesNotInventExternalValues(t *testing.T) {
+	profile, err := GenerateNativeInboundProfile(NativeCredentialRequest{Protocol: "openvpn"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tunnel := profileTestObject(t, profile.Settings["tunnel"])
+	rawDNS, _ := json.Marshal(tunnel["dns"])
+	if string(rawDNS) != "[]" {
+		t.Fatal("OpenVPN must explicitly disable generated external DNS without user input")
+	}
+	stored, _ := json.Marshal(profile.Settings)
+	projected, err := coreInboundSettingsAt("openvpn", string(stored), nil, time.Now().UnixMilli())
+	if err != nil {
+		t.Fatalf("generated OpenVPN profile cannot be projected: %v", err)
+	}
+	var native coreconf.OpenVPNInboundConfig
+	if err := json.Unmarshal([]byte(projected), &native); err != nil {
+		t.Fatalf("generated OpenVPN profile cannot be decoded by the core: %v", err)
+	}
+	if native.Settings.Tunnel.DNS == nil || len(native.Settings.Tunnel.DNS) != 0 {
+		t.Fatal("OpenVPN core validation reintroduced an external DNS server")
+	}
+	built, err := native.Build()
+	if err != nil {
+		t.Fatalf("generated OpenVPN profile cannot be built: %v", err)
+	}
+	runtime, err := openvpn.ParseServerSettings(built.(*openvpn.ServerConfig).Settings)
+	if err != nil {
+		t.Fatalf("generated OpenVPN profile cannot be decoded at runtime: %v", err)
+	}
+	if runtime.Tunnel.DNS == nil || len(runtime.Tunnel.DNS) != 0 {
+		t.Fatal("OpenVPN core serialization reintroduced an external DNS server at runtime")
+	}
+	certificates := profileTestObject(t, profile.Settings["certificates"])
+	server := profileTestKeyPair(t, certificates["cert"], certificates["key"])
+	if len(server.DNSNames) != 0 || len(server.IPAddresses) != 0 {
+		t.Fatal("OpenVPN generated an external server identity without user input")
+	}
+	ca := profileTestCertificate(t, certificates["ca"])
+	profileTestVerify(t, server, ca, "", x509.ExtKeyUsageServerAuth)
+	client := profileTestClient(t, profile.Settings)
+	leaf := profileTestKeyPair(t, client["certificate"], client["privateKey"])
+	profileTestVerify(t, leaf, ca, "", x509.ExtKeyUsageClientAuth)
+}
+
+func TestNativeProfileOrbitAddressOnlyDoesNotInventDNSName(t *testing.T) {
+	profile, err := GenerateNativeInboundProfile(NativeCredentialRequest{Protocol: "orbit", ServerAddress: "192.0.2.7"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	material := profileTestObject(t, profile.Settings["tls"])
+	leaf := profileTestKeyPair(t, material["certificate"], material["key"])
+	if len(leaf.DNSNames) != 0 || len(leaf.IPAddresses) != 1 || leaf.VerifyHostname("192.0.2.7") != nil {
+		t.Fatal("address-only Orbit profile invented DNS identity or lost its IP identity")
+	}
+	key := profileTestString(t, profileTestClient(t, profile.Settings)["key"])
+	decoded, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(key, "vck1_"))
+	pin := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
+	if err != nil || len(decoded) != 64 || !bytes.Equal(decoded[32:], pin[:]) {
+		t.Fatal("address-only Orbit client key lost its certificate pin")
 	}
 }
 

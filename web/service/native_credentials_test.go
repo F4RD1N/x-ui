@@ -98,7 +98,10 @@ func TestNativeOrbitRealityCredentials(t *testing.T) {
 	if err != nil || len(connection) != 64 || !bytes.Equal(connection[32:], pin[:]) {
 		t.Fatal("Reality connection identity does not match public key")
 	}
-	if a["target"] != "www.microsoft.com:443" || a["serverName"] != "www.microsoft.com" {
-		t.Fatal("Reality default target and name diverged")
+	if _, exists := a["target"]; exists {
+		t.Fatal("Reality generation must not invent a deployment target")
+	}
+	if _, exists := a["serverName"]; exists {
+		t.Fatal("Reality generation must not invent a server name")
 	}
 }

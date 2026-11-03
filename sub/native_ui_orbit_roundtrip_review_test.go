@@ -88,3 +88,83 @@ func TestNativeUIOrbitRoundtripExports(t *testing.T) {
 		})
 	}
 }
+
+// Use the exact saved-form identity, not the credential helper's response: the
+// browser merge must preserve certificate trust and normalize explicit names.
+func TestNativeUIExplicitIdentityExports(t *testing.T) {
+	dir := os.Getenv("NATIVE_UI_IDENTITY_FIXTURES")
+	if dir == "" {
+		t.Skip("set NATIVE_UI_IDENTITY_FIXTURES to the explicit identity browser review directory")
+	}
+	files, err := filepath.Glob(filepath.Join(dir, "identity-*-inbound.json"))
+	if err != nil || len(files) != 4 {
+		t.Fatalf("expected four explicit identity fixtures, got %d: %v", len(files), err)
+	}
+	for _, file := range files {
+		t.Run(filepath.Base(file), func(t *testing.T) {
+			data, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var input struct {
+				Protocol       model.Protocol  `json:"protocol"`
+				Settings       json.RawMessage `json:"settings"`
+				StreamSettings json.RawMessage `json:"streamSettings"`
+			}
+			if err := json.Unmarshal(data, &input); err != nil {
+				t.Fatal(err)
+			}
+			var settings struct {
+				Clients []model.Client `json:"clients"`
+				TLS     struct {
+					Certificate []string `json:"certificate"`
+				} `json:"tls"`
+			}
+			if err := json.Unmarshal(input.Settings, &settings); err != nil || len(settings.Clients) != 1 {
+				t.Fatal("invalid browser client fixture", err)
+			}
+			inbound := &model.Inbound{Protocol: input.Protocol, Listen: "127.0.0.1", Port: 29091, Tag: "identity-review", Settings: string(input.Settings), StreamSettings: string(input.StreamSettings), Sniffing: "{}", Enable: true}
+			outbounds, err := nativeClientOutbounds(inbound, settings.Clients[0], "127.0.0.1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			nativeTestOutboundsBuild(t, outbounds)
+			out := outbounds[0]["settings"].(map[string]any)
+			name, _ := out["address"].(string)
+			material := settings.TLS.Certificate
+			if input.Protocol == "anytls" {
+				var stream struct {
+					TLS struct {
+						Certificates []struct {
+							Certificate []string `json:"certificate"`
+						} `json:"certificates"`
+					} `json:"tlsSettings"`
+				}
+				if err := json.Unmarshal(input.StreamSettings, &stream); err != nil || len(stream.TLS.Certificates) == 0 {
+					t.Fatal("browser server certificate missing", err)
+				}
+				material = stream.TLS.Certificates[0].Certificate
+				tls := out["tlsSettings"].(map[string]any)
+				name, _ = tls["serverName"].(string)
+				trust, _ := tls["certificates"].([]any)
+				if len(trust) == 0 {
+					t.Fatal("generated CA disappeared from the exported client")
+				}
+			}
+			if strings.TrimSpace(name) != name || strings.HasPrefix(name, "[") || strings.HasSuffix(name, ".") {
+				t.Fatalf("explicit identity was not canonicalized: %q", name)
+			}
+			block, _ := pem.Decode([]byte(strings.Join(material, "\n")))
+			if block == nil {
+				t.Fatal("browser certificate PEM missing")
+			}
+			leaf, err := x509.ParseCertificate(block.Bytes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := leaf.VerifyHostname(name); err != nil {
+				t.Fatalf("exported name %q does not match generated certificate: %v", name, err)
+			}
+		})
+	}
+}
