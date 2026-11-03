@@ -95,15 +95,18 @@ func validateInboundClient(p model.Protocol, settings string, c model.Client) er
 		if json.Unmarshal([]byte(settings), &s) != nil {
 			return fmt.Errorf("invalid ShadowTLS settings")
 		}
-		if s.Version == 1 || s.Version == 2 {
-			if strings.EqualFold(s.Inner.Protocol, "socks") {
-				if c.InnerUsername == "" {
-					return fmt.Errorf("ShadowTLS SOCKS client requires innerUsername export binding")
-				}
-				if (c.TotalGB > 0 || c.LimitIP > 0) && c.InnerUsername != c.Email {
-					return fmt.Errorf("ShadowTLS SOCKS traffic and IP limits require innerUsername to match client email")
-				}
+		// An inner SOCKS account is exported by its innerUsername regardless of
+		// the ShadowTLS version (v3 included), so require it for every version;
+		// otherwise a saved v3 SOCKS client cannot be exported.
+		if strings.EqualFold(s.Inner.Protocol, "socks") {
+			if c.InnerUsername == "" {
+				return fmt.Errorf("ShadowTLS SOCKS client requires innerUsername export binding")
 			}
+			if (c.TotalGB > 0 || c.LimitIP > 0) && c.InnerUsername != c.Email {
+				return fmt.Errorf("ShadowTLS SOCKS traffic and IP limits require innerUsername to match client email")
+			}
+		}
+		if s.Version == 1 || s.Version == 2 {
 			return nil
 		}
 		if c.Password == "" {

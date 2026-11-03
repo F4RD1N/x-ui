@@ -127,10 +127,18 @@ func (s *InboundService) checkPortExist(listen string, port int, ignoreId int) (
 	return count > 0, nil
 }
 
-// clientsWithNumericTgID makes a string tgId a number: older panels, the
-// stock UI and many API scripts send "" (or the digits as a string), and
-// databases they wrote keep it. "" and anything not a number become 0.
-func clientsWithNumericTgID(settings []byte) []byte {
+// numericClientFields are client fields that older panels, the stock UI and
+// many API scripts send as JSON strings ("" or the digits quoted) although the
+// model types them as integers. Databases those tools wrote keep the strings.
+var numericClientFields = []string{"tgId", "totalGB", "expiryTime", "limitIp", "reset"}
+
+// clientsWithNumericFields rewrites the numericClientFields of every client
+// from a JSON string to a JSON number so both read (unmarshal into model.Client)
+// and storage stay consistent. "" and anything not a number become 0. This is
+// the companion fix to the string-tgId handling: totalGB/expiryTime sent as
+// strings used to crash client add/update with a raw Go unmarshal error, and a
+// string tgId stored verbatim defeated the Telegram bot's numeric LIKE lookup.
+func clientsWithNumericFields(settings []byte) []byte {
 	var m map[string]json.RawMessage
 	if json.Unmarshal(settings, &m) != nil {
 		return settings
@@ -145,20 +153,23 @@ func clientsWithNumericTgID(settings []byte) []byte {
 	}
 	changed := false
 	for _, c := range clients {
-		v, ok := c["tgId"]
-		if !ok {
-			continue
+		for _, field := range numericClientFields {
+			v, ok := c[field]
+			if !ok {
+				continue
+			}
+			var str string
+			if json.Unmarshal(v, &str) != nil {
+				// already a number (or other non-string); leave it alone.
+				continue
+			}
+			n, err := strconv.ParseInt(strings.ReplaceAll(str, " ", ""), 10, 64)
+			if err != nil {
+				n = 0
+			}
+			c[field] = json.RawMessage(strconv.FormatInt(n, 10))
+			changed = true
 		}
-		var str string
-		if json.Unmarshal(v, &str) != nil {
-			continue
-		}
-		n, err := strconv.ParseInt(strings.ReplaceAll(str, " ", ""), 10, 64)
-		if err != nil {
-			n = 0
-		}
-		c["tgId"] = json.RawMessage(strconv.FormatInt(n, 10))
-		changed = true
 	}
 	if !changed {
 		return settings
@@ -182,7 +193,7 @@ func (s *InboundService) GetClients(inbound *model.Inbound) ([]model.Client, err
 	var settings *struct {
 		Clients []model.Client `json:"clients"`
 	}
-	if err := json.Unmarshal(clientsWithNumericTgID([]byte(inbound.Settings)), &settings); err != nil {
+	if err := json.Unmarshal(clientsWithNumericFields([]byte(inbound.Settings)), &settings); err != nil {
 		return nil, fmt.Errorf("invalid inbound clients: %w", err)
 	}
 	if settings == nil {
@@ -335,6 +346,9 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 		}
 		inbound.Settings = string(encoded)
 	}
+	// Persist numeric client fields as numbers (not quoted strings) so the
+	// Telegram bot's tgId LIKE lookup matches and totalGB/expiryTime round-trip.
+	inbound.Settings = string(clientsWithNumericFields([]byte(inbound.Settings)))
 	for _, client := range clients {
 		if err := validateInboundClient(inbound.Protocol, inbound.Settings, client); err != nil {
 			return inbound, false, err
@@ -557,7 +571,7 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 	oldInbound.Listen = inbound.Listen
 	oldInbound.Port = inbound.Port
 	oldInbound.Protocol = inbound.Protocol
-	oldInbound.Settings = inbound.Settings
+	oldInbound.Settings = string(clientsWithNumericFields([]byte(inbound.Settings)))
 	oldInbound.StreamSettings = inbound.StreamSettings
 	oldInbound.Sniffing = inbound.Sniffing
 	if inbound.Listen == "" || inbound.Listen == "0.0.0.0" || inbound.Listen == "::" || inbound.Listen == "::0" {
@@ -738,7 +752,7 @@ func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
 		return false, err
 	}
 
-	oldInbound.Settings = string(newSettings)
+	oldInbound.Settings = string(clientsWithNumericFields(newSettings))
 	if err = validateNativeInboundSettings(oldInbound); err != nil {
 		return false, err
 	}
@@ -993,7 +1007,7 @@ func (s *InboundService) UpdateInboundClient(data *model.Inbound, clientId strin
 		return false, err
 	}
 
-	oldInbound.Settings = string(newSettings)
+	oldInbound.Settings = string(clientsWithNumericFields(newSettings))
 	if err = validateNativeInboundSettings(oldInbound); err != nil {
 		return false, err
 	}

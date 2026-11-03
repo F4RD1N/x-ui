@@ -37,6 +37,23 @@ func exportObject(value any) map[string]any {
 	return v
 }
 func exportString(value any) string { s, _ := value.(string); return s }
+func exportFloat(value any) float64 {
+	switch n := value.(type) {
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	case int64:
+		return float64(n)
+	case json.Number:
+		f, _ := n.Float64()
+		return f
+	case string:
+		f, _ := strconv.ParseFloat(strings.TrimSpace(n), 64)
+		return f
+	}
+	return 0
+}
 func exportCopy(to, from map[string]any, fields ...string) {
 	for _, field := range fields {
 		if value, present := from[field]; present {
@@ -187,6 +204,18 @@ func ClientOutbounds(inbound *model.Inbound, client model.Client, host string) (
 		}
 		tunnel := map[string]any{"domain": settings["domain"], "publicKey": public}
 		exportCopy(tunnel, settings, "handshakeTimeout")
+		// The inbound DNS payload MTU is the server's maxUDPPayload. The client's
+		// query EDNS UDP payload size must be >= it or the server answers FORMERR
+		// and the handshake hangs. Propagate the inbound MTU so an inbound with
+		// mtu>1232 produces working exported clients instead of a silent hang.
+		mtu := exportFloat(settings["mtu"])
+		if mtu < 512 {
+			mtu = 1232
+		}
+		if mtu > 4096 {
+			mtu = 4096
+		}
+		tunnel["ednsPayloadSize"] = mtu
 		if resolvers, ok := meta["resolvers"].([]any); ok && len(resolvers) > 0 {
 			tunnel["resolvers"] = resolvers
 		} else {
