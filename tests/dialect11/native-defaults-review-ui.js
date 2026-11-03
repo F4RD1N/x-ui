@@ -23,7 +23,7 @@ if(!process.env.NATIVE_CREDENTIAL_HELPER)execFileSync('go',['build','-p','1','-o
 const clone=o=>JSON.parse(JSON.stringify(o));
 const protocols=['anytls','mieru','dnstt','orbit','openvpn','shadowtls'];
 const calls=[],saves=[],errors=[],results=[];
-let rows=[],mode='success',delay=0,browser,page,sequence=1;
+let rows=[],mode='success',delay=0,browser,page,sequence=1,caseName='',nextPort=35000;
 function generate(request){return JSON.parse(execFileSync(credentialHelper,[],{input:JSON.stringify(request),encoding:'utf8',maxBuffer:2<<20}));}
 function rowFor(protocol,profile,id=sequence++){
  const settings=profile.settings;
@@ -50,10 +50,10 @@ const server=http.createServer(async(req,res)=>{
  }
  if(url.pathname.endsWith('/panel/api/inbounds/add')||url.pathname.endsWith('/panel/api/inbounds/addClient')){
   let body='';for await(const b of req)body+=b;
-  const data=Object.fromEntries(new URLSearchParams(body));saves.push({path:url.pathname,data});
+  const data=Object.fromEntries(new URLSearchParams(body));const capture={case:caseName,path:url.pathname,data,rawBody:body};saves.push(capture);
   if(url.pathname.endsWith('/add')){
    const p={settings:JSON.parse(data.settings),streamSettings:JSON.parse(data.streamSettings||'{}')};
-   const row=rowFor(data.protocol,p);row.port=Number(data.port);row.remark=data.remark||row.remark;rows.push(row);
+   const row=rowFor(data.protocol,p);row.port=Number(data.port);row.remark=data.remark||row.remark;rows.push(row);capture.responseId=row.id;
   }
   reply({success:true,obj:null});return;
  }
@@ -69,17 +69,18 @@ const server=http.createServer(async(req,res)=>{
 });
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function load(initialRows=[]){
- rows=clone(initialRows);mode='success';delay=0;
+ rows=clone(initialRows);sequence=1;mode='success';delay=0;
  await page.goto('http://127.0.0.1:'+server.address().port+'/review/panel/inbounds');
  await page.waitForFunction(()=>typeof app!=='undefined'&&app.loadingStates.fetched&&!app.loadingStates.spinning);
 }
 async function openNew(protocol){
  await page.getByRole('button',{name:/pages\.inbounds\.addInbound$/}).click();
- await page.evaluate(p=>{inModal.inbound.protocol=p;},protocol);
+ await page.evaluate(({protocol,port})=>{inModal.inbound.protocol=protocol;inModal.inbound.port=port;},{protocol,port:nextPort++});
 }
 async function settled(){await page.waitForFunction(()=>inModal.inbound.isNative&&!inModal.inbound.settings.generating&&!inModal.inbound.settings.modeDefaultsPending&&(!inModal.inbound.settings.needsProfile||inModal.inbound.settings.generationError),{},{timeout:10000});await page.waitForTimeout(30);}
 async function state(){return page.evaluate(()=>({json:inModal.inbound.toJson(),errors:inModal.inbound.settings.validationErrors,generating:inModal.inbound.settings.generating,error:inModal.inbound.settings.generationError,needs:inModal.inbound.settings.needsProfile}));}
 function validateOrbitSettings(input,label){
+ fs.writeFileSync(path.join(work,label+'-panel-settings.json'),JSON.stringify(input));
  const settings=clone(input);delete settings.clientExport;settings.clients=settings.clients.map(c=>({email:c.email,key:c.key,level:c.level}));
  const config=path.join(work,label+'-core.json');fs.writeFileSync(config,JSON.stringify({inbounds:[{listen:'127.0.0.1',port:29091,protocol:'orbit',settings}],outbounds:[{protocol:'freedom'}]}));
  if(process.env.REVIEW_CORE){try{const output=execFileSync(process.env.REVIEW_CORE,['run','-test','-config',config],{encoding:'utf8',stdio:['ignore','pipe','pipe']});fs.writeFileSync(path.join(work,label+'-core.log'),output);}catch(error){const output=String(error.stdout||'')+String(error.stderr||'');fs.writeFileSync(path.join(work,label+'-core.log'),output);throw new Error(output.slice(-1000));}}
@@ -94,7 +95,7 @@ function complete(protocol,settings,client= settings.clients[0]){
  if(protocol==='mieru')assert.ok(client.username&&client.password);
  if(protocol==='shadowtls'){assert.ok(client.password);assert.ok(settings.handshake.address);const inner=settings.inner.settings;assert.ok((inner.clients||[]).some(c=>c.email===client.email&&c.password||c.email===client.email&&c.id)||(inner.accounts||[]).some(c=>c.user===(client.innerUsername||client.email)), 'inner binding for '+client.email);}
 }
-async function check(name,fn){if(process.env.REVIEW_ONLY&&!name.includes(process.env.REVIEW_ONLY))return;const before=errors.length;try{await fn();assert.deepEqual(errors.slice(before),[],name+' Vue/page errors');results.push({name,ok:true});console.log('PASS '+name);}catch(error){results.push({name,ok:false,error:error.message});console.log('FAIL '+name+': '+error.message);await page.screenshot({path:path.join(work,name.replace(/[^a-z0-9_-]/ig,'_')+'.png'),fullPage:true}).catch(()=>{});}}
+async function check(name,fn){if(process.env.REVIEW_ONLY&&!name.includes(process.env.REVIEW_ONLY))return;caseName=name;const before=errors.length;try{await fn();assert.deepEqual(errors.slice(before),[],name+' Vue/page errors');results.push({name,ok:true});console.log('PASS '+name);}catch(error){results.push({name,ok:false,error:error.message});console.log('FAIL '+name+': '+error.message);await page.screenshot({path:path.join(work,name.replace(/[^a-z0-9_-]/ig,'_')+'.png'),fullPage:true}).catch(()=>{});}}
 (async()=>{
  try{
  await new Promise(r=>server.listen(0,'127.0.0.1',r));
@@ -162,6 +163,12 @@ async function check(name,fn){if(process.env.REVIEW_ONLY&&!name.includes(process
   await load();mode='malformed';await openNew('anytls');await settled();assert.ok((await state()).error);assert.equal((await state()).generating,false);
   mode='success';await page.getByRole('button',{name:'Retry generation',exact:true}).click();await settled();assert.deepEqual((await state()).errors,[]);
  });
+ await check('telegram-input-validation-does-not-break-render',async()=>{
+  await load();await openNew('anytls');await settled();await page.evaluate(()=>{app.tgBotEnable=true;});await page.locator('.ant-collapse-header').filter({hasText:'Client 1:'}).first().click();
+  const input=page.locator('.ant-modal:visible .ant-form-item').filter({has:page.locator('.ant-form-item-label',{hasText:'Telegram ChatID'})}).locator('input');const before=saves.length;
+  for(const value of ['12.5','9007199254740992']){await input.fill(value);await input.press('Tab');await page.waitForTimeout(30);assert.ok((await state()).errors.some(e=>/Telegram/i.test(e)));await page.locator('.ant-modal:visible .ant-modal-footer button.ant-btn-primary').click();assert.equal(saves.length,before,'invalid Telegram value must not submit');}
+  await input.fill('123456');await input.press('Tab');await page.waitForTimeout(30);assert.deepEqual((await state()).errors,[]);await page.locator('.ant-modal:visible .ant-modal-footer button.ant-btn-primary').click();await page.waitForFunction(()=>!inModal.visible);assert.equal(JSON.parse(saves.at(-1).data.settings).clients[0].tgId,123456);
+ });
  await check('wrong-protocol-response-cannot-replace-form',async()=>{
   await load();mode='wrongProtocol';await openNew('openvpn');await settled();const s=await state();assert.equal(s.json.protocol,'openvpn');assert.ok(s.error);assert.equal(s.generating,false);assert.ok(!s.json.settings.certificates.cert);
   mode='success';await page.getByRole('button',{name:'Retry generation',exact:true}).click();await settled();assert.deepEqual((await state()).errors,[]);
@@ -189,8 +196,9 @@ async function check(name,fn){if(process.env.REVIEW_ONLY&&!name.includes(process
    if(protocol==='openvpn')assert.notEqual(s.json.settings.clients[0].privateKey,s.json.settings.clients[1].privateKey);
   });
   await check('standalone-add-client-'+protocol,async()=>{
-   await load();await openNew(protocol);await settled();const s=await state();assert.deepEqual(s.errors,[]);const row=rowFor(protocol,{settings:s.json.settings,streamSettings:s.json.streamSettings});
-   await page.evaluate(row=>{inModal.close();app.setInbounds([row]);app.openAddClient(row.id);},row);
+   await load();await openNew(protocol);await settled();const s=await state();assert.deepEqual(s.errors,[]);
+   await page.locator('.ant-modal:visible .ant-modal-footer button.ant-btn-primary').click();await page.waitForFunction(()=>!inModal.visible&&app.dbInbounds.length===1);
+   await page.evaluate(()=>app.openAddClient(app.dbInbounds[0].id));
    await page.waitForFunction(()=>clientModal.visible&&!clientModal.inbound.settings.generating);
    const added=await page.evaluate(()=>({settings:clientModal.inbound.settings.toJson(),client:clientModalApp.client.toJson(),errors:clientModalApp.client.validationErrors}));
    assert.deepEqual(added.errors,[]);complete(protocol,added.settings,added.client);
@@ -228,6 +236,7 @@ async function check(name,fn){if(process.env.REVIEW_ONLY&&!name.includes(process
  await check('optional-orbit-websocket-roundtrip-core-valid',async()=>{
   await load();await openNew('orbit');await settled();const original=await state();
   await changeNativeField('transport','ws');const ws=await state();assert.deepEqual(ws.errors,[]);assert.ok(ws.json.settings.host&&ws.json.settings.path);validateOrbitSettings(ws.json.settings,'orbit-ws');
+  await page.locator('.ant-modal:visible .ant-modal-footer button.ant-btn-primary').click();await page.waitForFunction(()=>!inModal.visible&&app.dbInbounds.length===1);await page.evaluate(()=>app.openEditInbound(app.dbInbounds[0].id));
   await changeNativeField('transport','tcp');const tcp=await state();assert.deepEqual(tcp.errors,[]);validateOrbitSettings(tcp.json.settings,'orbit-ws-to-tcp');assert.ok(!tcp.json.settings.host&&!tcp.json.settings.path);assert.equal(tcp.json.settings.clients[0].key,original.json.settings.clients[0].key);
   await changeNativeField('transport','ws');const again=await state();assert.equal(again.json.settings.host,ws.json.settings.host);assert.equal(again.json.settings.path,ws.json.settings.path);
  });
@@ -237,6 +246,20 @@ async function check(name,fn){if(process.env.REVIEW_ONLY&&!name.includes(process
   await changeNativeField('transport','ws');const ws=await state();assert.deepEqual(ws.errors,[]);validateOrbitSettings(ws.json.settings,'orbit-wss-to-ws');assert.equal(ws.json.settings.outerTls,undefined);
   await changeNativeField('transport','wss');const restored=await state();assert.deepEqual(restored.json.settings.outerTls,wss.json.settings.outerTls);assert.deepEqual(restored.errors,[]);validateOrbitSettings(restored.json.settings,'orbit-wss-restored');
  });
+ await check('optional-orbit-wss-tcp-quic-wss-core-valid',async()=>{
+  await load();await openNew('orbit');await settled();const original=await state();
+  await changeNativeField('transport','wss');await changeNativeField('outerTls.certificate',original.json.settings.tls.certificate.join('\n'));await changeNativeField('outerTls.key',original.json.settings.tls.key.join('\n'));await changeNativeField('clientExport.serverName','127.0.0.1');const wss=await state();assert.deepEqual(wss.errors,[]);validateOrbitSettings(wss.json.settings,'orbit-wss-start');
+  for(const mode of ['tcp','quic']){await changeNativeField('transport',mode);const s=await state();assert.deepEqual(s.errors,[]);assert.ok(!s.json.settings.host&&!s.json.settings.path&&!s.json.settings.outerTls);assert.equal(s.json.settings.clientExport?.serverName,undefined);assert.equal(s.json.settings.clients[0].key,wss.json.settings.clients[0].key);validateOrbitSettings(s.json.settings,'orbit-wss-to-'+mode);}
+  await changeNativeField('transport','wss');const restored=await state();assert.deepEqual(restored.errors,[]);assert.deepEqual(restored.json.settings.outerTls,wss.json.settings.outerTls);assert.equal(restored.json.settings.host,wss.json.settings.host);assert.equal(restored.json.settings.path,wss.json.settings.path);assert.equal(restored.json.settings.clientExport.serverName,wss.json.settings.clientExport.serverName);validateOrbitSettings(restored.json.settings,'orbit-wss-final-restored');
+ });
+ for(const protocol of protocols){await check('actual-clone-submit-'+protocol,async()=>{
+  await load();await openNew(protocol);await settled();const original=await state();
+  await page.locator('.ant-modal:visible .ant-modal-footer button.ant-btn-primary').click();await page.waitForFunction(()=>!inModal.visible&&app.dbInbounds.length===1);const count=calls.length,before=saves.length;
+  await page.evaluate(async()=>{const db=app.dbInbounds[0];await app.cloneInbound(db.toInbound(),db);});assert.equal(saves.length,before+1);assert.equal(calls.length,count,'clone must not generate replacement cryptography');const copied=JSON.parse(saves.at(-1).data.settings);assert.notEqual(copied.clients[0].email,original.json.settings.clients[0].email);assert.notEqual(copied.clients[0].subId,original.json.settings.clients[0].subId);complete(protocol,copied);
+  for(const key of ['privateKey','tls','certificates'])assert.deepEqual(copied[key],original.json.settings[key]);
+  for(const key of ['password','id','username','key','commonName','privateKey','certificate'])assert.equal(copied.clients[0][key],original.json.settings.clients[0][key]);
+  if(protocol==='anytls')assert.deepEqual(JSON.parse(saves.at(-1).data.streamSettings).tlsSettings,original.json.streamSettings.tlsSettings);
+ });}
  await check('standalone-shadowtls-email-binding-at-submit',async()=>{
   await load();await openNew('shadowtls');await settled();const initial=await state();const row=rowFor('shadowtls',{settings:initial.json.settings});
   await page.evaluate(row=>{inModal.close();app.setInbounds([row]);app.openAddClient(row.id);},row);
@@ -247,7 +270,7 @@ async function check(name,fn){if(process.env.REVIEW_ONLY&&!name.includes(process
  });
  }finally{
   const report={passed:results.filter(r=>r.ok).length,failed:results.filter(r=>!r.ok).length,results,pageErrors:errors,credentialRequests:calls.length,source:'complete Go-rendered page, actual production credential service; persistence HTTP fixture',sourceBefore,sourceAfter:sourceHashes(),sourceStable:JSON.stringify(sourceBefore)===JSON.stringify(sourceHashes())};
-  fs.writeFileSync(path.join(work,'results.json'),JSON.stringify(report,null,2));console.log('RESULTS '+path.join(work,'results.json'));
+  fs.writeFileSync(path.join(work,'captured-posts.json'),JSON.stringify(saves,null,2),{mode:0o600});fs.writeFileSync(path.join(work,'results.json'),JSON.stringify(report,null,2));console.log('RESULTS '+path.join(work,'results.json'));
   if(browser)await browser.close();await new Promise(r=>server.close(r));
  }
  if(results.some(r=>!r.ok))process.exitCode=1;

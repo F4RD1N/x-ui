@@ -12,7 +12,7 @@ Xray routing remains responsible for each authenticated destination.
 
 ## Panel configuration
 
-Select the protocol in the inbound editor. Starting with `.11.2`, a new native
+Select the protocol in the inbound editor. Starting with `.11.4`, a new native
 selection generates fresh required credentials and certificates automatically;
 see [DIALECT11-DEFAULTS.md](DIALECT11-DEFAULTS.md) for the defaults and lifecycle.
 The native form preserves advanced JSON fields when moving
