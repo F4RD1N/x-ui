@@ -220,7 +220,12 @@ func (s *ServerSettings) Validate() error {
 		return errors.New("too many OpenVPN ciphers")
 	}
 	if s.Crypto.AuthHash == "" {
-		s.Crypto.AuthHash = "SHA256"
+		// OpenVPN's --auth defaults to SHA1 for both the tls-auth
+		// control-channel HMAC and the (CBC) data-channel HMAC. A non-default
+		// SHA256 here silently breaks tls-auth interop with stock OpenVPN and
+		// the project's own client, both of which default the control-channel
+		// HMAC to SHA1 when the config omits an explicit auth directive.
+		s.Crypto.AuthHash = "SHA1"
 	}
 	digest, ok := datachan.CanonicalDigest(s.Crypto.AuthHash)
 	if !ok {

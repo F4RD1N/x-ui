@@ -501,6 +501,98 @@ func TestNativeServerOutboundEndToEnd(t *testing.T) {
 	}
 }
 
+// nativeStaticKeyText renders a random "OpenVPN Static key V1" file body.
+func nativeStaticKeyText(t testing.TB) string {
+	t.Helper()
+	var k [256]byte
+	if _, e := rand.Read(k[:]); e != nil {
+		t.Fatal(e)
+	}
+	var b strings.Builder
+	b.WriteString("-----BEGIN OpenVPN Static key V1-----\n")
+	for i := 0; i < len(k); i += 16 {
+		b.WriteString(hex.EncodeToString(k[i : i+16]))
+		b.WriteByte('\n')
+	}
+	b.WriteString("-----END OpenVPN Static key V1-----\n")
+	return b.String()
+}
+
+// TestNativeServerTLSAuthDefaultDigest guards the tls-auth control-channel
+// HMAC default: a tls-auth inbound created with no explicit authHash must
+// interoperate with a default client (no --auth directive). Both ends must
+// default the control-channel HMAC to SHA1 (OpenVPN's universal default);
+// defaulting the server to SHA256 silently dropped every control packet and
+// the handshake timed out.
+func TestNativeServerTLSAuthDefaultDigest(t *testing.T) {
+	p := makeNativePKI(t)
+	echo, e := net.Listen("tcp", "127.0.0.1:0")
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer echo.Close()
+	go func() {
+		for {
+			c, e := echo.Accept()
+			if e != nil {
+				return
+			}
+			go func() { defer c.Close(); io.Copy(c, c) }()
+		}
+	}()
+	echoTarget := netip.MustParseAddrPort(echo.Addr().String())
+	taText := nativeStaticKeyText(t)
+	for _, network := range []string{"udp", "tcp"} {
+		t.Run(network, func(t *testing.T) {
+			settings := nativeSettings(p)
+			settings.Network = network
+			// tls-auth key present; authHash left at its default (must be SHA1).
+			settings.Certificates.TLSAuth = taText
+			if settings.Crypto.AuthHash != "" {
+				t.Fatalf("test must leave authHash unset, got %q", settings.Crypto.AuthHash)
+			}
+			_, _, port := nativeCore(t, settings, 1, false)
+			// Client carries the tls-auth key but no --auth directive, so it
+			// defaults the control-channel HMAC to SHA1.
+			text := fmt.Sprintf("client\ndev tun\nremote 127.0.0.1 %d %s\nremote-cert-tls server\ndata-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305\n<ca>\n%s</ca>\n<cert>\n%s</cert>\n<key>\n%s</key>\n<tls-auth>\n%s</tls-auth>\n", port, network, p.ca, p.clientCert, p.clientKey, taText)
+			opt, e := options.Parse(text)
+			if e != nil {
+				t.Fatal(e)
+			}
+			if opt.Auth != "SHA1" {
+				t.Fatalf("client auth default = %q, want SHA1", opt.Auth)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			c, e := client.Dial(ctx, client.Config{Options: opt, HandshakeTimeout: 4 * time.Second, Dial: (&net.Dialer{}).DialContext})
+			if e != nil {
+				t.Fatalf("tls-auth handshake with default digests failed: %v", e)
+			}
+			tun, e := newTunnel(ctx, cancel, c, 1400)
+			if e != nil {
+				c.Close()
+				t.Fatal(e)
+			}
+			tun.start()
+			defer tun.close()
+			dctx, dcancel := context.WithTimeout(context.Background(), 4*time.Second)
+			conn, e := tun.net.DialContextTCPAddrPort(dctx, echoTarget)
+			dcancel()
+			if e != nil {
+				t.Fatal(e)
+			}
+			defer conn.Close()
+			conn.SetDeadline(time.Now().Add(4 * time.Second))
+			msg := []byte("tls-auth default digest roundtrip")
+			go func() { _, _ = conn.Write(msg) }()
+			got := make([]byte, len(msg))
+			if _, e = io.ReadFull(conn, got); e != nil || !bytes.Equal(got, msg) {
+				t.Fatalf("payload roundtrip: %v", e)
+			}
+		})
+	}
+}
+
 func TestNativeServerRejectsInvalidProofAndPassword(t *testing.T) {
 	p := makeNativePKI(t)
 	s := nativeSettings(p)
