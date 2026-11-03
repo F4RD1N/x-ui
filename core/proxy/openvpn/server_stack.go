@@ -121,6 +121,7 @@ func (s *Server) routeSession(ctx context.Context, p *serverPeer, sess *ovserver
 		gatewayV6 = addresses[1]
 	}
 	restrictServerEchoReplies(ipstack, addresses[0], gatewayV6)
+	filterClock.Activate()
 	flows := &serverFlows{active: map[net.Conn]struct{}{}, max: s.settings.Limits.MaxFlowsPerSession}
 	stop := context.AfterFunc(ctx, func() { _ = dev.Close(); flows.close() })
 	defer stop()

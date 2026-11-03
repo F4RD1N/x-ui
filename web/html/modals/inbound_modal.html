@@ -1,6 +1,7 @@
 {{define "modals/inboundModal"}}
 <a-modal id="inbound-modal" v-model="inModal.visible" :title="inModal.title" :dialog-style="{ top: '20px' }"
-    @ok="inModal.ok" :confirm-loading="inModal.confirmLoading" :closable="true" :mask-closable="false"
+    @ok="inModal.ok" :confirm-loading="inModal.confirmLoading || (inModal.inbound.isNative && inModal.inbound.settings.generating)" :closable="true" :mask-closable="false"
+    :ok-button-props="{ props: { disabled: inModal.inbound.isNative && (inModal.inbound.settings.generating || inModal.inbound.settings.modeDefaultsPending) } }"
     :class="themeSwitcher.currentTheme" :ok-text="inModal.okText" cancel-text='{{ i18n "close" }}'>
     {{template "form/inbound"}}
 </a-modal>
@@ -15,7 +16,15 @@
         confirm: null,
         inbound: new Inbound(),
         dbInbound: new DBInbound(),
+        nativeProfileToken: 0,
+        nativeProfileController: null,
+        nativeProfileSettings: null,
         ok() {
+            if (inModal.inbound.isNative) {
+                if (inModal.inbound.settings.generating || inModal.inbound.settings.modeDefaultsPending) return;
+                try { inModal.inbound.settings.syncGeneratedClientBindings(); }
+                catch (error) { app.$message.error(error.message); return; }
+            }
             const compatibilityErrors = Inbound.compatibilityErrors(inModal.inbound.protocol, inModal.inbound.clients, inModal.inbound.method);
             if (compatibilityErrors.length) {
                 app.$message.error(compatibilityErrors.join("; "));
@@ -39,6 +48,7 @@
             confirm = (inbound, dbInbound) => { },
             isEdit = false,
         }) {
+            this.cancelNativeDefaults();
             this.title = title;
             this.okText = okText;
             if (inbound) {
@@ -66,8 +76,88 @@
             this.confirm = confirm;
             this.visible = true;
             this.isEdit = isEdit;
+            if (this.inbound.isNative) this.inbound.settings.rememberClientBindings();
+        },
+        cancelNativeDefaults() {
+            if (this.nativeProfileController) this.nativeProfileController.abort();
+            this.nativeProfileController = null;
+            this.nativeProfileSettings = null;
+            this.nativeProfileToken++;
+        },
+        async initializeNativeDefaults(retry = false) {
+            const inbound = this.inbound;
+            const settings = inbound.settings;
+            if (this.nativeProfileController && this.nativeProfileSettings !== settings) this.cancelNativeDefaults();
+            if (!this.visible || this.isEdit || !inbound.isNative || !settings.needsProfile || settings.generating || (settings.profileAttempted && !retry)) return false;
+            const snapshot = JSON.stringify(inbound.toJson());
+            this.cancelNativeDefaults();
+            const controller = new AbortController();
+            const token = this.nativeProfileToken;
+            this.nativeProfileController = controller;
+            this.nativeProfileSettings = settings;
+            settings.profileAttempted = true;
+            if (!settings.profileSnapshot) settings.profileSnapshot = snapshot;
+            settings.generating = true;
+            settings.generationError = '';
+            settings.generationNotice = '';
+            const timeout = setTimeout(() => controller.abort(), 30000);
+            try {
+                const request = {
+                    kind: 'inbound-profile', protocol: inbound.protocol,
+                    serverName: window.location.hostname.replace(/^\[|\]$/g, ''),
+                    email: settings.clients[0]?.email || '',
+                };
+                const listen = String(inbound.listen || '').trim().replace(/^\[|\]$/g, '');
+                if (listen && !['0.0.0.0', '::', '::0'].includes(listen)) {
+                    const ipv4 = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(listen) && listen.split('.').every(part => Number(part) <= 255);
+                    let ipv6 = false;
+                    try { ipv6 = listen.includes(':') && new URL('http://[' + listen + ']/').hostname !== ''; } catch (_) {}
+                    if (ipv4 || ipv6) request.serverAddress = listen;
+                }
+                if (inbound.protocol === Protocols.DNSTT && settings.data.domain) request.domain = settings.data.domain;
+                if (inbound.protocol === Protocols.SHADOWTLS && settings.data.handshake?.address) request.handshakeAddress = settings.data.handshake.address;
+                const generated = await Inbound.NativeSettings.requestCredentials(request, controller.signal);
+                if (this.nativeProfileToken !== token || this.inbound !== inbound || this.inbound.settings !== settings || !this.visible || this.isEdit) return false;
+                const before = JSON.parse(settings.profileSnapshot);
+                const profile = Inbound.NativeSettings.mergeGeneratedProfile(inbound.protocol, generated, before, inbound.toJson());
+                const supplied = Inbound.fromJson({...before, settings: generated.settings, streamSettings: generated.streamSettings || before.streamSettings});
+                if (supplied.settings.validationErrors.length) throw new Error('The generated settings were incomplete. Try again.');
+                if (inbound.protocol === Protocols.ANYTLS && (supplied.stream.network !== 'tcp' || supplied.stream.security !== 'tls' || !supplied.stream.tls.certs.some(cert => cert.cert && cert.key))) throw new Error('The generated certificate was incomplete. Try again.');
+                const next = Inbound.fromJson(profile);
+                if (generated.publicKey) next.settings.generatedPublicKey = generated.publicKey;
+                next.settings.generationNotice = next.settings.validationErrors.length ? '' : 'Settings are ready.';
+                next.settings.rememberClientBindings();
+                next.settings.modeDefaultsPending = true;
+                this.inbound = next;
+                return true;
+            } catch (error) {
+                if (this.nativeProfileToken === token && this.inbound === inbound && this.inbound.settings === settings && this.visible) settings.generationError = error.name === 'AbortError' ? 'Generation timed out. Try again.' : error.message || 'Could not generate settings.';
+                return false;
+            } finally {
+                clearTimeout(timeout);
+                settings.generating = false;
+                if (this.nativeProfileController === controller) {
+                    this.nativeProfileController = null;
+                    this.nativeProfileSettings = null;
+                }
+            }
+        },
+        async initializeNativeModeDefaults() {
+            const settings = this.inbound.settings;
+            if (!this.visible || !this.inbound.isNative || !settings.modeDefaultsPending || settings.generating) return false;
+            settings.modeDefaultsPending = false;
+            settings.modeDefaultsFailed = false;
+            const ready = await settings.fillMissingModeDefaults({serverName: window.location.hostname.replace(/^\[|\]$/g, '')});
+            if (this.inbound.settings === settings) settings.modeDefaultsFailed = !ready;
+            return ready;
+        },
+        retryNativeModeDefaults() {
+            if (!this.inbound.isNative) return;
+            this.inbound.settings.modeDefaultsPending = true;
+            return this.initializeNativeModeDefaults();
         },
         close() {
+            inModal.cancelNativeDefaults();
             inModal.visible = false;
             inModal.loading(false);
         },
@@ -174,6 +264,19 @@
             },
         },
         watch: {
+            "inModal.inbound.settings"() {
+                inModal.initializeNativeDefaults();
+            },
+            "inModal.visible"(visible) {
+                if (!visible) inModal.cancelNativeDefaults();
+                else inModal.initializeNativeDefaults();
+            },
+            "inModal.inbound.settings.modeDefaultsPending"(pending) {
+                if (pending) inModal.initializeNativeModeDefaults();
+            },
+            "inModal.inbound.settings.generating"(generating) {
+                if (!generating) inModal.initializeNativeModeDefaults();
+            },
             "inModal.inbound.stream.security"(newVal, oldVal) {
                 // Clear flow when security changes from reality/tls to none
                 if (

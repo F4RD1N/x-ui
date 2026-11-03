@@ -185,6 +185,21 @@ func nativeClientOutbounds(inbound *model.Inbound, client model.Client, host str
 	out["settings"] = cfg
 	switch inbound.Protocol {
 	case "orbit":
+		if endpoint, supplied := meta["address"]; supplied {
+			text, ok := endpoint.(string)
+			if !ok {
+				return nil, errors.New("Orbit export address must be a numeric unicast IP")
+			}
+			text = strings.TrimSpace(text)
+			if strings.HasPrefix(text, "[") && strings.HasSuffix(text, "]") {
+				text = text[1 : len(text)-1]
+			}
+			ip := net.ParseIP(text)
+			if ip == nil || (!ip.IsGlobalUnicast() && !ip.IsLoopback()) {
+				return nil, errors.New("Orbit export address must be a numeric unicast IP")
+			}
+			cfg["address"] = ip.String()
+		}
 		if exportString(u["key"]) == "" {
 			return nil, errors.New("Orbit export requires a client connection key")
 		}
@@ -261,8 +276,12 @@ func nativeClientOutbounds(inbound *model.Inbound, client model.Client, host str
 		tlsSettings := map[string]any{"serverName": name}
 		exportCopy(tlsSettings, serverTLS, "alpn")
 		exportCopy(tlsSettings, meta, "fingerprint")
-		if ca := exportString(meta["ca"]); ca != "" {
-			tlsSettings["certificates"] = []any{map[string]any{"certificate": strings.Split(ca, "\n"), "usage": "verify"}}
+		if ca, supplied := meta["ca"]; supplied && ca != nil && ca != "" {
+			trust, err := exportPublicCertificateTrust(map[string]any{"certificates": []any{map[string]any{"certificate": ca}}})
+			if err != nil || len(trust) == 0 {
+				return nil, errors.New("AnyTLS client trust must contain valid public X.509 certificates")
+			}
+			tlsSettings["certificates"] = trust
 		} else {
 			trust, err := exportPublicCertificateTrust(serverTLS)
 			if err != nil {
@@ -300,7 +319,14 @@ func exportPublicCertificateTrust(serverTLS map[string]any) ([]any, error) {
 			continue
 		}
 		var text []byte
-		if lines, ok := cert["certificate"].([]any); ok {
+		switch value := cert["certificate"].(type) {
+		case nil:
+		case string:
+			text = []byte(value)
+		case []string:
+			text = []byte(strings.Join(value, "\n"))
+		case []any:
+			lines := value
 			for _, line := range lines {
 				s, ok := line.(string)
 				if !ok {
@@ -309,6 +335,8 @@ func exportPublicCertificateTrust(serverTLS map[string]any) ([]any, error) {
 				text = append(text, s...)
 				text = append(text, '\n')
 			}
+		default:
+			return nil, errors.New("AnyTLS public certificate must be PEM text or an array of lines")
 		}
 		if len(text) == 0 && exportString(cert["certificateFile"]) != "" {
 			path := exportString(cert["certificateFile"])

@@ -12,8 +12,10 @@ Xray routing remains responsible for each authenticated destination.
 
 ## Panel configuration
 
-Select the protocol in the inbound editor and supply its credentials and
-transport settings. The native form preserves advanced JSON fields when moving
+Select the protocol in the inbound editor. Starting with `.11.2`, a new native
+selection generates fresh required credentials and certificates automatically;
+see [DIALECT11-DEFAULTS.md](DIALECT11-DEFAULTS.md) for the defaults and lifecycle.
+The native form preserves advanced JSON fields when moving
 between form and JSON editing. Server outbound settings expose the same native
 protocols. Native transports are configured inside protocol settings: adding an
 unrelated outer WebSocket/TLS layer is rejected. AnyTLS is the exception: its
@@ -23,22 +25,24 @@ outbound owns its TLS connection internally.
 | Protocol | Inbound identity and material | Client outbound |
 | --- | --- | --- |
 | Orbit | Per-user connection key; pinned leaf certificate/key, or TCP Reality material | `protocol: "orbit"`; TCP, WS, WSS, or compatible QUIC |
-| DNS tunnel | Delegated tunnel domain, hexadecimal Noise private key, authenticated inner VLESS or SOCKS accounts | `protocol: "dns"`, `settings.tunnel`; `dnstt` remains an alias |
+| DNS tunnel | Tunnel name, hexadecimal Noise private key, authenticated inner VLESS or SOCKS accounts | `protocol: "dns"`, `settings.tunnel`; `dnstt` remains an alias |
 | OpenVPN | CA/server certificate/private key, certificate CN accounts, optional password/proof and control wrapper | `protocol: "openvpn"` (`ov` alias); TCP or UDP |
 | AnyTLS | TLS certificate/key plus password accounts | `protocol: "anytls"`, optional UUID authentication compatibility |
 | ShadowTLS | Camouflage TLS endpoint, carrier authentication, explicit authenticated inner proxy | Inner outbound chained through `protocol: "shadowtls"` |
 | Mieru | Username/password accounts; TCP or UDP underlay | `protocol: "mieru"`; both underlays carry TCP and UDP destinations |
 
 Ordinary `protocol: "dns"` without `settings.tunnel` remains the stock DNS
-outbound. A DNS tunnel requires real authoritative DNS delegation and a route
-from the selected resolver to the server. The panel cannot create registrar
-delegation or make a blocked resolver reachable. Inner VLESS carries TCP and
+outbound. Direct DNS tunnels connect to the server's UDP address and port.
+Using recursive resolvers instead requires real authoritative DNS delegation
+and a route from the selected resolver to the server. The panel cannot create
+registrar delegation or make a blocked resolver reachable. Inner VLESS carries TCP and
 UDP; inner SOCKS supports authenticated TCP only.
 
 OpenVPN authenticates client certificates against the CA and maps the
 certificate common name to the configured account. Per-client PEM certificate
-and private key fields in the panel are **client export material**. Supply a
-matching client certificate/key pair; do not paste the server private key there.
+and private key fields in the panel are **client export material**. Generated
+profiles issue distinct matching client certificates and keys automatically.
+Manually imported pairs must also match; server keys are not client keys.
 Optional username/password and client proof add checks to certificate
 authentication. `tlsAuth`, `tlsCrypt`, and `tlsCryptV2` are mutually exclusive.
 An absent TLS-auth direction remains bidirectional; explicit server direction
@@ -49,8 +53,9 @@ arbitrary remote ICMP forwarding. Production uses a userspace IP stack and
 does not require a host TUN device.
 
 The panel's authenticated `POST /panel/api/server/native/credentials` helper
-generates DNS tunnel key pairs, certificate/Reality-bound Orbit account keys,
-OpenVPN proof secrets, and TLS-crypt-v2 server/client keys. It returns generated
+generates complete native inbound profiles, DNS tunnel key pairs,
+certificate/Reality-bound Orbit account keys, OpenVPN client certificates,
+proof secrets, and TLS-crypt-v2 server/client keys. It returns generated
 material without saving it automatically. Responses use `Cache-Control:
 no-store`; request values and secrets are not included in error messages.
 

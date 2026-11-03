@@ -767,6 +767,10 @@
 <script
   src="{{ .base_path }}assets/js/model/native-inbound.js?{{ .cur_ver }}"></script>
 <script
+  src="{{ .base_path }}assets/js/model/native-creation.js?{{ .cur_ver }}"></script>
+<script
+  src="{{ .base_path }}assets/js/model/native-modes.js?{{ .cur_ver }}"></script>
+<script
   src="{{ .base_path }}assets/js/model/dbinbound.js?{{ .cur_ver }}"></script>
 {{template "component/aSidebar" .}}
 {{template "component/aThemeSwitch" .}}
@@ -1337,9 +1341,21 @@
         }
       },
       async addClient(clients, dbInboundId, modal) {
+        let encodedSettings = '{"clients": [' + clients.toString() + ']}';
+        if (modal?.inbound?.protocol === Protocols.SHADOWTLS) {
+          try {
+            const settings = {clients: [clients.toJson()]};
+            const inner = modal.inbound.settings.generatedClientInner(clients);
+            if (inner) settings.inner = inner;
+            encodedSettings = JSON.stringify(settings);
+          } catch (error) {
+            this.$message.error(error.message);
+            return;
+          }
+        }
         const data = {
           id: dbInboundId,
-          settings: '{"clients": [' + clients.toString() + ']}',
+          settings: encodedSettings,
         };
         await this.submit(`/panel/api/inbounds/addClient`, data, modal);
       },

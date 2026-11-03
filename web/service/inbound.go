@@ -677,6 +677,10 @@ func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	innerChanged, err := appendNativeInnerClients(oldInbound.Protocol, oldSettings, settings, interfaceClients)
+	if err != nil {
+		return false, err
+	}
 	oldClients = append(oldClients, interfaceClients...)
 
 	oldSettings["clients"] = oldClients
@@ -702,7 +706,7 @@ func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
 		}
 	}()
 
-	needRestart := false
+	needRestart := innerChanged
 	s.xrayApi.Init(currentInboundAPIPort())
 	for _, client := range clients {
 		if len(client.Email) > 0 {
@@ -929,6 +933,10 @@ func (s *InboundService) UpdateInboundClient(data *model.Inbound, clientId strin
 			interfaceClients[0] = newMap
 		}
 	}
+	innerRenamed, err := renameNativeInnerClient(oldInbound.Protocol, oldSettings, oldEmail, clients[0].Email)
+	if err != nil {
+		return false, err
+	}
 	settingsClients[clientIndex] = interfaceClients[0]
 	oldSettings["clients"] = settingsClients
 
@@ -975,7 +983,7 @@ func (s *InboundService) UpdateInboundClient(data *model.Inbound, clientId strin
 			return false, err
 		}
 	}
-	needRestart := nativeClientRemovalRequiresRestart(oldInbound.Protocol) && (oldClients[clientIndex].Enable || clients[0].Enable)
+	needRestart := innerRenamed || (nativeClientRemovalRequiresRestart(oldInbound.Protocol) && (oldClients[clientIndex].Enable || clients[0].Enable))
 	if len(oldEmail) > 0 {
 		s.xrayApi.Init(currentInboundAPIPort())
 		if oldClients[clientIndex].Enable {

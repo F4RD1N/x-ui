@@ -19,7 +19,7 @@
         },
         dnstt: {
             defaults: () => ({domain: '', privateKey: '', inner: {protocol: 'vless'}, mtu: 1232, handshakeTimeout: 30, maxSessions: 256, maxStreams: 128}),
-            fields: [field('domain', 'Delegated DNS domain'), field('privateKey', 'Private key (64 hex)', 'password'), select('inner.protocol', 'Inner protocol', ['vless', 'socks']), number('mtu', 'DNS payload MTU', 512, 4096), number('handshakeTimeout', 'Handshake timeout (seconds)', 0, 300), number('maxSessions', 'Maximum sessions', 1, 4096), number('maxStreams', 'Maximum streams', 1, 1024)],
+            fields: [field('domain', 'Tunnel name'), field('privateKey', 'Private key (64 hex)', 'password'), select('inner.protocol', 'Inner protocol', ['vless', 'socks']), number('mtu', 'DNS payload MTU', 512, 4096), number('handshakeTimeout', 'Handshake timeout (seconds)', 0, 300), number('maxSessions', 'Maximum sessions', 1, 4096), number('maxStreams', 'Maximum streams', 1, 1024)],
             help: 'Delegate this domain to the server DNS listener. VLESS is the default authenticated inner proxy. SOCKS inner mode carries TCP only. Keep the private key unchanged when editing or restoring.',
         },
         openvpn: {
@@ -63,6 +63,23 @@
         else if (descriptor.type === 'boolean') value = raw === true;
         else if (raw === '') value = undefined;
         setPath(data, descriptor.path, value);
+    };
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    const mergeUntouched = (before, current, generated) => {
+        if (same(before, current)) return generated === undefined ? undefined : clone(generated);
+        if (object(before) && object(current) && object(generated)) {
+            const result = clone(generated);
+            new Set([...Object.keys(before), ...Object.keys(current)]).forEach(key => {
+                if (!Object.prototype.hasOwnProperty.call(current, key)) delete result[key];
+                else {
+                    const value = mergeUntouched(before[key], current[key], generated[key]);
+                    if (value === undefined) delete result[key];
+                    else result[key] = value;
+                }
+            });
+            return result;
+        }
+        return current === undefined ? undefined : clone(current);
     };
     const clientDefaults = (protocol, inner) => {
         switch (protocol) {
@@ -132,9 +149,9 @@
                     if (this.innerProtocol === 'socks') fields.unshift(field('username', 'SOCKS username'), field('password', 'SOCKS password', 'password'));
                     else fields.unshift(field('id', 'VLESS UUID'));
                     break;
-                case 'openvpn': fields.unshift(field('commonName', 'Certificate common name'), field('username', 'Optional username'), field('password', 'Optional password', 'password'), field('clientProof.keyId', 'Optional client proof key ID'), field('clientProof.key', 'Optional client proof key (64 hex)', 'password'), field('certificate', 'Client certificate PEM (subscription export only)', 'textarea'), field('privateKey', 'Client private key PEM (subscription export only)', 'textarea'), field('tlsCryptV2', 'Client tls-crypt-v2 wrapped key (export only)', 'textarea')); break;
+                case 'openvpn': fields.unshift(field('commonName', 'Certificate common name'), field('username', 'Optional username'), field('password', 'Optional password', 'password'), field('clientProof.keyId', 'Optional client proof key ID'), field('clientProof.key', 'Optional client proof key (64 hex)', 'password'), field('certificate', 'Client certificate', 'textarea'), field('privateKey', 'Client private key', 'textarea'), field('tlsCryptV2', 'Client tls-crypt-v2 key', 'textarea')); break;
                 case 'shadowtls':
-                    fields.unshift(field('innerUsername', 'Inner SOCKS username (export binding only)'));
+                    fields.unshift(field('innerUsername', 'Inner SOCKS username'));
                     if (this.shadowVersion === 3) fields.unshift(field('password', 'Outer password (v3)', 'password'), field('requireUuidSessionId', 'Require UUID session ID compatibility', 'boolean'));
                     break;
                 case 'orbit': fields.unshift(field('key', 'Client key (vck1)', 'password'), number('expiresAt', 'Optional expiry (Unix seconds)', 0, Number.MAX_SAFE_INTEGER)); break;
@@ -186,6 +203,39 @@
     };
     Inbound.NativeSettings = class extends Inbound.Settings {
         static supports(protocol) { return Object.prototype.hasOwnProperty.call(protocols, protocol); }
+        static async requestCredentials(request, signal) {
+            const prefix = typeof basePath === 'string' ? basePath : '/';
+            const response = await fetch(prefix.replace(/\/?$/, '/') + 'panel/api/server/native/credentials', {
+                method: 'POST', credentials: 'same-origin', cache: 'no-store', signal,
+                headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
+                body: JSON.stringify(request),
+            });
+            if (!response.ok) throw new Error('Could not generate settings. Check your panel session.');
+            const result = await response.json();
+            if (!result?.success || !object(result.obj)) throw new Error(result?.msg || 'Could not generate settings.');
+            return result.obj;
+        }
+        static mergeGeneratedProfile(protocol, generated, before, current) {
+            if (generated.protocol !== protocol || !object(generated.settings) || !Array.isArray(generated.settings.clients) || generated.settings.clients.length !== 1) throw new Error('The generated settings were incomplete. Try again.');
+            if (current.settings.clients?.length !== 1) throw new Error('Client credentials changed. Your entries were kept.');
+            const protectedPaths = ['privateKey', 'tls', 'outerTls', 'certificates', 'reality', 'inner', 'clientExport'];
+            if (protectedPaths.some(path => !same(getPath(before.settings, path), getPath(current.settings, path)))) throw new Error('Connection credentials changed. Your entries were kept.');
+            const beforeClient = before.settings.clients[0], currentClient = current.settings.clients[0];
+            if (['id', 'username', 'password', 'key', 'commonName', 'certificate', 'privateKey', 'tlsCryptV2', 'clientProof', 'innerUsername'].some(key => !same(beforeClient[key], currentClient[key]))) throw new Error('Client credentials changed. Your entries were kept.');
+            if (protocol === 'anytls' && !same(before.streamSettings?.tlsSettings?.certificates, current.streamSettings?.tlsSettings?.certificates)) throw new Error('Certificates changed. Your entries were kept.');
+            const beforeSettings = {...before.settings}, currentSettings = {...current.settings};
+            delete beforeSettings.clients;
+            delete currentSettings.clients;
+            const settings = mergeUntouched(beforeSettings, currentSettings, generated.settings);
+            settings.clients = [mergeUntouched(beforeClient, currentClient, generated.settings.clients[0])];
+            const oldEmail = generated.settings.clients[0].email, newEmail = currentClient.email;
+            settings.clients[0].email = newEmail;
+            settings.clients[0].subId = currentClient.subId;
+            if (protocol === 'shadowtls' && oldEmail !== newEmail) {
+                (settings.inner?.settings?.clients || []).forEach(client => { if (client.email === oldEmail) client.email = newEmail; });
+            }
+            return {...current, settings, streamSettings: generated.streamSettings ? mergeUntouched(before.streamSettings, current.streamSettings, generated.streamSettings) : current.streamSettings};
+        }
         constructor(protocol, json) {
             super(protocol);
             if (!Inbound.NativeSettings.supports(protocol)) throw new Error('Unknown native inbound protocol');
@@ -205,6 +255,11 @@
             this.generationError = '';
             this.generationNotice = '';
             this.generatedPublicKey = '';
+            this.needsProfile = json === undefined;
+            this.profileAttempted = false;
+            this.profileSnapshot = '';
+            this.modeDefaultsPending = false;
+            this.modeDefaultsFailed = false;
         }
         get help() {
             const text = protocols[this.protocol].help;
@@ -213,8 +268,11 @@
         get canBulkCreate() { return ['anytls', 'mieru', 'dnstt'].includes(this.protocol); }
         get fields() {
             const fields = protocols[this.protocol].fields.filter(descriptor => !descriptor.show || descriptor.show(this.data));
-            if (['anytls', 'openvpn', 'orbit'].includes(this.protocol)) fields.push(field('clientExport.serverName', 'Client TLS server name (export only)'), field('clientExport.ca', 'Client trust CA PEM (export only)', 'textarea'));
-            if (this.protocol === 'dnstt') fields.push(field('clientExport.resolvers', 'Client DNS resolvers JSON (export only)', 'json', {array: true}));
+            if (['anytls', 'openvpn'].includes(this.protocol)) fields.push(field('clientExport.serverName', 'Client server name'), field('clientExport.ca', 'Client CA certificate', 'textarea'));
+            if (this.protocol === 'orbit' && ['ws', 'wss'].includes(this.data.transport)) fields.push(field('clientExport.serverName', 'Client server name'));
+            if (this.protocol === 'orbit') fields.push(field('clientExport.address', 'Client server address'));
+            if (this.protocol === 'openvpn') fields.push(field('clientExport.issuerPrivateKey', 'CA signing key', 'textarea'));
+            if (this.protocol === 'dnstt') fields.push(field('clientExport.resolvers', 'DNS resolvers JSON', 'json', {array: true}));
             return fields;
         }
         newClient() { return new Inbound.NativeClient(this.protocol, undefined, this.data.inner?.protocol, this.data.version); }
@@ -237,7 +295,17 @@
         }
         fieldValue(descriptor) { return readValue(this.data, descriptor); }
         setField(descriptor, raw) {
-            try { const data = clone(this.data); writeValue(data, descriptor, raw); this.data = data; if (descriptor.path === 'privateKey') this.generatedPublicKey = ''; this.clients.forEach(client => {client.shadowVersion = data.version || 3; client.innerProtocol = data.inner?.protocol || 'vless';}); this.fieldError = ''; }
+            try {
+                const data = clone(this.data);
+                writeValue(data, descriptor, raw);
+                const modeChange = ['transport', 'security', 'inner.protocol', 'version', 'clientProof.required'].includes(descriptor.path);
+                if (modeChange && this.rememberModeDefaults) this.rememberModeDefaults();
+                this.data = data;
+                if (descriptor.path === 'privateKey') this.generatedPublicKey = '';
+                this.clients.forEach(client => {client.shadowVersion = data.version || 3; client.innerProtocol = data.inner?.protocol || 'vless';});
+                this.fieldError = '';
+                if (modeChange && !this.needsProfile) this.modeDefaultsPending = true;
+            }
             catch (error) { this.fieldError = error.message; }
         }
         async generateCredentials(kind, client = null) {
@@ -260,23 +328,14 @@
                     if (!request.serverKey) throw new Error('Generate or import the TLS-crypt-v2 server key first.');
                 }
                 if (kind === 'openvpn-tls-crypt-v2-server' && (this.data.certificates?.tlsAuth || this.data.certificates?.tlsCrypt)) throw new Error('Clear tls-auth and tls-crypt before choosing TLS-crypt-v2.');
-                const prefix = typeof basePath === 'string' ? basePath : '/';
                 // The existing Axios interceptor form-encodes every request; this endpoint requires strict JSON.
-                const response = await fetch(prefix.replace(/\/?$/, '/') + 'panel/api/server/native/credentials', {
-                    method: 'POST', credentials: 'same-origin', cache: 'no-store', signal: controller.signal,
-                    headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
-                    body: JSON.stringify(request),
-                });
-                if (!response.ok) throw new Error('Credential generation request failed. Check your panel session.');
-                const result = await response.json();
-                if (!result?.success || !object(result.obj)) throw new Error(result?.msg || 'Credential generation failed.');
+                const generated = await Inbound.NativeSettings.requestCredentials(request, controller.signal);
                 if (client && !this.clients.includes(client)) throw new Error('The selected client was removed before generation completed.');
                 if (kind === 'orbit') {
                     const certificate = Array.isArray(this.data.tls?.certificate) ? this.data.tls.certificate.join('\n') : this.data.tls?.certificate || '';
                     if ((request.certificate && certificate !== request.certificate) || (request.realityPrivateKey && this.data.reality?.privateKey !== request.realityPrivateKey)) throw new Error('The Orbit certificate or Reality key changed during generation. Generate again for the current identity.');
                 }
                 if (kind === 'openvpn-tls-crypt-v2' && this.data.certificates?.tlsCryptV2 !== request.serverKey) throw new Error('The server wrapping key changed during generation. Generate again for the current key.');
-                const generated = result.obj;
                 const data = clone(this.data);
                 const clientData = client ? clone(client.data) : null;
                 switch (kind) {
@@ -305,7 +364,7 @@
                 }
                 this.data = data;
                 if (client) client.data = clientData;
-                this.generationNotice = 'New credentials are ready in this form. Save the inbound and refresh affected client JSON subscriptions.';
+                this.generationNotice = 'New credentials are ready. Save to apply.';
                 return true;
             } catch (error) {
                 this.generationError = error.name === 'AbortError' ? 'Credential generation timed out; existing keys were preserved.' : error.message || 'Credential generation failed.';
@@ -342,7 +401,7 @@
                 if (descriptor.type === 'boolean' && typeof value !== 'boolean') errors.push(`${descriptor.label} must be true or false`);
             });
             if (this.protocol === 'dnstt') {
-                if (typeof data.domain !== 'string' || !data.domain.includes('.') || /\s/.test(data.domain)) errors.push('A delegated DNS domain is required');
+                if (typeof data.domain !== 'string' || !data.domain.includes('.') || /\s/.test(data.domain)) errors.push('A DNS tunnel name is required');
                 if (!/^[0-9a-f]{64}$/i.test(data.privateKey || '')) errors.push('DNSTT private key must contain 64 hex characters');
                 const socks = data.inner?.protocol === 'socks';
                 if (this.clients.some(client => socks ? !client.data.username : !client.data.id)) errors.push('Client credentials must match the selected inner protocol');
@@ -381,6 +440,21 @@
             }
             return errors;
         }
-        toJson() { return {...clone(this.data), clients: this.clients.map(client => client.toJson())}; }
+        toJson() {
+            const data = {...clone(this.data), clients: this.clients.map(client => client.toJson())};
+            if (this.protocol === 'orbit') {
+                // Keep inactive identities in the form for reversible mode
+                // changes, but never send incompatible runtime fields.
+                if (data.security === 'reality') delete data.tls;
+                else delete data.reality;
+                if (!['ws', 'wss'].includes(data.transport)) {
+                    delete data.host;
+                    delete data.path;
+                    delete data.outerTls;
+                    if (data.clientExport) delete data.clientExport.serverName;
+                } else if (data.transport !== 'wss') delete data.outerTls;
+            }
+            return data;
+        }
     };
 })();

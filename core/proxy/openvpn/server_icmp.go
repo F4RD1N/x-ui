@@ -15,10 +15,12 @@ import (
 // Ordinary transport/fragmentation timers keep using the normal stack clock.
 type serverFilterClock struct {
 	tcpip.Clock
-	mu      sync.Mutex
-	closed  bool
-	timers  map[*serverFilterTimer]struct{}
-	running sync.WaitGroup
+	mu        sync.Mutex
+	closed    bool
+	timers    map[*serverFilterTimer]struct{}
+	running   sync.WaitGroup
+	published chan struct{}
+	publish   sync.Once
 }
 
 type serverFilterTimer struct {
@@ -27,7 +29,15 @@ type serverFilterTimer struct {
 }
 
 func newServerFilterClock() *serverFilterClock {
-	return &serverFilterClock{Clock: tcpip.NewStdClock(), timers: make(map[*serverFilterTimer]struct{})}
+	return &serverFilterClock{Clock: tcpip.NewStdClock(), timers: make(map[*serverFilterTimer]struct{}), published: make(chan struct{})}
+}
+
+// Activate publishes the completed filter setup before its first maintenance
+// callback. The dependency assigns its reaper field only after AfterFunc
+// returns, so merely delaying the timer does not synchronize that assignment
+// with the callback's later read. Call this after installing all filter tables.
+func (c *serverFilterClock) Activate() {
+	c.publish.Do(func() { close(c.published) })
 }
 
 func (c *serverFilterClock) AfterFunc(delay time.Duration, f func()) tcpip.Timer {
@@ -39,6 +49,7 @@ func (c *serverFilterClock) AfterFunc(delay time.Duration, f func()) tcpip.Timer
 	}
 	c.timers[t] = struct{}{}
 	t.timer = c.Clock.AfterFunc(delay, func() {
+		<-c.published
 		c.mu.Lock()
 		if c.closed {
 			c.mu.Unlock()
@@ -77,6 +88,7 @@ func (c *serverFilterClock) Close() {
 	}
 	clear(c.timers)
 	c.mu.Unlock()
+	c.Activate()
 	c.running.Wait()
 }
 

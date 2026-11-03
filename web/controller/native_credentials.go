@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -18,6 +19,20 @@ func (a *ServerController) nativeCredentials(c *gin.Context) {
 	var request service.NativeCredentialRequest
 	if decoder.Decode(&request) != nil || decoder.Decode(new(any)) != io.EOF {
 		jsonMsg(c, "Invalid credential generation request", errors.New("expected one valid request object"))
+		return
+	}
+	if request.Kind == "inbound-profile" {
+		if err := prepareNativeProfileAddress(c.Request.Context(), c.Request.Host, &request, net.DefaultResolver.LookupIPAddr); err != nil {
+			jsonObj(c, nil, err)
+			return
+		}
+		result, err := service.GenerateNativeInboundProfile(request)
+		jsonObj(c, result, err)
+		return
+	}
+	if request.Kind == "openvpn-client" {
+		result, err := service.GenerateNativeOpenVPNClient(request)
+		jsonObj(c, result, err)
 		return
 	}
 	result, err := service.GenerateNativeCredentials(request)

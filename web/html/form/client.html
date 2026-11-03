@@ -95,15 +95,12 @@
   </a-form-item>
   <a-form-item v-if="inbound.protocol === Protocols.VMESS" label="Raw UUID authentication compatibility">
     <a-switch v-model="client.rawUuidAuth"></a-switch>
-    <p>Use only with matching clients and a protected outer transport. This is a compatibility mode, not stronger authentication.</p>
   </a-form-item>
   <a-form-item v-if="inbound.protocol === Protocols.TROJAN" label="UUID hash prefix compatibility">
     <a-switch v-model="client.uuidHashPrefix"></a-switch>
-    <p>Optional authentication format for matching UUID-password clients.</p>
   </a-form-item>
   <a-form-item v-if="inbound.protocol === Protocols.SHADOWSOCKS && (['2022-blake3-aes-128-gcm', '2022-blake3-aes-256-gcm', '2022-blake3-chacha20-poly1305'].includes(inbound.method) || client.uuidIdentityKeys)" label="UUID identity key import compatibility">
     <a-switch v-model="client.uuidIdentityKeys"></a-switch>
-    <p>Only for SS2022 methods. Converts UUID user identity keys when importing; the server PSK remains base64. This does not change the Shadowsocks wire protocol.</p>
   </a-form-item>
   <template v-if="inbound.isNative && client.fields">
     <a-form-item v-for="field in client.fields" :key="field.path" :label="field.label">
@@ -113,19 +110,14 @@
       <a-input v-else :type="field.type === 'password' ? 'password' : 'text'" :value="client.fieldValue(field)" @change="client.setField(field, $event.target.value)" autocomplete="off" spellcheck="false"></a-input>
     </a-form-item>
     <a-space v-if="inbound.protocol === Protocols.ORBIT" direction="vertical">
-      <a-button :loading="inbound.settings.generating" @click="inbound.settings.generateCredentials('orbit', client)">Generate new Orbit client key</a-button>
-      <span>The new key is bound to this inbound certificate or Reality key and replaces this client’s current key when saved.</span>
+      <a-button :loading="inbound.settings.generating" @click="inbound.settings.generateCredentials('orbit', client)">Regenerate client key</a-button>
     </a-space>
     <a-space v-if="inbound.protocol === Protocols.OPENVPN" direction="vertical">
-      <a-button :loading="inbound.settings.generating" @click="inbound.settings.generateCredentials('openvpn-proof', client)">Generate new client proof key</a-button>
-      <a-button :loading="inbound.settings.generating" @click="inbound.settings.generateCredentials('openvpn-tls-crypt-v2', client)">Generate client TLS-crypt-v2 key</a-button>
-      <span>Generated keys replace this client’s current keys. Save and refresh its JSON subscription.</span>
+      <a-button :loading="inbound.settings.generating" @click="inbound.settings.generateCredentials('openvpn-proof', client)">Regenerate proof key</a-button>
+      <a-button :loading="inbound.settings.generating" @click="inbound.settings.generateCredentials('openvpn-tls-crypt-v2', client)">Regenerate TLS-crypt-v2 client key</a-button>
     </a-space>
     <a-alert v-if="inbound.settings.generationError" type="error" show-icon :message="inbound.settings.generationError"></a-alert>
     <a-alert v-if="inbound.settings.generationNotice" type="success" show-icon :message="inbound.settings.generationNotice"></a-alert>
-    <p v-if="inbound.protocol === Protocols.SHADOWTLS">For subscription export, inner SOCKS username must match this user’s inner account. Inner VLESS and Shadowsocks clients are matched by this client email; an unmatched or duplicate email cannot be exported. With v1/v2 inner SOCKS, statistics use the inner username: match it to the panel email before enabling traffic or IP limits.</p>
-    <p v-if="inbound.protocol === Protocols.DNSTT && inbound.settings.data.inner?.protocol === 'socks'">SOCKS statistics use its username. Match the username to this client email before enabling traffic or IP limits.</p>
-    <p v-if="inbound.protocol === Protocols.OPENVPN">Use this client’s issued certificate and private key for subscription export. Never paste the server certificate or server private key into a client.</p>
     <a-alert v-if="client.validationErrors.length" type="error" :message="client.validationErrors.join('; ')" show-icon></a-alert>
   </template>
   <a-form-item v-if="client.email && (app.subSettings?.enable || (inbound.isNative && app.subSettings?.subJsonEnable))">

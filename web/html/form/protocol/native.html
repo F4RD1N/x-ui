@@ -1,10 +1,8 @@
 {{define "form/nativeInbound"}}
-<a-alert :type="inbound.protocol === Protocols.ORBIT && inbound.settings.data.transport === 'quic' ? 'warning' : 'info'" show-icon :message="inbound.settings.help" :style="{ marginBottom: '12px' }"></a-alert>
-<p>Client configurations are exported through the panel’s JSON subscription endpoint. Enable JSON subscriptions in subscription settings; ordinary share links do not represent these protocols.</p>
 <a-form :colon="false" :label-col="{ md: {span:8} }" :wrapper-col="{ md: {span:14} }">
   <a-form-item v-for="field in inbound.settings.fields" :key="field.path" :label="field.label">
     <a-switch v-if="field.type === 'boolean'" :checked="inbound.settings.fieldValue(field) === true" @change="inbound.settings.setField(field, $event)"></a-switch>
-    <a-select v-else-if="field.type === 'select'" :value="inbound.settings.fieldValue(field)" @change="inbound.settings.setField(field, $event)" :dropdown-class-name="themeSwitcher.currentTheme">
+    <a-select v-else-if="field.type === 'select'" :disabled="inbound.settings.needsProfile && inbound.settings.generating" :value="inbound.settings.fieldValue(field)" @change="inbound.settings.setField(field, $event)" :dropdown-class-name="themeSwitcher.currentTheme">
       <a-select-option v-for="option in field.options" :key="String(option)" :value="option">[[ option === '' ? 'Default / disabled' : option ]]</a-select-option>
     </a-select>
     <a-input-number v-else-if="field.type === 'number'" :value="inbound.settings.fieldValue(field)" :min="field.min" :max="field.max" :precision="0" @change="inbound.settings.setField(field, $event)" :style="{ width: '100%' }"></a-input-number>
@@ -13,14 +11,15 @@
   </a-form-item>
 </a-form>
 <a-space direction="vertical" :style="{ marginBottom: '12px', width: '100%' }">
+  <span v-if="inbound.settings.generating">Generating settings…</span>
+  <a-button v-if="!isEdit && inbound.settings.needsProfile && inbound.settings.generationError" :loading="inbound.settings.generating" @click="inModal.initializeNativeDefaults(true)">Retry generation</a-button>
+  <a-button v-if="inbound.settings.modeDefaultsFailed && inbound.settings.generationError" :loading="inbound.settings.generating" @click="inModal.retryNativeModeDefaults()">Retry generation</a-button>
   <template v-if="inbound.protocol === Protocols.DNSTT">
-    <a-button :loading="inbound.settings.generating" @click="inbound.settings.generateCredentials('dnstt')">Generate new DNSTT key pair</a-button>
-    <span>Generating replaces the current private key in this form. Existing clients will need the new public key.</span>
+    <a-button :loading="inbound.settings.generating" @click="inbound.settings.generateCredentials('dnstt')">Regenerate key pair</a-button>
     <a-input v-if="inbound.settings.generatedPublicKey" :value="inbound.settings.generatedPublicKey" readonly addon-before="Public key"></a-input>
   </template>
   <template v-if="inbound.protocol === Protocols.OPENVPN">
-    <a-button :loading="inbound.settings.generating" @click="inbound.settings.generateCredentials('openvpn-tls-crypt-v2-server')">Generate new TLS-crypt-v2 server key</a-button>
-    <span>Replacing a server wrapping key requires new wrapped keys for its clients.</span>
+    <a-button :loading="inbound.settings.generating" @click="inbound.settings.generateCredentials('openvpn-tls-crypt-v2-server')">Regenerate TLS-crypt-v2 server key</a-button>
   </template>
   <a-alert v-if="inbound.settings.generationError" type="error" show-icon :message="inbound.settings.generationError"></a-alert>
   <a-alert v-if="inbound.settings.generationNotice" type="success" show-icon :message="inbound.settings.generationNotice"></a-alert>
@@ -31,10 +30,9 @@
     <a-button v-if="inbound.settings.clients.length > 1 || (inbound.protocol === Protocols.SHADOWTLS && inbound.settings.data.version !== 3)" type="danger" size="small" @click="inbound.settings.clients.splice(index, 1)">Remove client</a-button>
   </a-collapse-panel>
 </a-collapse>
-<a-button size="small" icon="plus" @click="inbound.settings.clients.push(inbound.settings.newClient())" :style="{ marginBottom: '12px' }">Add client</a-button>
+<a-button size="small" icon="plus" :loading="inbound.settings.generating" @click="inbound.settings.addGeneratedClient()" :style="{ marginBottom: '12px' }">Add client</a-button>
 <a-collapse>
-  <a-collapse-panel header="Advanced protocol settings JSON" key="native-json">
-    <p>All supported fields are preserved when switching between these controls and JSON. This editor contains private material; export only the selected client configuration.</p>
+  <a-collapse-panel header="Advanced JSON" key="native-json">
     <a-textarea v-model="inbound.settings.advancedJSON" :auto-size="{minRows: 8, maxRows: 22}" spellcheck="false"></a-textarea>
   </a-collapse-panel>
 </a-collapse>

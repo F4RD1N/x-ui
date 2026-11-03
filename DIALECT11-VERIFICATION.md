@@ -1,8 +1,11 @@
 # Dialect11 release verification
 
 For the subsequent `2.9.0-dialect.11.1` UI correction, see
-[DIALECT11-HOTFIX.md](DIALECT11-HOTFIX.md). Panel hashes below describe `.11`;
-the core executables are unchanged in `.11.1`.
+[DIALECT11-HOTFIX.md](DIALECT11-HOTFIX.md). Automatic defaults in `.11.2` are
+documented separately in [DIALECT11-DEFAULTS.md](DIALECT11-DEFAULTS.md).
+Panel hashes below describe `.11`; `.11.1` kept its core executables unchanged.
+The `.11.2` changes also include an isolated OpenVPN server timer fix, described
+with that patch's verification in `DIALECT11-DEFAULTS.md`.
 
 Verification recorded on 2026-11-03 for `v2.9.0-dialect.11`. Native component, panel, current-client interoperability, Linux AMD64/ARM64 and AMD64 Docker checks passed within the scope below. One independently reproduced inherited SS2022 dependency race remains explicitly documented.
 

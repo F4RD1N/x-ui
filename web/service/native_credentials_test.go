@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"crypto/ecdh"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"strings"
@@ -68,5 +69,36 @@ func TestNativeCredentialFailuresDoNotEchoMaterial(t *testing.T) {
 		if err == nil || strings.Contains(err.Error(), secret) {
 			t.Fatal("invalid request accepted or secret echoed")
 		}
+	}
+}
+
+func TestNativeOrbitRealityCredentials(t *testing.T) {
+	a, err := GenerateNativeCredentials(NativeCredentialRequest{Kind: "orbit-reality"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := GenerateNativeCredentials(NativeCredentialRequest{Kind: "orbit-reality"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateBytes, err := base64.RawURLEncoding.Strict().DecodeString(a["privateKey"])
+	if err != nil || len(privateBytes) != 32 {
+		t.Fatal("invalid Reality private key")
+	}
+	private, err := ecdh.X25519().NewPrivateKey(privateBytes)
+	if err != nil || base64.RawURLEncoding.EncodeToString(private.PublicKey().Bytes()) != a["publicKey"] {
+		t.Fatal("Reality key pair does not match")
+	}
+	short, err := hex.DecodeString(a["shortId"])
+	if err != nil || len(short) != 8 || a["shortId"] == b["shortId"] || a["privateKey"] == b["privateKey"] {
+		t.Fatal("Reality short ID or key reused")
+	}
+	connection, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(a["key"], "vck1_"))
+	pin := sha256.Sum256(private.PublicKey().Bytes())
+	if err != nil || len(connection) != 64 || !bytes.Equal(connection[32:], pin[:]) {
+		t.Fatal("Reality connection identity does not match public key")
+	}
+	if a["target"] != "www.microsoft.com:443" || a["serverName"] != "www.microsoft.com" {
+		t.Fatal("Reality default target and name diverged")
 	}
 }

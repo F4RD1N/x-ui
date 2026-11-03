@@ -27,7 +27,7 @@ function render(name) {
   return templates.get(name).replace(/{{\s*template\s+"([^"]+)"(?:\s+\.)?\s*}}/g, (_, child) => render(child)).replace(/{{\s*i18n\s+"([^"]+)"\s*}}/g, '$1');
 }
 const html = `<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="${file('web/assets/ant-design-vue/antd.min.css')}"></head><body>
-<script src="${file('web/assets/vue/vue.min.js')}"></script><script src="${file('web/assets/moment/moment.min.js')}"></script><script src="${file('web/assets/ant-design-vue/antd.min.js')}"></script><script src="${file('web/assets/js/util/index.js')}"></script><script src="${file('web/assets/js/model/inbound.js')}"></script><script src="${file('web/assets/js/model/native-inbound.js')}"></script><script src="${file('web/assets/js/model/dbinbound.js')}"></script>
+<script src="${file('web/assets/vue/vue.min.js')}"></script><script src="${file('web/assets/moment/moment.min.js')}"></script><script src="${file('web/assets/ant-design-vue/antd.min.js')}"></script><script src="${file('web/assets/js/util/index.js')}"></script><script src="${file('web/assets/js/model/inbound.js')}"></script><script src="${file('web/assets/js/model/native-inbound.js')}"></script><script src="${file('web/assets/js/model/native-creation.js')}"></script><script src="${file('web/assets/js/model/native-modes.js')}"></script><script src="${file('web/assets/js/model/dbinbound.js')}"></script>
 <script>const basePath='/fixture-prefix/'; window.themeSwitcher={currentTheme:'light'}; window.app={datepicker:'gregorian',subSettings:{enable:false},tgBotEnable:false,ipLimitEnable:false,$message:Vue.prototype.$message}; Vue.config.productionTip=false;</script>
 ${render('modals/inboundModal')}</body></html>`;
 const fixtureFile = path.join(temp, 'fixture.html');
@@ -60,7 +60,7 @@ const fixtures = {
           const inbound=Inbound.fromJson({protocol,settings:{...settings,futureOption:{retain:true}},port:18080,streamSettings:protocol==='anytls'?{network:'tcp',security:'tls'}:undefined});
           inModal.show({inbound,isEdit:true});
         }, {protocol,settings,theme});
-        await page.waitForSelector('.ant-modal-body .ant-alert-info');
+        await page.waitForSelector('.ant-modal-body .ant-form');
         const item = page.locator('.ant-modal-body .ant-form-item').filter({has:page.locator('.ant-form-item-label',{hasText:'Handshake timeout (seconds)'})}).first();
         await item.locator('input').fill('20');
         await item.locator('input').press('Tab');
@@ -97,7 +97,7 @@ const fixtures = {
       checks.push({protocol,compatibilityControl:true});
     }
     await page.evaluate(settings=>{inModal.show({inbound:Inbound.fromJson({protocol:'dnstt',settings,port:18080}),isEdit:true});},fixtures.dnstt);
-    const resolverControl=page.locator('.ant-modal-body .ant-form-item').filter({has:page.locator('.ant-form-item-label',{hasText:'Client DNS resolvers JSON'})}).first();
+    const resolverControl=page.locator('.ant-modal-body .ant-form-item').filter({has:page.locator('.ant-form-item-label',{hasText:'DNS resolvers JSON'})}).first();
     await resolverControl.locator('textarea').fill('[{"transport":"udp","address":"127.0.0.1:5353"}]');
     await resolverControl.locator('textarea').press('Tab');
     assert.deepEqual(await page.evaluate(()=>inModal.inbound.settings.toJson().clientExport.resolvers),[{transport:'udp',address:'127.0.0.1:5353'}]);
@@ -110,19 +110,19 @@ const fixtures = {
         return {ok:true,json:async()=>({success:true,obj})};
       };
     });
-    await page.getByRole('button',{name:'Generate new DNSTT key pair',exact:true}).click();
+    await page.getByRole('button',{name:'Regenerate key pair',exact:true}).click();
     await page.waitForFunction(()=>!inModal.inbound.settings.generating);
     assert.equal(await page.evaluate(()=>inModal.inbound.settings.toJson().privateKey),'44'.repeat(32));
     await page.evaluate(settings=>{inModal.show({inbound:Inbound.fromJson({protocol:'openvpn',settings,port:18080}),isEdit:true});},fixtures.openvpn);
-    await page.getByRole('button',{name:'Generate new TLS-crypt-v2 server key',exact:true}).click();
+    await page.getByRole('button',{name:'Regenerate TLS-crypt-v2 server key',exact:true}).click();
     await page.waitForFunction(()=>!inModal.inbound.settings.generating);
     {
           const header=page.locator('.ant-collapse-header').filter({hasText:'Client 1:'}).first();
           if (!(await header.evaluate(element=>element.parentElement.classList.contains('ant-collapse-item-active')))) await header.click();
         }
-    await page.getByRole('button',{name:'Generate new client proof key',exact:true}).click();
+    await page.getByRole('button',{name:'Regenerate proof key',exact:true}).click();
     await page.waitForFunction(()=>!inModal.inbound.settings.generating);
-    await page.getByRole('button',{name:'Generate client TLS-crypt-v2 key',exact:true}).click();
+    await page.getByRole('button',{name:'Regenerate TLS-crypt-v2 client key',exact:true}).click();
     await page.waitForFunction(()=>!inModal.inbound.settings.generating);
     assert.equal(await page.evaluate(()=>inModal.inbound.clients[0].toJson().clientProof.key),'66'.repeat(32));
     assert.match(await page.evaluate(()=>inModal.inbound.clients[0].toJson().tlsCryptV2),/BEGIN OpenVPN/);
@@ -131,7 +131,7 @@ const fixtures = {
           const header=page.locator('.ant-collapse-header').filter({hasText:'Client 1:'}).first();
           if (!(await header.evaluate(element=>element.parentElement.classList.contains('ant-collapse-item-active')))) await header.click();
         }
-    await page.getByRole('button',{name:'Generate new Orbit client key',exact:true}).click();
+    await page.getByRole('button',{name:'Regenerate client key',exact:true}).click();
     await page.waitForFunction(()=>!inModal.inbound.settings.generating);
     assert.equal(await page.evaluate(()=>inModal.inbound.clients[0].toJson().key),'vck1_'+'B'.repeat(86));
     const calls=await page.evaluate(()=>window.generationCalls);
@@ -140,7 +140,7 @@ const fixtures = {
     assert.equal(calls[4].payload.certificate,pem);
     assert.match(calls[3].payload.serverKey,/BEGIN OpenVPN/);
     await page.evaluate(()=>{window.fetch=async()=>({ok:false});});
-    await page.getByRole('button',{name:'Generate new Orbit client key',exact:true}).click();
+    await page.getByRole('button',{name:'Regenerate client key',exact:true}).click();
     await page.waitForFunction(()=>!inModal.inbound.settings.generating);
     assert.equal(await page.evaluate(()=>inModal.inbound.clients[0].toJson().key),'vck1_'+'B'.repeat(86));
     assert.ok(await page.evaluate(()=>inModal.inbound.settings.generationError));

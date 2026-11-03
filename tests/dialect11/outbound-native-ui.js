@@ -50,7 +50,7 @@ const fixtures = {
             for (const [protocol, settings] of Object.entries(fixtures)) {
                 const input = {tag: 'fixture-' + protocol, protocol, settings: {...settings, futureField: {retained: true}}};
                 await page.evaluate(({input, theme}) => { themeSwitcher.currentTheme = theme; outModal.show({outbound: input, isEdit: true}); }, {input, theme});
-                await page.waitForSelector('.ant-modal-body .ant-alert-info');
+                await page.waitForSelector('.ant-modal-body .ant-form');
                 await page.waitForFunction(() => outModal.isValid);
                 const label = protocol === 'dnstt' ? 'Delegated tunnel domain' : 'Server address';
                 const item = page.locator('.ant-modal-body .ant-form-item').filter({has: page.locator('.ant-form-item-label', {hasText: label})}).first();
@@ -105,8 +105,9 @@ const fixtures = {
         assert.equal(await page.evaluate(()=>outModal.isValid),true);
         checks.push({ss2022IdentityToggle:true,unsupportedMethodRejected:true});
         await page.evaluate(()=>{outModal.show({outbound:{tag:'quic',protocol:'orbit',settings:{link:'orbit://192.0.2.1:8443@vck1_'+'A'.repeat(86)+'&transport=quic'}},isEdit:true});});
-        await page.locator('.ant-modal-body .ant-alert-warning').filter({hasText:'passive network observer'}).waitFor();
-        checks.push({orbitQuicWarning:true});
+        assert.equal(await page.evaluate(()=>outModal.outbound.toJson().settings.link.includes('transport=quic')),true);
+        assert.equal(await page.locator('.ant-modal-body .ant-alert-info, .ant-modal-body .ant-alert-warning').count(),0);
+        checks.push({orbitQuicSettingsRetained:true,conciseForm:true});
         await page.evaluate(() => { outModal.toggleJson(true); outModal.cm.setValue('{broken'); outModal.check(); });
         assert.equal(await page.evaluate(() => outModal.isValid), false);
         assert.equal(await page.locator('.ant-modal-footer button.ant-btn-primary').isDisabled(), true, 'invalid JSON disables actual modal OK');

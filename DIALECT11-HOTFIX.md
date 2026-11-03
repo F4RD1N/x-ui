@@ -1,6 +1,7 @@
 # Dialect11.1 UI hotfix
 
-Released as `2.9.0-dialect.11.1` on 2026-11-03. Runtime changes are confined
+Installed locally as `2.9.0-dialect.11.1` on 2026-11-03 and included in the
+subsequent `.11.2` release. This hotfix's runtime changes are confined
 to browser templates and the GUI share-link model. Core handlers, backend
 logic, database schema and protocol wire formats are unchanged.
 

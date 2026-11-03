@@ -1,7 +1,8 @@
 {{define "modals/clientsModal"}}
 <a-modal id="client-modal" v-model="clientModal.visible"
     :title="clientModal.title" @ok="clientModal.ok"
-    :confirm-loading="clientModal.confirmLoading" :closable="true"
+    :confirm-loading="clientModal.confirmLoading || clientModal.initializing || (inbound.isNative && inbound.settings.generating)" :closable="true"
+    :ok-button-props="{ props: { disabled: clientModal.initializing || !client || (inbound.isNative && inbound.settings.generating) } }"
     :mask-closable="false"
     :class="themeSwitcher.currentTheme"
     :ok-text="clientModal.okText" cancel-text='{{ i18n "close" }}'>
@@ -10,7 +11,12 @@
             :style="{ marginBottom: '10px', display: 'block', textAlign: 'center' }">Account
             is (Expired|Traffic Ended) And Disabled</a-tag>
     </template>
-    {{template "form/client"}}
+    <template v-if="client">{{template "form/client"}}</template>
+    <a-spin v-else-if="clientModal.initializing"></a-spin>
+    <template v-else-if="inbound.isNative && inbound.settings.generationError">
+      <a-alert type="error" :message="inbound.settings.generationError"></a-alert>
+      <a-button @click="clientModal.initializeNativeClient()">Retry generation</a-button>
+    </template>
 </a-modal>
 <script>
 
@@ -28,7 +34,10 @@
         index: null,
         clientIps: null,
         delayedStart: false,
+        initializing: false,
+        showToken: 0,
         ok() {
+            if (clientModal.initializing || !clientModalApp.client || (clientModal.inbound.isNative && clientModal.inbound.settings.generating)) return;
             const compatibilityErrors = Inbound.compatibilityErrors(clientModal.inbound.protocol, [clientModalApp.client], clientModal.inbound.method);
             if (compatibilityErrors.length) {
                 clientModalApp.$message.error(compatibilityErrors.join("; "));
@@ -45,26 +54,51 @@
             }
         },
         show({ title = '', okText = '{{ i18n "sure" }}', index = null, dbInbound = null, confirm = () => { }, isEdit = false }) {
+            this.showToken++;
+            this.initializing = false;
             this.visible = true;
             this.title = title;
             this.okText = okText;
             this.isEdit = isEdit;
             this.dbInbound = new DBInbound(dbInbound);
             this.inbound = Inbound.fromJson(dbInbound.toInbound().toJson());
+            if (this.inbound.isNative) this.inbound.settings.rememberClientBindings();
             this.clients = this.inbound.clients;
             this.index = index === null ? this.clients.length : index;
             this.delayedStart = false;
+            this.confirm = confirm;
             if (isEdit) {
                 if (this.clients[index].expiryTime < 0) {
                     this.delayedStart = true;
                 }
                 this.oldClientId = this.getClientId(dbInbound.protocol, this.clients[index]);
             } else {
+                if (this.inbound.isNative) {
+                    this.clientStats = null;
+                    this.initializeNativeClient();
+                    return;
+                }
                 this.addClient(this.inbound, this.clients);
             }
             this.clientStats = this.dbInbound.clientStats.find(row => row.email === this.clients[this.index].email);
             this.confirm = confirm;
         },  
+        async initializeNativeClient() {
+            if (!this.visible || this.isEdit || !this.inbound.isNative || this.initializing) return false;
+            const token = this.showToken;
+            const inbound = this.inbound;
+            this.initializing = true;
+            try {
+                const client = await inbound.settings.addGeneratedClient();
+                if (this.showToken !== token || this.inbound !== inbound || !this.visible) return false;
+                if (!client) return false;
+                this.index = this.clients.indexOf(client);
+                this.clientStats = null;
+                return true;
+            } finally {
+                if (this.showToken === token && this.inbound === inbound) this.initializing = false;
+            }
+        },
         getClientId(protocol, client) {
             if (Inbound.NativeSettings.supports(protocol)) return Inbound.nativeClientId(protocol, client);
             switch (protocol) {
@@ -90,6 +124,8 @@
             }
         },
         close() {
+            clientModal.showToken++;
+            clientModal.initializing = false;
             clientModal.visible = false;
             clientModal.loading(false);
         },

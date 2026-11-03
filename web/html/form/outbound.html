@@ -37,7 +37,7 @@
         <a-input v-model="outbound.sendThrough"></a-input>
       </a-form-item>
 
-      <a-form-item label="Chain through outbound" help="For a ShadowTLS carrier, configure the inner SOCKS, VLESS or Shadowsocks outbound here and enable transport-layer chaining.">
+      <a-form-item label="Chain through outbound">
         <a-switch :checked="outbound.proxySettings !== undefined" @change="value => {outbound.setChainingEnabled(value); outModal.check();}"></a-switch>
       </a-form-item>
       <template v-if="outbound.hasChainingObject">
@@ -53,7 +53,6 @@
 
       <!-- Native carriers own their wire transport and TLS configuration. -->
       <template v-if="outbound.isNative">
-        <a-alert :type="outbound.settings.hasQuicWarning ? 'warning' : 'info'" show-icon :message="outbound.settings.help" :style="{marginBottom: '12px'}"></a-alert>
         <a-form-item v-if="['openvpn', 'orbit'].includes(outbound.settings.kind)" label="Configuration format">
           <a-select :value="outbound.settings.inputMode" :dropdown-class-name="themeSwitcher.currentTheme"
             @change="value => {outbound.settings.changeInputMode(value); outModal.check();}">
@@ -81,7 +80,7 @@
             </a-select>
           </a-form-item>
         </template>
-        <a-form-item v-for="field in outbound.settings.fields" :key="'native-' + field.path" :label="field.label" :help="field.help">
+        <a-form-item v-for="field in outbound.settings.fields" :key="'native-' + field.path" :label="field.label">
           <a-switch v-if="field.type === 'boolean'" :checked="outbound.settings.value(field)"
             @change="value => {outbound.settings.setField(field, value); outModal.check();}"></a-switch>
           <a-input-number v-else-if="field.type === 'number'" :value="outbound.settings.value(field)" :min="field.min" :max="field.max" :precision="0"
@@ -119,7 +118,6 @@
         </template>
         <a-form-item label="Advanced settings">
           <a-button @click="outModal.toggleJson(true)">Edit complete JSON</a-button>
-          <div>Additional protocol fields are retained when switching between JSON and form.</div>
         </a-form-item>
       </template>
 
@@ -468,8 +466,7 @@
           </a-form-item>
         </template>
 
-        <a-form-item v-if="outbound.protocol === Protocols.VMess" label="Raw UUID authentication"
-          help="Optional compatibility mode. Use an encrypted TLS or Reality transport; this is not stronger authentication.">
+        <a-form-item v-if="outbound.protocol === Protocols.VMess" label="Raw UUID authentication">
           <a-switch v-model="outbound.settings.rawUuidAuth" @change="outModal.check()"></a-switch>
         </a-form-item>
 
@@ -573,8 +570,7 @@
           </a-form-item>
         </template>
 
-        <a-form-item v-if="outbound.protocol === Protocols.Trojan" label="UUID hash prefix compatibility"
-          help="Optional server compatibility for UUID passwords. Other passwords retain the standard authentication key.">
+        <a-form-item v-if="outbound.protocol === Protocols.Trojan" label="UUID hash prefix compatibility">
           <a-switch v-model="outbound.settings.uuidHashPrefix" @change="outModal.check()"></a-switch>
         </a-form-item>
 
@@ -592,7 +588,7 @@
               >
             </a-select>
           </a-form-item>
-          <a-form-item v-if="outbound.settings.supportsUuidIdentityKeys || outbound.settings.uuidIdentityKeys" label="UUID identity key import compatibility" help="SS2022 only. Keep the first/server PSK in base64; UUID user identities are converted when imported. The wire protocol is unchanged.">
+          <a-form-item v-if="outbound.settings.supportsUuidIdentityKeys || outbound.settings.uuidIdentityKeys" label="UUID identity key import compatibility">
             <a-switch v-model="outbound.settings.uuidIdentityKeys" @change="outModal.check()"></a-switch>
           </a-form-item>
           <a-form-item label="UDP over TCP">

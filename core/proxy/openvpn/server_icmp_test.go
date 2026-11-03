@@ -45,6 +45,7 @@ func newEchoStackFixture(t *testing.T, filtered bool) echoStackFixture {
 	if filtered {
 		restrictServerEchoReplies(ipstack, echoGateway4, echoGateway6)
 	}
+	clock.Activate()
 	output := make(chan []byte, 32)
 	done := make(chan struct{})
 	go func() {
@@ -318,6 +319,7 @@ func TestServerFilterClockCloseDrainsCallbackAndBlocksRearm(t *testing.T) {
 		timer.Reset(0)
 	})
 	timer.Reset(0)
+	clock.Activate()
 	select {
 	case <-entered:
 	case <-time.After(time.Second):
@@ -406,5 +408,67 @@ func TestServerFilterClockOwnsAndStopsActualReaper(t *testing.T) {
 	// The owner clock is separate from normal network timekeeping.
 	if f.stack.Clock() == f.clock {
 		t.Fatal("iptables timer ownership replaced the transport clock")
+	}
+}
+
+func TestServerFilterClockPublishesCompletedSetup(t *testing.T) {
+	clock := newServerFilterClock()
+	defer clock.Close()
+	var initialized int
+	result := make(chan int, 1)
+	clock.AfterFunc(0, func() { result <- initialized })
+	select {
+	case <-result:
+		t.Fatal("maintenance callback ran before filter setup was published")
+	case <-time.After(20 * time.Millisecond):
+	}
+	// This models the dependency assigning its reaper pointer only after
+	// AfterFunc returned. Activate provides the missing happens-before edge.
+	initialized = 42
+	clock.Activate()
+	select {
+	case got := <-result:
+		if got != 42 {
+			t.Fatal("callback did not observe completed setup")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("published callback did not run")
+	}
+}
+
+type observedFilterClock struct {
+	tcpip.Clock
+	once sync.Once
+	tick chan struct{}
+}
+
+func (c *observedFilterClock) AfterFunc(d time.Duration, f func()) tcpip.Timer {
+	return c.Clock.AfterFunc(d, func() { f(); c.once.Do(func() { close(c.tick) }) })
+}
+
+func TestServerFilterClockActualReaperTickAndClose(t *testing.T) {
+	clock := newServerFilterClock()
+	defer clock.Close()
+	observed := &observedFilterClock{Clock: clock.Clock, tick: make(chan struct{})}
+	clock.Clock = observed
+	dev, _, ipstack, err := gvisortun.CreateNetTUNWithIPTablesClock([]netip.Addr{echoGateway4, echoGateway6}, 1280, true, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { clock.Close(); _ = dev.Close(); ipstack.Destroy() }()
+	restrictServerEchoReplies(ipstack, echoGateway4, echoGateway6)
+	clock.Activate()
+	// The real dependency's first reaper tick occurs after five seconds;
+	// short connection tests do not exercise its timer-field publication.
+	select {
+	case <-observed.tick:
+	case <-time.After(8 * time.Second):
+		t.Fatal("actual conntrack reaper did not execute")
+	}
+	clock.Close()
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	if !clock.closed || len(clock.timers) != 0 {
+		t.Fatal("actual reaper remained registered after close")
 	}
 }

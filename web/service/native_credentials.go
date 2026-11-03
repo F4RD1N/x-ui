@@ -14,15 +14,44 @@ import (
 // NativeCredentialRequest contains explicit, administrator-supplied material.
 // Nothing is persisted or written to logs by this helper.
 type NativeCredentialRequest struct {
-	Kind              string `json:"kind"`
-	Certificate       string `json:"certificate,omitempty"`
-	RealityPublicKey  string `json:"realityPublicKey,omitempty"`
-	RealityPrivateKey string `json:"realityPrivateKey,omitempty"`
-	ServerKey         string `json:"serverKey,omitempty"`
+	Kind                string `json:"kind"`
+	Certificate         string `json:"certificate,omitempty"`
+	RealityPublicKey    string `json:"realityPublicKey,omitempty"`
+	RealityPrivateKey   string `json:"realityPrivateKey,omitempty"`
+	ServerKey           string `json:"serverKey,omitempty"`
+	Protocol            string `json:"protocol,omitempty"`
+	ServerName          string `json:"serverName,omitempty"`
+	ServerAddress       string `json:"serverAddress,omitempty"`
+	Email               string `json:"email,omitempty"`
+	Domain              string `json:"domain,omitempty"`
+	HandshakeAddress    string `json:"handshakeAddress,omitempty"`
+	Port                uint32 `json:"port,omitempty"`
+	CACertificate       string `json:"caCertificate,omitempty"`
+	IssuerPrivateKey    string `json:"issuerPrivateKey,omitempty"`
+	ClientProofRequired bool   `json:"clientProofRequired,omitempty"`
 }
 
 func GenerateNativeCredentials(r NativeCredentialRequest) (map[string]string, error) {
 	switch r.Kind {
+	case "orbit-reality":
+		key, err := ecdh.X25519().GenerateKey(rand.Reader)
+		if err != nil {
+			return nil, errors.New("Reality key generation failed")
+		}
+		shortID, err := nativeProfileRandom(8)
+		if err != nil {
+			return nil, err
+		}
+		public := base64.RawURLEncoding.EncodeToString(key.PublicKey().Bytes())
+		connection, err := orbit.GenerateRealityConnectionKey(public)
+		if err != nil {
+			return nil, errors.New("Reality connection key generation failed")
+		}
+		return map[string]string{
+			"privateKey": base64.RawURLEncoding.EncodeToString(key.Bytes()), "publicKey": public,
+			"shortId": hex.EncodeToString(shortID), "key": connection,
+			"target": "www.microsoft.com:443", "serverName": "www.microsoft.com",
+		}, nil
 	case "dnstt":
 		key, err := ecdh.X25519().GenerateKey(rand.Reader)
 		if err != nil {
