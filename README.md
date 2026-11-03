@@ -10,6 +10,8 @@ Dialect11 adds native Go Orbit, DNS tunneling (DNSTT), OpenVPN, AnyTLS,
 ShadowTLS, and Mieru inbounds/outbounds, optional client authentication modes,
 and portable backup restoration. See [the implementation and configuration
 guide](DIALECT11.md) for schemas, export requirements, and compatibility limits.
+The [release verification report](DIALECT11-VERIFICATION.md) records completed
+tests and the inherited SS2022 UDP dependency race that remains.
 
 ## Dialects
 

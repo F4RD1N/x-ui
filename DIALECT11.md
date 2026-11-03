@@ -173,3 +173,8 @@ possible deployment or future defect.
 Detailed core schemas are documented beside the protocol implementations.
 Original and dependency license notices remain in the source and release
 bundles.
+
+See [DIALECT11-VERIFICATION.md](DIALECT11-VERIFICATION.md) for exact release
+results and remaining findings, including an independently reproduced,
+inherited race in the stock SS2022 UDP dependency. Its handlers and dependency
+version remain unchanged by this release.
