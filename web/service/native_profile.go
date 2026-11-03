@@ -175,7 +175,7 @@ func GenerateNativeInboundProfile(r NativeCredentialRequest) (*NativeInboundProf
 		domain := ""
 		if r.Domain != "" {
 			domain, err = nativeProfileHost(r.Domain)
-			if err != nil || net.ParseIP(domain) != nil || !strings.Contains(domain, ".") {
+			if err != nil || net.ParseIP(domain) != nil {
 				return nil, errors.New("domain must be a DNS tunnel name")
 			}
 		} else {
