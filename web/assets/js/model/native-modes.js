@@ -17,7 +17,17 @@
         return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
     };
     const present = value => Array.isArray(value) ? value.some(item => String(item).trim()) : typeof value === 'string' && value.trim() !== '';
-    const serverName = (data, options) => data.clientExport?.serverName || options.serverName || (typeof location !== 'undefined' && location.hostname) || 'vpn.internal';
+    const serverName = (data, options) => [data.clientExport?.serverName, options.serverName, typeof location !== 'undefined' && location.hostname]
+        .find(value => Inbound.NativeSettings.isOrbitDNSHost(value)) || 'vpn.internal';
+    const numericAddress = value => {
+        if (typeof value !== 'string') return '';
+        const text = value.trim().replace(/^\[([^\]]+)\]$/, '$1');
+        if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(text) && text.split('.').every(part => Number(part) <= 255 && (part.length === 1 || part[0] !== '0'))) return text;
+        if (text.includes(':')) {
+            try { return new URL(`http://[${text}]/`).hostname.slice(1, -1); } catch (_) { /* Invalid IPv6 is not a peer default. */ }
+        }
+        return '';
+    };
     const ss2022Sizes = {'2022-blake3-aes-128-gcm': 16, '2022-blake3-aes-256-gcm': 32, '2022-blake3-chacha20-poly1305': 32};
     const aeadMethods = ['aes-128-gcm', 'aes-256-gcm', 'chacha20-poly1305', 'xchacha20-poly1305', 'chacha20-ietf-poly1305', 'xchacha20-ietf-poly1305', 'aead_aes_128_gcm', 'aead_aes_256_gcm', 'aead_chacha20_poly1305', 'aead_xchacha20_poly1305'];
 
@@ -101,6 +111,7 @@
         const data = settings.data;
         if (settings.protocol === 'orbit') {
             if (['ws', 'wss'].includes(data.transport) && (!data.host || !data.path)) return true;
+            if (['ws', 'wss'].includes(data.transport) && !present(data.clientExport?.serverName) && numericAddress(data.clientExport?.address)) return true;
             if (data.transport === 'wss' && present(data.outerTls?.certificate) !== present(data.outerTls?.key)) return true;
             return data.security === 'reality' && (data.transport !== 'tcp' || !present(data.reality?.privateKey) || !data.reality?.serverNames?.length || !data.reality?.shortIds?.length || !data.reality?.dest);
         }
@@ -147,6 +158,12 @@
         try {
             let nextShadow;
             if (protocol === 'orbit') {
+                // WS HTTP Host and WSS outer TLS need a DNS name. The pinned
+                // inner identity remains the generated numeric certificate SAN.
+                if (['ws', 'wss'].includes(data.transport) && !present(data.clientExport?.serverName)) {
+                    const peer = numericAddress(data.clientExport?.address);
+                    if (peer) data.clientExport = {...data.clientExport, serverName: peer};
+                }
                 if (data.transport === 'wss') {
                     const hasCert = present(data.outerTls?.certificate), hasKey = present(data.outerTls?.key);
                     if (hasCert !== hasKey) throw new Error('Provide both the WSS certificate and private key.');

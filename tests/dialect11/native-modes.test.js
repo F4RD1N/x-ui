@@ -50,6 +50,80 @@ test('WSS preserves supplied certificate pair, host/path, and all client keys', 
     assert.deepEqual(plain(ctx.settings.toJson()), before);
 });
 
+test('IP-address panels get a DNS WebSocket Host while preserving the numeric inner certificate identity', async () => {
+    for (const transport of ['ws', 'wss']) for (const address of ['127.0.0.1', '192.0.2.9', '2001:db8::9']) {
+        const data = orbit(); Object.assign(data, {transport, clientExport: {address}});
+        const ctx = fixture('orbit', data);
+        ctx.location.hostname = address.includes(':') ? `[${address}]` : address;
+        assert.equal(await ctx.settings.fillMissingModeDefaults({serverName: address}), true);
+        assert.equal(ctx.settings.data.host, 'vpn.internal');
+        assert.equal(ctx.settings.data.clientExport.address, address);
+        assert.equal(ctx.settings.data.clientExport.serverName, address);
+        assert.equal(ctx.settings.toJson().clientExport.serverName, address);
+        assert.equal(ctx.settings.data.path, '/core');
+        assert.deepEqual(plain(ctx.settings.data.tls), data.tls);
+        assert.equal(ctx.settings.clients[0].data.key, data.clients[0].key);
+        assert.equal(ctx.settings.data.outerTls, undefined);
+        ctx.settings.data.transport = 'tcp';
+        assert.equal(ctx.settings.toJson().clientExport.serverName, undefined);
+        assert.equal(ctx.settings.toJson().host, undefined);
+    }
+});
+
+test('WebSocket defaults prefer valid explicit DNS and retain manual Host, peer and credentials', async () => {
+    for (const transport of ['ws', 'wss']) {
+        const data = orbit(); Object.assign(data, {transport, clientExport: {address: '192.0.2.9'}});
+        const ctx = fixture('orbit', data);
+        ctx.location.hostname = '127.0.0.1';
+        assert.equal(await ctx.settings.fillMissingModeDefaults({serverName: 'custom.example'}), true);
+        assert.equal(ctx.settings.data.host, 'custom.example');
+        assert.equal(ctx.settings.data.clientExport.serverName, '192.0.2.9');
+        ctx.settings.data.host = 'manual.example';
+        ctx.settings.data.clientExport.serverName = 'inner.example';
+        ctx.settings.data.path = '';
+        assert.equal(await ctx.settings.fillMissingModeDefaults({serverName: 'replacement.example'}), true);
+        assert.equal(ctx.settings.data.host, 'manual.example');
+        assert.equal(ctx.settings.data.clientExport.serverName, 'inner.example');
+        delete ctx.settings.data.host;
+        assert.equal(await ctx.settings.fillMissingModeDefaults({serverName: 'replacement.example'}), true);
+        assert.equal(ctx.settings.data.host, 'inner.example');
+    }
+});
+
+test('WebSocket Host validation matches the client DNS grammar without overwriting invalid manual hosts', async () => {
+    const invalid = ['', '127.0.0.1', '[::1]', '2001:db8::1', 'vpn.example:443', 'vpn.example.', '.vpn.example', 'vpn..example', '-vpn.example', 'vpn-.example', '*.example', 'vpn_example', 'vpn example', 'éxample.test', 'a'.repeat(64)+'.test', ['a'.repeat(63),'b'.repeat(63),'c'.repeat(63),'d'.repeat(63)].join('.')];
+    for (const host of invalid) {
+        const data = orbit(); Object.assign(data, {transport: 'ws', host, path: '/core'});
+        const ctx = fixture('orbit', data);
+        assert.equal(ctx.NativeSettings.isOrbitDNSHost(host), false, host);
+        assert.ok(ctx.settings.validationErrors.some(error => error.includes('WebSocket host')), host);
+        if (host) {
+            assert.equal(await ctx.settings.fillMissingModeDefaults(), true);
+            assert.equal(ctx.settings.data.host, host);
+            assert.ok(ctx.settings.validationErrors.some(error => error.includes('WebSocket host')), host);
+        }
+    }
+    for (const host of ['vpn.internal', 'EXAMPLE.test', 'a', 'a-b.c', 'a'.repeat(63)+'.test']) {
+        const data = orbit(); Object.assign(data, {transport: 'ws', host});
+        const ctx = fixture('orbit', data);
+        assert.equal(ctx.NativeSettings.isOrbitDNSHost(host), true, host);
+        assert.ok(!ctx.settings.validationErrors.some(error => error.includes('WebSocket host')), host);
+    }
+});
+
+test('Existing complete WebSocket paths gain only a missing numeric peer and do not replace manual peer', async () => {
+    const data = orbit(); Object.assign(data, {transport: 'ws', host: 'vpn.example', path: '/manual', clientExport: {address: '[2001:db8::5]'}});
+    const ctx = fixture('orbit', data);
+    assert.equal(await ctx.settings.fillMissingModeDefaults(), true);
+    assert.equal(ctx.settings.data.clientExport.serverName, '2001:db8::5');
+    assert.equal(ctx.settings.data.clientExport.address, '[2001:db8::5]');
+    assert.equal(ctx.settings.data.path, '/manual');
+    ctx.settings.data.clientExport.serverName = 'my-inner.example';
+    const before = plain(ctx.settings.toJson());
+    assert.equal(await ctx.settings.fillMissingModeDefaults(), true);
+    assert.deepEqual(plain(ctx.settings.toJson()), before);
+});
+
 for (const partial of [{certificate: cert}, {key}]) test(`WSS refuses a partial ${partial.key ? 'key' : 'certificate'} without changes`, async () => {
     const data = orbit(); Object.assign(data, {transport: 'wss', outerTls: partial});
     const ctx = fixture('orbit', data), before = plain(ctx.settings.toJson());

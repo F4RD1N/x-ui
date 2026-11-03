@@ -116,7 +116,7 @@ function dbRow(protocol='mieru'){
     deferred.shift()();await ready(page);
     const state=await page.evaluate(()=>({settings:inModal.inbound.settings.toJson(),stream:inModal.inbound.stream.toJson(),errors:inModal.inbound.settings.validationErrors,error:inModal.inbound.settings.generationError,publicKey:inModal.inbound.settings.generatedPublicKey}));
     assert.equal(state.error,'',protocol+' valid response applied');
-    for(const [name,value] of Object.entries(original))assert.deepEqual(state.settings.clients[0][name],value,protocol+' client metadata '+name+' retained');
+    for(const [name,value] of Object.entries(original))assert.deepEqual(state.settings.clients[0][name],name==='tgId'&&value===''?0:value,protocol+' client metadata '+name+' retained with typed empty Telegram ID');
     assert.equal(requests.at(-1).body.email,original.email);assert.equal(requests.at(-1).body.serverName,'127.0.0.1');
     if(protocol==='dnstt'){
       assert.equal(state.settings.privateKey,'11'.repeat(32));assert.equal(state.publicKey,'22'.repeat(32));

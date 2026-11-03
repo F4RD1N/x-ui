@@ -222,6 +222,10 @@
     };
     Inbound.NativeSettings = class extends Inbound.Settings {
         static supports(protocol) { return Object.prototype.hasOwnProperty.call(protocols, protocol); }
+        static isOrbitDNSHost(value) {
+            return typeof value === 'string' && value.length > 0 && value.length <= 253 && /[a-z]/i.test(value)
+                && value.split('.').every(label => label.length > 0 && label.length <= 63 && /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(label));
+        }
         static async requestCredentials(request, signal) {
             const prefix = typeof basePath === 'string' ? basePath : '/';
             const response = await fetch(prefix.replace(/\/?$/, '/') + 'panel/api/server/native/credentials', {
@@ -454,7 +458,7 @@
                     if (data.transport !== 'tcp') errors.push('Orbit Reality requires TCP');
                     if (!data.reality?.privateKey || !data.reality?.serverNames?.length || !data.reality?.dest) errors.push('Orbit Reality private key, server names and destination are required');
                 } else if (!data.tls?.certificate?.length || !data.tls?.key?.length) errors.push('Orbit inner certificate and key are required');
-                if (['ws', 'wss'].includes(data.transport) && !data.host) errors.push('Orbit WebSocket host is required');
+                if (['ws', 'wss'].includes(data.transport) && !Inbound.NativeSettings.isOrbitDNSHost(data.host)) errors.push('Orbit WebSocket host must be a DNS name without a port');
                 if (data.transport === 'wss' && (!data.outerTls?.certificate?.length || !data.outerTls?.key?.length)) errors.push('Orbit WSS outer certificate and key are required');
             }
             return errors;
