@@ -161,7 +161,7 @@
                     break;
                 case 'openvpn': fields.unshift(field('commonName', 'Certificate common name'), field('username', 'Optional username'), field('password', 'Optional password', 'password'), field('clientProof.keyId', 'Optional client proof key ID'), field('clientProof.key', 'Optional client proof key (64 hex)', 'password'), field('certificate', 'Client certificate', 'textarea'), field('privateKey', 'Client private key', 'textarea'), field('tlsCryptV2', 'Client tls-crypt-v2 key', 'textarea')); break;
                 case 'shadowtls':
-                    fields.unshift(field('innerUsername', 'Inner SOCKS username'));
+                    if (this.innerProtocol === 'socks') fields.unshift(field('innerUsername', 'Inner SOCKS username'));
                     if (this.shadowVersion === 3) fields.unshift(field('password', 'Outer password (v3)', 'password'), field('requireUuidSessionId', 'Require UUID session ID compatibility', 'boolean'));
                     break;
                 case 'orbit': fields.unshift(field('key', 'Client key (vck1)', 'password'), number('expiresAt', 'Optional expiry (Unix seconds)', 0, Number.MAX_SAFE_INTEGER)); break;
@@ -465,7 +465,7 @@
             });
             if (this.protocol === 'dnstt') {
                 const domain = typeof data.domain === 'string' ? data.domain.replace(/\.$/, '') : '';
-                if (!(allowMissingDeployment && (data.domain === undefined || data.domain === '')) && (!domain.includes('.') || !Inbound.NativeSettings.isOrbitDNSHost(domain))) errors.push('A valid DNS tunnel name is required');
+                if (!(allowMissingDeployment && (data.domain === undefined || data.domain === '')) && !Inbound.NativeSettings.isOrbitDNSHost(domain)) errors.push('A valid DNS tunnel name is required');
                 if (!/^[0-9a-f]{64}$/i.test(data.privateKey || '')) errors.push('DNSTT private key must contain 64 hex characters');
                 const socks = data.inner?.protocol === 'socks';
                 if (this.clients.some(client => socks ? !client.data.username : !client.data.id)) errors.push('Client credentials must match the selected inner protocol');

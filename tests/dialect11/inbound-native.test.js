@@ -156,6 +156,18 @@ assert.ok(switching.fields.includes('username') && switching.fields.includes('pa
 assert.ok(!switching.fields.includes('id'));
 assert.ok(switching.errors.length);
 checks+=3;
+const singleLabel=run(`
+  const single=new Inbound.NativeSettings('dnstt',{domain:'tunnel',privateKey:'11'.repeat(32),inner:{protocol:'vless'},clients:[{id:data.uuid,email:'d'}]});
+  const bad=new Inbound.NativeSettings('dnstt',{domain:'has a space',privateKey:'11'.repeat(32),inner:{protocol:'vless'},clients:[{id:data.uuid,email:'d'}]});
+  const sockInner=new Inbound.NativeSettings('shadowtls',{version:2,handshake:{address:'tls.example'},clients:[{email:'one',innerUsername:'u'}],inner:{protocol:'socks',settings:{auth:'password',accounts:[{user:'u',pass:'p'}],udp:false}}});
+  const ssInner=new Inbound.NativeSettings('shadowtls',{version:2,handshake:{address:'tls.example'},clients:[{email:'two',password:data.uuid}],inner:{protocol:'shadowsocks',settings:{network:'tcp',clients:[{email:'two',method:'chacha20-ietf-poly1305',password:'synthetic'}]}}});
+  return {single:single.validationErrors,bad:bad.validationErrors,socksFields:sockInner.clients[0].fields.map(f=>f.path),ssFields:ssInner.clients[0].fields.map(f=>f.path)};
+`,{uuid:UUID});
+assert.ok(!singleLabel.single.some(error=>error.includes('DNS tunnel name')),'single-label tunnel domain is accepted like the core');
+assert.ok(singleLabel.bad.some(error=>error.includes('DNS tunnel name')),'invalid tunnel domain is still rejected');
+assert.ok(singleLabel.socksFields.includes('innerUsername'),'SOCKS inner keeps the inner username field');
+assert.ok(!singleLabel.ssFields.includes('innerUsername'),'non-SOCKS inner hides the inner username field');
+checks+=4;
 const groups=run(`const inbounds=[{protocol:'vless',settings:'{"clients":[{"subId":"shared"}]}'},{protocol:'mieru',settings:'{"clients":[{"subId":"shared"}]}'}];return {shared:Inbound.subscriptionNeedsJSON(inbounds,'shared'),stock:Inbound.subscriptionNeedsJSON(inbounds,'stock'),bad:Inbound.subscriptionNeedsJSON([{protocol:'dnstt',settings:'{'}],'shared')};`);
 assert.equal(groups.shared,true);
 assert.equal(groups.stock,false);

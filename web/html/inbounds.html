@@ -1833,9 +1833,10 @@
       exportAllLinks() {
         let copyText = [];
         for (const dbInbound of this.dbInbounds) {
+          if (!dbInbound.hasLink()) continue;
           copyText.push(dbInbound.genInboundLinks(this.remarkModel));
         }
-        txtModal.show('{{ i18n "pages.inbounds.export"}}', copyText.join('\r\n'), 'All-Inbounds');
+        txtModal.show('{{ i18n "pages.inbounds.export"}}', copyText.filter(Boolean).join('\r\n'), 'All-Inbounds');
       },
       copy(dbInboundId) {
         dbInbound = this.dbInbounds.find(row => row.id === dbInboundId);

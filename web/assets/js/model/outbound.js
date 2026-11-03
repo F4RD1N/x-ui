@@ -1917,7 +1917,7 @@ Outbound.NativeSettings = class extends CommonClass {
                 compatibility('uuidHashMiddle', 'UUID hash compatibility', 'Match the server account mode. This changes authentication compatibility, not encryption strength.');
                 add('tlsSettings.serverName', 'TLS server name'); add('tlsSettings.fingerprint', 'TLS fingerprint');
                 add('tlsSettings.allowInsecure', 'Allow insecure certificate', 'boolean', {omitFalse: true});
-                for (const [path, label] of [['idleSessionCheckInterval', 'Idle check interval (s)'], ['idleSessionTimeout', 'Idle timeout (s)'], ['minIdleSession', 'Minimum idle sessions']]) add(path, label, 'number', {min: 0});
+                for (const [path, label] of [['idleSessionCheckInterval', 'Idle check interval (s)'], ['idleSessionTimeout', 'Idle timeout (s)'], ['minIdleSession', 'Minimum idle sessions']]) add(path, label, 'number', {min: 0, max: 4294967295});
                 break;
             case 'shadowtls':
                 endpoint(); add('version', 'Version', 'select', {options: [1, 2, 3]}); add('password', 'Password', 'password');
@@ -2004,7 +2004,10 @@ Outbound.NativeSettings = class extends CommonClass {
                 }
                 break;
             }
-            case 'anytls': endpoint(); required('password'); break;
+            case 'anytls':
+                endpoint(); required('password');
+                for (const path of ['idleSessionCheckInterval', 'idleSessionTimeout', 'minIdleSession']) integer(path, 0, 4294967295);
+                break;
             case 'shadowtls':
                 endpoint(); required('serverName'); choice('version', [1, 2, 3]);
                 if (this.read('version') !== 1) required('password');

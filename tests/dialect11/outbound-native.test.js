@@ -306,6 +306,14 @@ test('Orbit timeout bound matches the core and AnyTLS retains uint32 timeout set
     assert.match(orbit.validationErrors.join(' '), /handshakeTimeout/);
     const anytls = new Outbound.NativeSettings('anytls', {...settings.anytls, handshakeTimeout: 301});
     assert.deepEqual(clean(anytls.validationErrors), []);
+    const fractional = new Outbound.NativeSettings('anytls', {...settings.anytls, idleSessionTimeout: 1.5});
+    assert.match(fractional.validationErrors.join(' '), /idleSessionTimeout/);
+    const huge = new Outbound.NativeSettings('anytls', {...settings.anytls, idleSessionCheckInterval: 99999999999});
+    assert.match(huge.validationErrors.join(' '), /idleSessionCheckInterval/);
+    const negative = new Outbound.NativeSettings('anytls', {...settings.anytls, minIdleSession: -1});
+    assert.match(negative.validationErrors.join(' '), /minIdleSession/);
+    const okIdle = new Outbound.NativeSettings('anytls', {...settings.anytls, idleSessionCheckInterval: 30, idleSessionTimeout: 300, minIdleSession: 5});
+    assert.deepEqual(clean(okIdle.validationErrors), []);
 });
 
 
