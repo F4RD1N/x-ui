@@ -451,6 +451,28 @@ func exportShadowTLSClient(settings, meta, client map[string]any, address string
 		}
 		proxy["settings"] = map[string]any{"servers": []any{map[string]any{"address": address, "port": port, "users": []any{map[string]any{"user": account["user"], "pass": account["pass"]}}}}}
 	case "shadowsocks":
+		// A single-user inner Shadowsocks inbound carries no per-user client
+		// list: ValidateServerConfig accepts a server-level method and PSK
+		// (ss2022.ServerConfig) or a server-level password (legacy AEAD), and
+		// every outer ShadowTLS client shares those server credentials. There
+		// is no inner account to select, so export them directly.
+		if rows, present := innerSettings["clients"].([]any); !present || len(rows) == 0 {
+			method := exportString(innerSettings["method"])
+			password := exportString(innerSettings["password"])
+			if password == "" {
+				return nil, errors.New("ShadowTLS single-user Shadowsocks export requires the inner server password")
+			}
+			server := map[string]any{"address": address, "port": port, "method": method, "password": password}
+			if strings.HasPrefix(method, "2022-") {
+				// ShadowTLS carries TCP. The current client core reads UoT only
+				// from the selected SS2022 server, not the surrounding settings.
+				server["uot"] = true
+				server["uotVersion"] = 2
+			}
+			exportCopy(server, innerSettings, "level")
+			proxy["settings"] = map[string]any{"servers": []any{server}}
+			break
+		}
 		account, err := exportSelectedClient(innerSettings, "clients", "email", exportString(client["email"]))
 		if err != nil {
 			return nil, err
