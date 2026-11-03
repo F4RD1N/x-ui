@@ -98,17 +98,19 @@ func validateInboundClient(p model.Protocol, settings string, c model.Client) er
 		// An inner SOCKS account is exported by its innerUsername regardless of
 		// the ShadowTLS version (v3 included), so require it for every version;
 		// otherwise a saved v3 SOCKS client cannot be exported.
-		if strings.EqualFold(s.Inner.Protocol, "socks") {
-			if c.InnerUsername == "" {
-				return fmt.Errorf("ShadowTLS SOCKS client requires innerUsername export binding")
-			}
-			if (c.TotalGB > 0 || c.LimitIP > 0) && c.InnerUsername != c.Email {
-				return fmt.Errorf("ShadowTLS SOCKS traffic and IP limits require innerUsername to match client email")
-			}
+		if strings.EqualFold(s.Inner.Protocol, "socks") && c.InnerUsername == "" {
+			return fmt.Errorf("ShadowTLS SOCKS client requires innerUsername export binding")
 		}
 		if s.Version == 1 || s.Version == 2 {
+			// In v1/v2 the inner SOCKS account is the accounting identity, so a
+			// per-client traffic or IP limit only works when it is the client.
+			if strings.EqualFold(s.Inner.Protocol, "socks") && (c.TotalGB > 0 || c.LimitIP > 0) && c.InnerUsername != c.Email {
+				return fmt.Errorf("ShadowTLS SOCKS traffic and IP limits require innerUsername to match client email")
+			}
 			return nil
 		}
+		// v3 accounts on the outer password, so the inner SOCKS identity may
+		// differ from the client and limits are applied on the outer account.
 		if c.Password == "" {
 			return fmt.Errorf("ShadowTLS v3 client password is required")
 		}
