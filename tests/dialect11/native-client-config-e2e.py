@@ -104,6 +104,29 @@ def settings_for_selected(panel, case):
     return users[1]
 
 
+def wait_native_listener(panel, case, timeout=30):
+    """Panel HTTP readiness does not imply its separately spawned core is ready."""
+    settings = case['settings']
+    datagram = case['protocol'] == 'dnstt' or (
+        case['protocol'] == 'openvpn' and settings.get('network', 'udp') == 'udp'
+    ) or settings.get('transport') in ('udp', 'quic')
+    tables = ('udp', 'udp6') if datagram else ('tcp', 'tcp6')
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        h.require(panel.p.poll() is None, 'isolated panel exited while waiting for its core')
+        for table in tables:
+            try:
+                rows = Path('/proc/net/' + table).read_text().splitlines()[1:]
+            except FileNotFoundError:
+                continue
+            for row in rows:
+                fields = row.split()
+                if int(fields[1].rsplit(':', 1)[1], 16) == case['port'] and (datagram or fields[3] == '0A'):
+                    return
+        time.sleep(.05)
+    raise AssertionError('native server listener did not become ready: ' + case['protocol'])
+
+
 def assert_selected_and_private(case, selected, config):
     d.assert_export(case, config)
     h.require(isinstance(config.get('routing'), dict), 'full config lacks routing')
@@ -215,6 +238,7 @@ def test_rejections(panel, cases):
 
 def exact_client_traffic(panel, client_core, case, path, work):
     expected_hash = file_hash(path)
+    wait_native_listener(panel, case)
     env = dict(os.environ, **{'xray.endpoint.mapping': 'off'})
     folder = work / 'traffic' / case['protocol']
     folder.mkdir(parents=True)
@@ -250,6 +274,7 @@ def exact_client_traffic(panel, client_core, case, path, work):
     finally:
         h.stop(p)
         panel.restart()
+        wait_native_listener(panel, case)
     h.require(file_hash(path) == expected_hash, 'test changed copied JSON')
 
 
