@@ -1,5 +1,16 @@
 {{define "component/aClientTable"}}
 <template slot="actions" slot-scope="text, client, index">
+  <a-tooltip v-if="record.toInbound().isNative">
+    <template slot="title">[[ nativeClientConfigUnavailable(record, client) || '{{ i18n "pages.client.jsonConfig.action" }}' ]]</template>
+    <span>
+      <a-button class="native-client-config-copy" type="link" size="small" :aria-label="'{{ i18n "pages.client.jsonConfig.action" }}'"
+        :disabled="!!nativeClientConfigBusy || !!nativeClientConfigUnavailable(record, client)"
+        :loading="nativeClientConfigBusy === nativeClientConfigKey(record.id, client)"
+        @click="copyNativeClientConfig(record.id, client)">
+        <a-icon type="copy" v-if="nativeClientConfigBusy !== nativeClientConfigKey(record.id, client)"></a-icon>
+      </a-button>
+    </span>
+  </a-tooltip>
   <a-tooltip>
     <template slot="title">{{ i18n "qrCode" }}</template>
     <a-icon :style="{ fontSize: '22px', marginInlineStart: '14px' }" class="normal-icon" type="qrcode" v-if="record.hasLink()" @click="showQrcode(record.id,client);"></a-icon>
@@ -144,6 +155,12 @@
   <a-dropdown :trigger="['click']">
     <a-icon @click="e => e.preventDefault()" type="ellipsis" :style="{ fontSize: '20px' }"></a-icon>
     <a-menu slot="overlay" :theme="themeSwitcher.currentTheme">
+      <a-menu-item v-if="record.toInbound().isNative" class="native-client-config-copy-menu"
+        :disabled="!!nativeClientConfigBusy || !!nativeClientConfigUnavailable(record, client)"
+        @click="copyNativeClientConfig(record.id, client)">
+        <a-icon :type="nativeClientConfigBusy === nativeClientConfigKey(record.id, client) ? 'loading' : 'copy'"></a-icon>
+        {{ i18n "pages.client.jsonConfig.action" }}
+      </a-menu-item>
       <a-menu-item v-if="record.hasLink()" @click="showQrcode(record.id,client);">
         <a-icon :style="{ fontSize: '14px' }" type="qrcode"></a-icon>
         {{ i18n "qrCode" }}

@@ -1,0 +1,43 @@
+{{define "modals/nativeClientJsonModal"}}
+<a-modal id="native-client-json-modal" :visible="nativeClientJsonModal.visible" :title="'{{ i18n "pages.client.jsonConfig.action" }}'"
+  :class="themeSwitcher.currentTheme" :closable="true" @cancel="nativeClientJsonModal.close()">
+  <a-alert type="warning" show-icon :message="'{{ i18n "pages.client.jsonConfig.fallback" }}'" :style="{ marginBottom: '12px' }"></a-alert>
+  <a-textarea class="native-client-json-content" :value="nativeClientJsonModal.content" readonly spellcheck="false" :auto-size="{ minRows: 10, maxRows: 22 }"></a-textarea>
+  <template slot="footer">
+    <a-button class="native-client-json-download" icon="download" @click="nativeClientJsonModal.download()">{{ i18n "download" }}</a-button>
+    <a-button class="native-client-json-copy" type="primary" icon="copy" :loading="nativeClientJsonModal.copying" @click="nativeClientJsonModal.copy()">{{ i18n "copy" }}</a-button>
+  </template>
+</a-modal>
+<script>
+  const nativeClientJsonModal = {
+    visible: false, content: '', filename: '', copying: false,
+    show(content, filename) {
+      this.content = content;
+      this.filename = filename;
+      this.visible = true;
+    },
+    close() {
+      this.visible = false;
+      this.content = '';
+      this.filename = '';
+    },
+    async copy() {
+      if (this.copying || !this.content) return;
+      const content = this.content;
+      this.copying = true;
+      try {
+        const copied = await NativeClipboard.copyText(content);
+        if (!this.visible || this.content !== content) return;
+        if (copied) {
+          app.$message.success('{{ i18n "copied" }}');
+          this.close();
+        } else app.$message.error('{{ i18n "pages.client.jsonConfig.clipboardBlocked" }}');
+      } finally { this.copying = false; }
+    },
+    download() {
+      if (this.content) FileManager.downloadTextFile(this.content, this.filename || 'client-config.json', {type: 'application/json'});
+    },
+  };
+  new Vue({delimiters: ['[[', ']]'], el: '#native-client-json-modal', data: {nativeClientJsonModal}});
+</script>
+{{end}}

@@ -309,6 +309,17 @@
 "renew" = "Auto Renew"
 "renewDesc" = "Auto-renewal after expiration. (0 = disable)(unit: day)"
 
+[pages.client.jsonConfig]
+"action" = "Copy full JSON config"
+"loading" = "Preparing full JSON config…"
+"unavailable" = "This inbound or client is disabled, expired, or out of traffic."
+"failed" = "Could not export this client configuration."
+"invalid" = "The server did not return a complete JSON configuration."
+"changed" = "The client configuration changed. Try again."
+"timeout" = "Configuration export timed out. Try again."
+"fallback" = "Automatic copy was blocked. Copy or download the JSON below."
+"clipboardBlocked" = "Copy was blocked. Select the JSON manually or download it."
+
 [pages.inbounds.periodicTrafficReset]
 "never" = "Never"
 "daily" = "Daily"

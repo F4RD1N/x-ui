@@ -757,6 +757,7 @@
   </a-layout>
 </a-layout>
 {{template "page/body_scripts" .}}
+<script src="{{ .base_path }}assets/js/util/native-clipboard.js?{{ .cur_ver }}"></script>
 <script
   src="{{ .base_path }}assets/qrcode/qrious2.min.js?{{ .cur_ver }}"></script>
 <script src="{{ .base_path }}assets/uri/URI.min.js?{{ .cur_ver }}"></script>
@@ -780,6 +781,7 @@
 {{template "modals/promptModal"}}
 {{template "modals/qrcodeModal"}}
 {{template "modals/textModal"}}
+{{template "modals/nativeClientJsonModal"}}
 {{template "modals/inboundInfoModal"}}
 {{template "modals/clientsModal"}}
 {{template "modals/clientsBulkModal"}}
@@ -916,6 +918,7 @@
       showAlert: false,
       ipLimitEnable: false,
       pageSize: 0,
+      nativeClientConfigBusy: '',
     },
     methods: {
       loading(spinning = true) {
@@ -1445,6 +1448,62 @@
           case Protocols.SHADOWSOCKS: return client.email;
           case Protocols.HYSTERIA: return client.auth;
           default: return client.id;
+        }
+      },
+      nativeClientConfigKey(inboundId, client) {
+        return JSON.stringify([inboundId, client?.email || '']);
+      },
+      nativeClientConfigUnavailable(dbInbound, client) {
+        if (!dbInbound || !client || !Inbound.NativeSettings.supports(dbInbound.protocol) || !client.email || dbInbound.enable === false || client.enable === false || !this.isClientEnabled(dbInbound, client.email) || this.isClientDepleted(dbInbound, client.email)) return '{{ i18n "pages.client.jsonConfig.unavailable" }}';
+        if ((client.expiryTime > 0 && client.expiryTime <= Date.now()) || (client.data?.expiresAt > 0 && client.data.expiresAt * 1000 <= Date.now())) return '{{ i18n "pages.client.jsonConfig.unavailable" }}';
+        return '';
+      },
+      async copyNativeClientConfig(inboundId, selectedClient) {
+        if (this.nativeClientConfigBusy) return false;
+        const dbInbound = this.dbInbounds.find(row => row.id === inboundId);
+        const email = selectedClient?.email;
+        const client = dbInbound && this.getInboundClients(dbInbound)?.find(account => account.email === email);
+        const unavailable = this.nativeClientConfigUnavailable(dbInbound, client);
+        if (unavailable) { this.$message.error(unavailable); return false; }
+        const settingsSnapshot = dbInbound.settings;
+        const streamSnapshot = dbInbound.streamSettings;
+        const key = this.nativeClientConfigKey(inboundId, client);
+        this.nativeClientConfigBusy = key;
+        nativeClientJsonModal.close();
+        const hideLoading = this.$message.loading('{{ i18n "pages.client.jsonConfig.loading" }}', 0);
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 30000);
+        try {
+          const prefix = typeof basePath === 'string' ? basePath : '/';
+          const response = await fetch(prefix.replace(/\/?$/, '/') + 'panel/api/inbounds/' + encodeURIComponent(inboundId) + '/clientConfig', {
+            method: 'POST', credentials: 'same-origin', cache: 'no-store', signal: controller.signal,
+            headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
+            body: JSON.stringify({email}),
+          });
+          if (!response.ok) throw new Error('{{ i18n "pages.client.jsonConfig.failed" }}');
+          const result = await response.json();
+          if (result?.success !== true) throw new Error(typeof result?.msg === 'string' && result.msg ? result.msg : '{{ i18n "pages.client.jsonConfig.failed" }}');
+          const config = result.obj?.config;
+          const validEndpoints = value => Array.isArray(value) && value.length > 0 && value.every(endpoint => endpoint && typeof endpoint === 'object' && !Array.isArray(endpoint) && typeof endpoint.protocol === 'string' && endpoint.protocol.length > 0);
+          if (!config || typeof config !== 'object' || Array.isArray(config) || !validEndpoints(config.inbounds) || !validEndpoints(config.outbounds)) throw new Error('{{ i18n "pages.client.jsonConfig.invalid" }}');
+          const current = this.dbInbounds.find(row => row.id === inboundId);
+          const currentClient = current && this.getInboundClients(current)?.find(account => account.email === email);
+          if (this.nativeClientConfigBusy !== key || this.nativeClientConfigUnavailable(current, currentClient) || current.settings !== settingsSnapshot || current.streamSettings !== streamSnapshot) throw new Error('{{ i18n "pages.client.jsonConfig.changed" }}');
+          const content = JSON.stringify(config, null, 2);
+          const filename = (typeof result.obj.filename === 'string' ? result.obj.filename.replace(/[\\/\u0000-\u001f\u007f]/g, '_').slice(0, 160) : '') || 'client-config.json';
+          if (await NativeClipboard.copyText(content)) {
+            this.$message.success('{{ i18n "copied" }}');
+          } else {
+            nativeClientJsonModal.show(content, filename.endsWith('.json') ? filename : filename + '.json');
+          }
+          return true;
+        } catch (error) {
+          this.$message.error(error.name === 'AbortError' ? '{{ i18n "pages.client.jsonConfig.timeout" }}' : error instanceof SyntaxError ? '{{ i18n "pages.client.jsonConfig.invalid" }}' : error.message || '{{ i18n "pages.client.jsonConfig.failed" }}');
+          return false;
+        } finally {
+          clearTimeout(timeout);
+          if (typeof hideLoading === 'function') hideLoading();
+          if (this.nativeClientConfigBusy === key) this.nativeClientConfigBusy = '';
         }
       },
       checkFallback(dbInbound) {
