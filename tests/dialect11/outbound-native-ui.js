@@ -13,7 +13,7 @@ const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'd11-outbound-ui-'));
 const file = relative => pathToFileURL(path.join(root, relative)).href;
 const cleanTemplate = html => html.replace(/{{\s*(?:define|end)[^}]*}}/g, '').replace(/{{\s*i18n\s+"([^"]+)"\s*}}/g, '$1');
 const form = cleanTemplate(fs.readFileSync(path.join(root, 'web/html/form/outbound.html'), 'utf8'));
-const modal = cleanTemplate(fs.readFileSync(path.join(root, 'web/html/modals/xray_outbound_modal.html'), 'utf8').replace('{{template "form/outbound"}}', form));
+const modal = cleanTemplate(fs.readFileSync(process.env.OUTBOUND_MODAL_TEMPLATE || path.join(root, 'web/html/modals/xray_outbound_modal.html'), 'utf8').replace('{{template "form/outbound"}}', form));
 const pageHTML = `<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="${file('web/assets/ant-design-vue/antd.min.css')}"><link rel="stylesheet" href="${file('web/assets/codemirror/codemirror.min.css')}"></head><body>
 <script src="${file('web/assets/vue/vue.min.js')}"></script>
 <script src="${file('web/assets/moment/moment.min.js')}"></script>
@@ -66,7 +66,14 @@ const fixtures = {
                 await page.evaluate(() => { outModal.cm.setValue(JSON.stringify(outModal.outbound.toJson(), null, 2)); outModal.toggleJson(false); });
                 assert.equal(await page.evaluate(() => outModal.isValid), true);
                 assert.deepEqual((await page.evaluate(() => outModal.outbound.toJson())).settings, exported.settings);
-                checks.push({layout, protocol, typedEdit: true, jsonRoundTrip: true});
+                // Use the actual Ant modal event, which does not preserve the
+                // receiver of an unbound nested-object method reference.
+                await page.evaluate(() => { window.submitted = []; outModal.confirm = value => window.submitted.push(value); });
+                await page.locator('.ant-modal-footer button.ant-btn-primary').click();
+                const submitted = await page.evaluate(() => window.submitted);
+                assert.equal(submitted.length, 1, protocol + ' actual modal OK submits exactly once; browser errors: ' + errors.join('; '));
+                assert.deepEqual(submitted[0], exported, protocol + ' actual modal OK retains exported settings');
+                checks.push({layout, protocol, typedEdit: true, jsonRoundTrip: true, actualOKClick: true});
             }
         }
         // Exercise conditional controls which are hidden by ordinary fixtures.
@@ -82,7 +89,11 @@ const fixtures = {
         await chainInput.fill('shadowtls-carrier'); await chainInput.press('Tab');
         assert.deepEqual(await page.evaluate(() => outModal.outbound.toJson().proxySettings), {tag: 'shadowtls-carrier', transportLayer: true});
         assert.equal(await page.evaluate(() => outModal.isValid), true);
-        checks.push({orbitBrowserAlias: 'retained', shadowtlsInnerChaining: 'edited'});
+        await page.evaluate(() => { window.submitted = []; outModal.confirm = value => window.submitted.push(value); });
+        await page.locator('.ant-modal-footer button.ant-btn-primary').click();
+        assert.equal(await page.evaluate(() => window.submitted.length), 1, 'legacy SOCKS actual modal OK submits exactly once');
+        assert.deepEqual(await page.evaluate(() => window.submitted[0].proxySettings), {tag: 'shadowtls-carrier', transportLayer: true});
+        checks.push({orbitBrowserAlias: 'retained', shadowtlsInnerChaining: 'edited', legacyActualOKClick: true});
         await page.evaluate(uuid => {outModal.show({outbound:{tag:'ss2022',protocol:'shadowsocks',settings:{servers:[{address:'127.0.0.1',port:443,method:'2022-blake3-aes-128-gcm',password:'MTIzNDU2Nzg5MDEyMzQ1Ng==:'+uuid}]}},isEdit:true});},uuid);
         const identityControl=page.locator('.ant-modal-body .ant-form-item').filter({has:page.locator('.ant-form-item-label',{hasText:'UUID identity key import compatibility'})}).first();
         await identityControl.locator('button[role="switch"]').click();
@@ -98,6 +109,7 @@ const fixtures = {
         checks.push({orbitQuicWarning:true});
         await page.evaluate(() => { outModal.toggleJson(true); outModal.cm.setValue('{broken'); outModal.check(); });
         assert.equal(await page.evaluate(() => outModal.isValid), false);
+        assert.equal(await page.locator('.ant-modal-footer button.ant-btn-primary').isDisabled(), true, 'invalid JSON disables actual modal OK');
         await page.evaluate(() => { window.submitted = 0; outModal.confirm = () => window.submitted++; outModal.ok(); });
         assert.equal(await page.evaluate(() => window.submitted), 0);
         for (const bad of ['null', '[]', '"invalid"']) {

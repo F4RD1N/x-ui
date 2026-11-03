@@ -143,11 +143,11 @@
                           <a-icon type="import"></a-icon>
                           {{ i18n "pages.inbounds.importInbound" }}
                         </a-menu-item>
-                        <a-menu-item key="export" v-if="dbInbound.hasLink()">
+                        <a-menu-item key="export">
                           <a-icon type="export"></a-icon>
                           {{ i18n "pages.inbounds.export" }}
                         </a-menu-item>
-                        <a-menu-item key="subs" v-if="dbInbound.toInbound().isNative ? subSettings.subJsonEnable : subSettings.enable">
+                        <a-menu-item key="subs" v-if="subSettings.enable || subSettings.subJsonEnable">
                           <a-icon type="export"></a-icon>
                           {{ i18n "pages.inbounds.export" }} - {{ i18n
                           "pages.settings.subSettings" }}
@@ -267,11 +267,11 @@
                               {{ i18n
                               "pages.inbounds.resetInboundClientTraffics"}}
                             </a-menu-item>
-                            <a-menu-item key="export">
+                            <a-menu-item key="export" v-if="dbInbound.hasLink()">
                               <a-icon type="export"></a-icon>
                               {{ i18n "pages.inbounds.export"}}
                             </a-menu-item>
-                            <a-menu-item key="subs" v-if="subSettings.enable">
+                            <a-menu-item key="subs" v-if="dbInbound.toInbound().isNative ? subSettings.subJsonEnable : subSettings.enable">
                               <a-icon type="export"></a-icon>
                               {{ i18n "pages.inbounds.export"}} - {{ i18n
                               "pages.settings.subSettings" }}
@@ -978,7 +978,7 @@
           to_inbound = dbInbound.toInbound()
           this.inbounds.push(to_inbound);
           this.dbInbounds.push(dbInbound);
-          if ([Protocols.VMESS, Protocols.VLESS, Protocols.TROJAN, Protocols.SHADOWSOCKS].includes(inbound.protocol)) {
+          if (to_inbound.isNative || [Protocols.VMESS, Protocols.VLESS, Protocols.TROJAN, Protocols.SHADOWSOCKS].includes(inbound.protocol)) {
             if (dbInbound.isSS && (!to_inbound.isSSMultiUser)) {
               continue;
             }
@@ -1051,7 +1051,7 @@
               const newInbound = new DBInbound(inbound);
               const inboundSettings = JSON.parse(inbound.settings);
               if (inboundSettings.hasOwnProperty('clients')) {
-                const searchedSettings = { "clients": [] };
+                const searchedSettings = inbound.toInbound().isNative ? { ...inboundSettings, clients: [] } : { "clients": [] };
                 inboundSettings.clients.forEach(client => {
                   if (ObjectUtil.deepSearch(client, key)) {
                     searchedSettings.clients.push(client);
@@ -1075,7 +1075,7 @@
             if (this.clientCount[inbound.id] && this.clientCount[inbound.id].hasOwnProperty(this.filterBy)) {
               const list = this.clientCount[inbound.id][this.filterBy];
               if (list.length > 0) {
-                const filteredSettings = { "clients": [] };
+                const filteredSettings = inbound.toInbound().isNative ? { ...inboundSettings, clients: [] } : { "clients": [] };
                 if (inboundSettings.clients) {
                   inboundSettings.clients.forEach(client => {
                     if (list.includes(client.email)) {

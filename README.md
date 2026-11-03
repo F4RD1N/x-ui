@@ -12,6 +12,8 @@ and portable backup restoration. See [the implementation and configuration
 guide](DIALECT11.md) for schemas, export requirements, and compatibility limits.
 The [release verification report](DIALECT11-VERIFICATION.md) records completed
 tests and the inherited SS2022 UDP dependency race that remains.
+Version `2.9.0-dialect.11.1` fixes full-page rendering, native client filters,
+outbound Save and GUI share links; see the [hotfix report](DIALECT11-HOTFIX.md).
 
 ## Dialects
 

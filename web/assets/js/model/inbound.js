@@ -1500,10 +1500,11 @@ class Inbound extends XrayCommonClass {
         this.sniffing = new Sniffing();
     }
 
-    genVmessLink(address = '', port = this.port, forceTls, remark = '', clientId, security) {
+    genVmessLink(address = '', port = this.port, forceTls, remark = '', clientId, security, rawUuidAuth = false) {
         if (this.protocol !== Protocols.VMESS) {
             return '';
         }
+        if (typeof rawUuidAuth !== 'boolean') throw new Error('rawUuidAuth must be boolean. Use a validated JSON subscription for this configuration.');
         const tls = forceTls == 'same' ? this.stream.security : forceTls;
         let obj = {
             v: '2',
@@ -1515,6 +1516,7 @@ class Inbound extends XrayCommonClass {
             net: this.stream.network,
             tls: tls,
         };
+        if (rawUuidAuth === true) obj.rawUuidAuth = true;
         const network = this.stream.network;
         if (network === 'tcp') {
             const tcp = this.stream.tcp;
@@ -1671,7 +1673,41 @@ class Inbound extends XrayCommonClass {
         return url.toString();
     }
 
-    genSSLink(address = '', port = this.port, forceTls, remark = '', clientPassword) {
+    // Match the backend's UUID import notation; the output is an ordinary
+    // padded base64 SS2022 identity key, never a replacement server PSK.
+    static normalizeSS2022IdentityKey(method, identity) {
+        const sizes = {
+            '2022-blake3-aes-128-gcm': 16,
+            '2022-blake3-aes-256-gcm': 32,
+            '2022-blake3-chacha20-poly1305': 32,
+        };
+        const size = Object.prototype.hasOwnProperty.call(sizes, method) ? sizes[method] : 0;
+        if (!size) throw new Error('UUID identity keys require an exact supported SS2022 method. Use the JSON subscription for this configuration.');
+        if (typeof identity !== 'string') return identity;
+        // google/uuid.Parse accepts 32 hex bytes, canonical UUIDs, URNs and
+        // 38-byte wrappers (only their middle 36 bytes are examined).
+        const bytes = new TextEncoder().encode(identity);
+        let text;
+        if (bytes.length === 32) {
+            text = identity;
+            if (!/^[0-9a-f]{32}$/i.test(text)) return identity;
+        } else {
+            let offset = 0;
+            if (bytes.length === 45) {
+                if (String.fromCharCode(...bytes.subarray(0, 9)).toLowerCase() !== 'urn:uuid:') return identity;
+                offset = 9;
+            } else if (bytes.length === 38) offset = 1;
+            else if (bytes.length !== 36) return identity;
+            text = String.fromCharCode(...bytes.subarray(offset, offset + 36));
+            if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text)) return identity;
+            text = text.replace(/-/g, '');
+        }
+        const raw = text.match(/../g).map(byte => String.fromCharCode(parseInt(byte, 16))).join('');
+        return btoa(size === 32 ? raw + raw : raw);
+    }
+
+    genSSLink(address = '', port = this.port, forceTls, remark = '', clientPassword, uuidIdentityKeys = false) {
+        if (typeof uuidIdentityKeys !== 'boolean') throw new Error('uuidIdentityKeys must be boolean. Use a validated JSON subscription for this configuration.');
         let settings = this.settings;
         const type = this.stream.network;
         const security = forceTls == 'same' ? this.stream.security : forceTls;
@@ -1737,7 +1773,9 @@ class Inbound extends XrayCommonClass {
 
         let password = new Array();
         if (this.isSS2022) password.push(settings.password);
-        if (this.isSSMultiUser) password.push(clientPassword);
+        if (this.isSSMultiUser) password.push(uuidIdentityKeys === true
+            ? Inbound.normalizeSS2022IdentityKey(settings.method, clientPassword)
+            : clientPassword);
 
         let link = `ss://${Base64.encode(`${settings.method}:${password.join(':')}`, true)}@${address}:${port}`;
         const url = new URL(link);
@@ -1748,11 +1786,13 @@ class Inbound extends XrayCommonClass {
         return url.toString();
     }
 
-    genTrojanLink(address = '', port = this.port, forceTls, remark = '', clientPassword) {
+    genTrojanLink(address = '', port = this.port, forceTls, remark = '', clientPassword, uuidHashPrefix = false) {
+        if (typeof uuidHashPrefix !== 'boolean') throw new Error('uuidHashPrefix must be boolean. Use a validated JSON subscription for this configuration.');
         const security = forceTls == 'same' ? this.stream.security : forceTls;
         const type = this.stream.network;
         const params = new Map();
         params.set("type", this.stream.network);
+        if (uuidHashPrefix === true) params.set("uuidHashPrefix", "true");
         switch (type) {
             case "tcp":
                 const tcp = this.stream.tcp;
@@ -1886,13 +1926,20 @@ class Inbound extends XrayCommonClass {
     genLink(address = '', port = this.port, forceTls = 'same', remark = '', client) {
         switch (this.protocol) {
             case Protocols.VMESS:
-                return this.genVmessLink(address, port, forceTls, remark, client.id, client.security);
+                return this.genVmessLink(address, port, forceTls, remark, client.id, client.security, client.rawUuidAuth);
             case Protocols.VLESS:
                 return this.genVLESSLink(address, port, forceTls, remark, client.id, client.flow);
-            case Protocols.SHADOWSOCKS:
-                return this.genSSLink(address, port, forceTls, remark, this.isSSMultiUser ? client.password : '');
+            case Protocols.SHADOWSOCKS: {
+                let uuidIdentityKeys = this.settings.uuidIdentityKeys === undefined ? false : this.settings.uuidIdentityKeys;
+                if (typeof uuidIdentityKeys !== 'boolean') throw new Error('uuidIdentityKeys must be boolean. Use a validated JSON subscription for this configuration.');
+                if (client && (client.uuidIdentityKeys === true ||
+                    (Object.prototype.hasOwnProperty.call(client, 'uuidIdentityKeys') && client._uuidIdentityKeysPresent !== false))) {
+                    uuidIdentityKeys = client.uuidIdentityKeys;
+                }
+                return this.genSSLink(address, port, forceTls, remark, this.isSSMultiUser ? client.password : '', uuidIdentityKeys);
+            }
             case Protocols.TROJAN:
-                return this.genTrojanLink(address, port, forceTls, remark, client.password);
+                return this.genTrojanLink(address, port, forceTls, remark, client.password, client.uuidHashPrefix);
             case Protocols.HYSTERIA:
                 return this.genHysteriaLink(address, port, remark, client.auth.length > 0 ? client.auth : this.stream.hysteria.auth);
             default: return '';

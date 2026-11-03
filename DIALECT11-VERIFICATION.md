@@ -1,5 +1,9 @@
 # Dialect11 release verification
 
+For the subsequent `2.9.0-dialect.11.1` UI correction, see
+[DIALECT11-HOTFIX.md](DIALECT11-HOTFIX.md). Panel hashes below describe `.11`;
+the core executables are unchanged in `.11.1`.
+
 Verification recorded on 2026-11-03 for `v2.9.0-dialect.11`. Native component, panel, current-client interoperability, Linux AMD64/ARM64 and AMD64 Docker checks passed within the scope below. One independently reproduced inherited SS2022 dependency race remains explicitly documented.
 
 ## Baseline and delivered scope
