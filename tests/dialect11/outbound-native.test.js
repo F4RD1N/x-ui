@@ -335,6 +335,46 @@ test('SS2022 UUID identity import is optional, explicit and preserves malformed 
     }
 });
 
+test('ShadowTLS inner SS2022 preserves canonical UoT version and explicit user level through edits', () => {
+    const input = {
+        tag: 'shadowtls-inner', protocol: 'shadowsocks',
+        settings: {servers: [{address: '127.0.0.1', port: 1443, method: '2022-blake3-aes-256-gcm', password: 'synthetic-ss2022', uot: true, uotVersion: 2, level: 0}]},
+        proxySettings: {tag: 'shadowtls-carrier', transportLayer: true},
+    };
+    const model = Outbound.fromJson(input);
+    assert.equal(model.settings.UoTVersion, 2);
+    assert.deepEqual(clean(model.toJson()).settings, input.settings);
+    assert.deepEqual(clean(model.toJson()).proxySettings, input.proxySettings);
+    model.settings.UoTVersion = 1;
+    model.settings.address = '127.0.0.2';
+    const changed = clean(model.toJson()).settings.servers[0];
+    assert.equal(changed.uotVersion, 1);
+    assert.equal(changed.level, 0);
+    assert.equal(changed.address, '127.0.0.2');
+    assert.equal(Object.hasOwn(changed, 'UoTVersion'), false);
+});
+
+test('Shadowsocks keeps legacy UoT spelling and never invents omitted level or version', () => {
+    const server = {address: '127.0.0.1', port: 1443, method: 'aes-256-gcm', password: 'synthetic-legacy'};
+    for (const extra of [{}, {UoTVersion: 0}, {UoTVersion: 2, level: 5}, {uotVersion: 0, level: 0}]) {
+        const input = {servers: [{...server, ...extra}]};
+        const model = Outbound.ShadowsocksSettings.fromJson(input);
+        assert.deepEqual(clean(model.toJson()), input);
+    }
+    const fresh = new Outbound.ShadowsocksSettings();
+    assert.equal(Object.hasOwn(clean(fresh.toJson()).servers[0], 'level'), false);
+    assert.equal(Object.hasOwn(clean(fresh.toJson()).servers[0], 'uotVersion'), false);
+    assert.equal(Object.hasOwn(clean(fresh.toJson()).servers[0], 'UoTVersion'), false);
+    fresh.UoTVersion = 2;
+    assert.equal(clean(fresh.toJson()).servers[0].UoTVersion, 2);
+});
+
+test('Shadowsocks canonical UoT spelling takes precedence when both imported spellings exist', () => {
+    const model = Outbound.ShadowsocksSettings.fromJson({servers: [{uotVersion: 0, UoTVersion: 2}]});
+    assert.equal(model.UoTVersion, 0);
+    assert.deepEqual(clean(model.toJson()), {servers: [{uotVersion: 0}]});
+});
+
 test('Orbit QUIC warning is explicit and TCP remains the default', () => {
     const defaults=new Outbound.NativeSettings('orbit');
     assert.equal(defaults.read('transport'),'tcp');
@@ -361,4 +401,71 @@ test('Orbit complete-link QUIC mode shows the same warning', () => {
     assert.match(model.help,/passive network observer/);
     model.write('link','core://192.0.2.1:8443@vck1_'+'A'.repeat(86)+'&transport=tcp');
     assert.equal(model.hasQuicWarning,false);
+});
+
+test('UDP DNS bootstrap is editable and valid without TLS-only fields', () => {
+    const model = new Outbound.NativeSettings('dnstt', {...settings.dnstt, resolvers: [{transport: 'udp', address: 'resolver.example:53', bootstrap: '127.0.0.1'}]});
+    assert.ok(model.resolverFields(0).some(field => field.path === 'resolvers.0.bootstrap'));
+    assert.equal(model.resolverFields(0).some(field => field.path === 'resolvers.0.serverName'), false);
+    assert.deepEqual(clean(model.validationErrors), []);
+    model.write('resolvers.0.serverName', 'resolver.example');
+    assert.match(model.validationErrors.join(';'), /TLS fields/);
+});
+
+test('OpenVPN mode switching migrates visible auth and MTU without hidden conflicts', () => {
+    const model = new Outbound.NativeSettings('openvpn', {ovpn: 'client', username: 'alice', password: 'secret', mtu: 1500, domainStrategy: 'ForceIPv4', clientProof: {keyId: 'test', key: 'ab'.repeat(32)}});
+    for (const mode of ['structured', 'base64', 'structured', 'text', 'structured']) {
+        model.changeInputMode(mode);
+        if (mode === 'structured') {
+            assert.equal(model.read('advanced.mtu'), 1500);
+            assert.equal(model.read('auth.user'), 'alice'); assert.equal(model.read('auth.pass'), 'secret');
+            assert.equal(model.read('username'), undefined); assert.equal(model.read('password'), undefined); assert.equal(model.read('mtu'), undefined);
+            model.write('server.address', '127.0.0.1');
+        } else {
+            assert.equal(model.read('mtu'), 1500); assert.equal(model.read('username'), 'alice'); assert.equal(model.read('password'), 'secret');
+        }
+        assert.equal(model.read('domainStrategy'), 'ForceIPv4'); assert.equal(model.read('clientProof.keyId'), 'test');
+    }
+    assert.deepEqual(clean(model.validationErrors), []);
+});
+
+test('OpenVPN rejects invalid enums, MTUs, mixed credentials and control keys before save', () => {
+    for (const [path, value] of [['server.network', 'bogus'], ['certificates.keyDirection', 2], ['domainStrategy', 'bogus'], ['advanced.mtu', -1], ['mtu', 1], ['crypto.dataCiphers', 'AES-256-GCM']]) {
+        const model = new Outbound.NativeSettings('openvpn', settings.openvpn);
+        model.write(path, value); assert.ok(model.validationErrors.length, path);
+    }
+    const model = new Outbound.NativeSettings('openvpn', settings.openvpn);
+    model.write('mtu', 1500); assert.match(model.validationErrors.join(';'), /must match/); model.write('mtu', undefined);
+    model.write('auth.user', 'alice'); model.write('username', 'bob'); assert.match(model.validationErrors.join(';'), /not both/); model.write('username', undefined);
+    model.write('certificates.tlsAuth', 'one'); model.write('certificates.tlsCrypt', 'two'); assert.match(model.validationErrors.join(';'), /only one TLS/);
+});
+
+test('Mieru outbound enforces UTF-8 byte lengths rather than JavaScript character lengths', () => {
+    const model = new Outbound.NativeSettings('mieru', {...settings.mieru, uuidMetadataTrailer: false, username: 'ی'.repeat(128), password: '🔐'.repeat(1024)});
+    assert.deepEqual(clean(model.validationErrors), []);
+    model.write('username', 'ی'.repeat(129)); assert.match(model.validationErrors.join(';'), /UTF-8 byte length/);
+    model.write('username', 'valid'); model.write('password', '🔐'.repeat(1025)); assert.match(model.validationErrors.join(';'), /UTF-8 byte length/);
+});
+
+test('OpenVPN conversion keeps effective top-level overrides when structured defaults are empty', () => {
+    const model = new Outbound.NativeSettings('openvpn', {...settings.openvpn, server: {...settings.openvpn.server, network: 'TCP'}, auth: {user: '', pass: ''}, advanced: {...settings.openvpn.advanced, mtu: 0}, username: 'alice', password: 'secret', mtu: 1500});
+    assert.deepEqual(clean(model.validationErrors), []);
+    model.changeInputMode('text');
+    assert.equal(model.read('username'), 'alice'); assert.equal(model.read('password'), 'secret'); assert.equal(model.read('mtu'), 1500);
+});
+
+test('OpenVPN imported aliases and case variants accepted by the core round-trip unchanged', () => {
+    for (const network of ['tcp-client', 'tcp4-client', 'tcp6-client', 'TCP-CLIENT', 'TCP4-CLIENT', 'TCP6-CLIENT']) {
+        const input = {...clean(settings.openvpn), server: {...settings.openvpn.server, network}, advanced: {...settings.openvpn.advanced, remoteCertTls: 'SERVER'}};
+        const model = new Outbound.NativeSettings('openvpn', input);
+        assert.deepEqual(clean(model.validationErrors), [], network);
+        assert.deepEqual(clean(model.toJson()), input, network + ' preserves imported values');
+        const dropdown = model.fields.find(field => field.path === 'server.network');
+        assert.deepEqual(clean(dropdown.options), ['udp', 'tcp', 'udp4', 'udp6', 'tcp4', 'tcp6']);
+    }
+    for (const [path, value] of [['server.network', 'udp-client'], ['server.network', 'tcp7-client'], ['server.network', ' tcp-client'], ['advanced.remoteCertTls', 'CLIENT'], ['advanced.remoteCertTls', ' SERVER']]) {
+        const model = new Outbound.NativeSettings('openvpn', settings.openvpn);
+        model.write(path, value);
+        assert.ok(model.validationErrors.length, path + ' invalid boundary ' + value);
+    }
 });

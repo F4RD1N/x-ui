@@ -76,7 +76,10 @@ type Handler struct {
 	conf          *Config
 	policyManager policy.Manager
 	dns           dns.Client
-	now           func() time.Time // the back-off's clock; tests replace it
+	// Explicit transport families use system bootstrap DNS, independently of
+	// application DNS routes that may themselves depend on this tunnel.
+	transportResolver transportIPResolver
+	now               func() time.Time // the back-off's clock; tests replace it
 
 	mu       sync.Mutex
 	tun      *tunnel // the current tunnel, possibly dead
@@ -407,7 +410,12 @@ func (h *Handler) dialFunc(base context.Context, dialer internet.Dialer) client.
 		}
 		done := make(chan result, 1)
 		go func() {
-			c, err := dialer.Dial(transportContext(base, dest), dest)
+			target, err := h.transportFamily(ctx, network, dest)
+			if err != nil {
+				done <- result{nil, err}
+				return
+			}
+			c, err := dialer.Dial(transportContext(base, target), target)
 			if err != nil {
 				done <- result{nil, err}
 				return
@@ -441,10 +449,9 @@ func (h *Handler) dialFunc(base context.Context, dialer internet.Dialer) client.
 }
 
 // transportDestination turns a client.DialFunc network and address into the
-// destination handed to Xray's dialer. A host name stays a name: the dialer
-// resolves it (sockopt domainStrategy, the system resolver, Android's
-// protected resolver), so a "4"/"6" suffix on the network does not restrict
-// the family of a name.
+// destination handed to Xray's dialer. Unsuffixed transports keep hostnames
+// for the dialer's usual resolution. dialFunc resolves an explicit "4"/"6"
+// family before dialing because xnet.Destination itself has no family selector.
 func transportDestination(network, address string) (xnet.Destination, error) {
 	var n xnet.Network
 	switch network {

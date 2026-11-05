@@ -3,6 +3,7 @@ package tls_test
 import (
 	gotls "crypto/tls"
 	"crypto/x509"
+	"fmt"
 	"testing"
 	"time"
 
@@ -85,15 +86,13 @@ func BenchmarkCertificateIssuing(b *testing.B) {
 	}
 
 	tlsConfig := c.GetTLSConfig()
-	lenCerts := len(tlsConfig.Certificates)
-
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
+		// Issued certificates are cached privately; use a distinct identity
+		// instead of mutating a published crypto/tls.Config to force a miss.
 		_, _ = tlsConfig.GetCertificate(&gotls.ClientHelloInfo{
-			ServerName: "www.example.com",
+			ServerName: fmt.Sprintf("host-%d.example.com", i),
 		})
-		delete(tlsConfig.NameToCertificate, "www.example.com")
-		tlsConfig.Certificates = tlsConfig.Certificates[:lenCerts]
 	}
 }

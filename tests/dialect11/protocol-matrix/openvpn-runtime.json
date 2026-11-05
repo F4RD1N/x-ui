@@ -1,0 +1,750 @@
+[
+  {
+    "name": "openvpn-tcp-aes-128-gcm",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "AES-128-GCM"
+        ]
+      }
+    }
+  },
+  {
+    "name": "openvpn-tcp-aes-192-gcm",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "AES-192-GCM"
+        ]
+      }
+    }
+  },
+  {
+    "name": "openvpn-tcp-aes-256-gcm",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "AES-256-GCM"
+        ]
+      }
+    }
+  },
+  {
+    "name": "openvpn-tcp-chacha20-poly1305",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "CHACHA20-POLY1305"
+        ]
+      }
+    }
+  },
+  {
+    "name": "openvpn-tcp-aes-128-cbc",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "AES-128-CBC"
+        ]
+      }
+    }
+  },
+  {
+    "name": "openvpn-tcp-aes-192-cbc",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "AES-192-CBC"
+        ]
+      }
+    }
+  },
+  {
+    "name": "openvpn-tcp-aes-256-cbc",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "AES-256-CBC"
+        ]
+      }
+    }
+  },
+  {
+    "name": "openvpn-tcp-bf-cbc",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "BF-CBC"
+        ]
+      }
+    }
+  },
+  {
+    "name": "openvpn-tcp-tlscrypt",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "tlsControl": "tlsCrypt"
+  },
+  {
+    "name": "openvpn-tcp-tlscryptv2",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "tlsControl": "tlsCryptV2"
+  },
+  {
+    "name": "openvpn-tcp-tlsauth-dir-none",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "tlsControl": "tlsAuth",
+    "tlsAuthDirection": null
+  },
+  {
+    "name": "openvpn-tcp-tlsauth-dir-0",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "tlsControl": "tlsAuth",
+    "tlsAuthDirection": 0
+  },
+  {
+    "name": "openvpn-tcp-tlsauth-dir-1",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "tlsControl": "tlsAuth",
+    "tlsAuthDirection": 1
+  },
+  {
+    "name": "openvpn-tcp-tlsauth-cbc-md5",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "tlsControl": "tlsAuth",
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "AES-256-CBC"
+        ],
+        "authHash": "MD5"
+      }
+    }
+  },
+  {
+    "name": "openvpn-tcp-tlsauth-cbc-sha1",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "tlsControl": "tlsAuth",
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "AES-256-CBC"
+        ],
+        "authHash": "SHA1"
+      }
+    }
+  },
+  {
+    "name": "openvpn-tcp-tlsauth-cbc-sha224",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "tlsControl": "tlsAuth",
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "AES-256-CBC"
+        ],
+        "authHash": "SHA224"
+      }
+    }
+  },
+  {
+    "name": "openvpn-tcp-tlsauth-cbc-sha256",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "tlsControl": "tlsAuth",
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "AES-256-CBC"
+        ],
+        "authHash": "SHA256"
+      }
+    }
+  },
+  {
+    "name": "openvpn-tcp-tlsauth-cbc-sha384",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "tlsControl": "tlsAuth",
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "AES-256-CBC"
+        ],
+        "authHash": "SHA384"
+      }
+    }
+  },
+  {
+    "name": "openvpn-tcp-tlsauth-cbc-sha512",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "tlsControl": "tlsAuth",
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "AES-256-CBC"
+        ],
+        "authHash": "SHA512"
+      }
+    }
+  },
+  {
+    "name": "openvpn-tcp-password",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "client": {
+      "username": "matrix-user",
+      "password": "matrix-local-password"
+    }
+  },
+  {
+    "name": "openvpn-tcp-password-proof",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp-proof",
+    "udp": true,
+    "settings": {
+      "network": "tcp"
+    },
+    "client": {
+      "username": "matrix-user",
+      "password": "matrix-local-password"
+    }
+  },
+  {
+    "name": "openvpn-tcp-rekey-live",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "settings": {
+      "renegotiationSeconds": 1
+    },
+    "durationSeconds": 6
+  },
+  {
+    "name": "openvpn-udp-aes-128-gcm",
+    "protocol": "openvpn",
+    "base": "openvpn-udp",
+    "udp": true,
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "AES-128-GCM"
+        ]
+      }
+    }
+  },
+  {
+    "name": "openvpn-udp-aes-192-gcm",
+    "protocol": "openvpn",
+    "base": "openvpn-udp",
+    "udp": true,
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "AES-192-GCM"
+        ]
+      }
+    }
+  },
+  {
+    "name": "openvpn-udp-aes-256-gcm",
+    "protocol": "openvpn",
+    "base": "openvpn-udp",
+    "udp": true,
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "AES-256-GCM"
+        ]
+      }
+    }
+  },
+  {
+    "name": "openvpn-udp-chacha20-poly1305",
+    "protocol": "openvpn",
+    "base": "openvpn-udp",
+    "udp": true,
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "CHACHA20-POLY1305"
+        ]
+      }
+    }
+  },
+  {
+    "name": "openvpn-udp-aes-128-cbc",
+    "protocol": "openvpn",
+    "base": "openvpn-udp",
+    "udp": true,
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "AES-128-CBC"
+        ]
+      }
+    }
+  },
+  {
+    "name": "openvpn-udp-aes-192-cbc",
+    "protocol": "openvpn",
+    "base": "openvpn-udp",
+    "udp": true,
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "AES-192-CBC"
+        ]
+      }
+    }
+  },
+  {
+    "name": "openvpn-udp-aes-256-cbc",
+    "protocol": "openvpn",
+    "base": "openvpn-udp",
+    "udp": true,
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "AES-256-CBC"
+        ]
+      }
+    }
+  },
+  {
+    "name": "openvpn-udp-bf-cbc",
+    "protocol": "openvpn",
+    "base": "openvpn-udp",
+    "udp": true,
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "BF-CBC"
+        ]
+      }
+    }
+  },
+  {
+    "name": "openvpn-udp-tlscrypt",
+    "protocol": "openvpn",
+    "base": "openvpn-udp",
+    "udp": true,
+    "tlsControl": "tlsCrypt"
+  },
+  {
+    "name": "openvpn-udp-tlscryptv2",
+    "protocol": "openvpn",
+    "base": "openvpn-udp",
+    "udp": true,
+    "tlsControl": "tlsCryptV2"
+  },
+  {
+    "name": "openvpn-udp-tlsauth-dir-none",
+    "protocol": "openvpn",
+    "base": "openvpn-udp",
+    "udp": true,
+    "tlsControl": "tlsAuth",
+    "tlsAuthDirection": null
+  },
+  {
+    "name": "openvpn-udp-tlsauth-dir-0",
+    "protocol": "openvpn",
+    "base": "openvpn-udp",
+    "udp": true,
+    "tlsControl": "tlsAuth",
+    "tlsAuthDirection": 0
+  },
+  {
+    "name": "openvpn-udp-tlsauth-dir-1",
+    "protocol": "openvpn",
+    "base": "openvpn-udp",
+    "udp": true,
+    "tlsControl": "tlsAuth",
+    "tlsAuthDirection": 1
+  },
+  {
+    "name": "openvpn-udp-tlsauth-cbc-md5",
+    "protocol": "openvpn",
+    "base": "openvpn-udp",
+    "udp": true,
+    "tlsControl": "tlsAuth",
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "AES-256-CBC"
+        ],
+        "authHash": "MD5"
+      }
+    }
+  },
+  {
+    "name": "openvpn-udp-tlsauth-cbc-sha1",
+    "protocol": "openvpn",
+    "base": "openvpn-udp",
+    "udp": true,
+    "tlsControl": "tlsAuth",
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "AES-256-CBC"
+        ],
+        "authHash": "SHA1"
+      }
+    }
+  },
+  {
+    "name": "openvpn-udp-tlsauth-cbc-sha224",
+    "protocol": "openvpn",
+    "base": "openvpn-udp",
+    "udp": true,
+    "tlsControl": "tlsAuth",
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "AES-256-CBC"
+        ],
+        "authHash": "SHA224"
+      }
+    }
+  },
+  {
+    "name": "openvpn-udp-tlsauth-cbc-sha256",
+    "protocol": "openvpn",
+    "base": "openvpn-udp",
+    "udp": true,
+    "tlsControl": "tlsAuth",
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "AES-256-CBC"
+        ],
+        "authHash": "SHA256"
+      }
+    }
+  },
+  {
+    "name": "openvpn-udp-tlsauth-cbc-sha384",
+    "protocol": "openvpn",
+    "base": "openvpn-udp",
+    "udp": true,
+    "tlsControl": "tlsAuth",
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "AES-256-CBC"
+        ],
+        "authHash": "SHA384"
+      }
+    }
+  },
+  {
+    "name": "openvpn-udp-tlsauth-cbc-sha512",
+    "protocol": "openvpn",
+    "base": "openvpn-udp",
+    "udp": true,
+    "tlsControl": "tlsAuth",
+    "settings": {
+      "crypto": {
+        "dataCiphers": [
+          "AES-256-CBC"
+        ],
+        "authHash": "SHA512"
+      }
+    }
+  },
+  {
+    "name": "openvpn-udp-password",
+    "protocol": "openvpn",
+    "base": "openvpn-udp",
+    "udp": true,
+    "client": {
+      "username": "matrix-user",
+      "password": "matrix-local-password"
+    }
+  },
+  {
+    "name": "openvpn-udp-password-proof",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp-proof",
+    "udp": true,
+    "settings": {
+      "network": "udp"
+    },
+    "client": {
+      "username": "matrix-user",
+      "password": "matrix-local-password"
+    }
+  },
+  {
+    "name": "openvpn-udp-rekey-live",
+    "protocol": "openvpn",
+    "base": "openvpn-udp",
+    "udp": true,
+    "settings": {
+      "renegotiationSeconds": 1
+    },
+    "durationSeconds": 6
+  },
+  {
+    "name": "openvpn-mtu-1280",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "settings": {
+      "tunnel": {
+        "mtu": 1280
+      }
+    }
+  },
+  {
+    "name": "openvpn-mtu-1500",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "settings": {
+      "tunnel": {
+        "mtu": 1500
+      }
+    }
+  },
+  {
+    "name": "openvpn-mtu-8000",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "settings": {
+      "tunnel": {
+        "mtu": 8000
+      }
+    }
+  },
+  {
+    "name": "openvpn-ipv4-only",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "settings": {
+      "tunnel": {
+        "ipv6": null
+      }
+    }
+  },
+  {
+    "name": "openvpn-alternate-subnets",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "settings": {
+      "tunnel": {
+        "ipv4": "10.123.0.0/16",
+        "ipv6": "fd12:3456:789a::/48"
+      }
+    }
+  },
+  {
+    "name": "openvpn-dns-explicit-empty",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "settings": {
+      "tunnel": {
+        "dns": []
+      }
+    }
+  },
+  {
+    "name": "openvpn-dns-v4-v6-push",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "settings": {
+      "tunnel": {
+        "dns": [
+          "127.0.0.1",
+          "::1"
+        ]
+      }
+    }
+  },
+  {
+    "name": "openvpn-limits-minimum",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "settings": {
+      "tunnel": {
+        "ipv4": "10.88.0.0/30"
+      },
+      "limits": {
+        "maxSessions": 1,
+        "maxSessionsPerIP": 1,
+        "maxFlowsPerSession": 1,
+        "handshakeSeconds": 1,
+        "idleSeconds": 10
+      }
+    },
+    "durationSeconds": 12
+  },
+  {
+    "name": "openvpn-limits-maximum",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "settings": {
+      "tunnel": {
+        "ipv4": "10.88.0.0/16"
+      },
+      "limits": {
+        "maxSessions": 4096,
+        "maxSessionsPerIP": 4096,
+        "maxFlowsPerSession": 4096,
+        "handshakeSeconds": 120,
+        "idleSeconds": 86400
+      },
+      "renegotiationSeconds": 86400
+    }
+  },
+  {
+    "name": "openvpn-defaults-zero",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "settings": {
+      "tunnel": {
+        "mtu": 0
+      },
+      "limits": {
+        "maxSessions": 0,
+        "maxSessionsPerIP": 0,
+        "maxFlowsPerSession": 0,
+        "handshakeSeconds": 0,
+        "idleSeconds": 0
+      },
+      "renegotiationSeconds": 0
+    }
+  },
+  {
+    "name": "openvpn-outbound-domain-forceip",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "outboundSettings": {
+      "domainStrategy": "ForceIP"
+    }
+  },
+  {
+    "name": "openvpn-outbound-domain-forceipv4",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "outboundSettings": {
+      "domainStrategy": "ForceIPv4"
+    }
+  },
+  {
+    "name": "openvpn-outbound-domain-forceipv4v6",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "outboundSettings": {
+      "domainStrategy": "ForceIPv4v6"
+    }
+  },
+  {
+    "name": "openvpn-outbound-domain-forceipv6v4",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "outboundSettings": {
+      "domainStrategy": "ForceIPv6v4"
+    }
+  },
+  {
+    "name": "openvpn-outbound-tcp4",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "outboundSettings": {
+      "server": {
+        "network": "tcp4"
+      }
+    }
+  },
+  {
+    "name": "openvpn-outbound-udp4",
+    "protocol": "openvpn",
+    "base": "openvpn-udp",
+    "udp": true,
+    "outboundSettings": {
+      "server": {
+        "network": "udp4"
+      }
+    }
+  },
+  {
+    "name": "openvpn-outbound-nobind-false",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "outboundSettings": {
+      "advanced": {
+        "nobind": false
+      }
+    }
+  },
+  {
+    "name": "openvpn-outbound-no-remote-eku",
+    "protocol": "openvpn",
+    "base": "openvpn-tcp",
+    "udp": true,
+    "outboundSettings": {
+      "advanced": {
+        "remoteCertTls": null
+      }
+    }
+  }
+]

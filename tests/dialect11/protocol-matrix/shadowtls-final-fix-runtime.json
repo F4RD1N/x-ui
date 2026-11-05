@@ -1,0 +1,168 @@
+{
+  "cases": [
+    {
+      "name": "shadowtls-v1-vless-tls12",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "version": 1
+      },
+      "coverTLS": "1.2"
+    },
+    {
+      "name": "shadowtls-v2-vless-tls12",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "version": 2,
+        "password": "matrix-v2-password"
+      },
+      "coverTLS": "1.2"
+    },
+    {
+      "name": "shadowtls-v2-vless-tls13",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "version": 2,
+        "password": "matrix-v2-password"
+      }
+    },
+    {
+      "name": "shadowtls-v3-vless-strict",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3"
+    },
+    {
+      "name": "shadowtls-v3-vless-nonstrict-tls12",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "strict": false
+      },
+      "coverTLS": "1.2"
+    },
+    {
+      "name": "shadowtls-v3-vless-custom",
+      "protocol": "shadowtls",
+      "base": "shadowtls-custom"
+    },
+    {
+      "name": "shadowtls-v3-vless-dialect120",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "inner": {
+          "settings": {
+            "dialects": [
+              120
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "shadowtls-v3-socks",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "version": 3,
+        "password": null,
+        "inner": {
+          "protocol": "socks",
+          "settings": {
+            "clients": null,
+            "decryption": null,
+            "auth": "password",
+            "accounts": [
+              {
+                "user": "matrix-socks",
+                "pass": "matrix-inner-password"
+              }
+            ],
+            "udp": false
+          }
+        }
+      },
+      "client": {
+        "innerUsername": "matrix-socks"
+      },
+      "coverTLS": "any",
+      "udp": false
+    },
+    {
+      "name": "shadowtls-2022-blake3-aes-256-gcm-multi",
+      "protocol": "shadowtls",
+      "base": "shadowtls-ss2022",
+      "settings": {
+        "inner": {
+          "settings": {
+            "method": "2022-blake3-aes-256-gcm",
+            "password": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws=",
+            "clients": [
+              {
+                "password": "DAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAw="
+              },
+              {
+                "password": "DQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0="
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "shadowtls-2022-blake3-chacha20-poly1305-single",
+      "protocol": "shadowtls",
+      "base": "shadowtls-ss2022",
+      "settings": {
+        "inner": {
+          "settings": {
+            "method": "2022-blake3-chacha20-poly1305",
+            "password": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws=",
+            "clients": null
+          }
+        }
+      }
+    },
+    {
+      "name": "shadowtls-fingerprint-360-v3-tls12",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "version": 3,
+        "strict": false,
+        "clientExport": {
+          "fingerprint": "360"
+        }
+      },
+      "coverTLS": "1.2",
+      "outboundOnly": true,
+      "clientSkipReason": "Main client is unchanged and retains TLS fingerprint/record parsing defects; this rerun verifies the bundled server outbound fix."
+    },
+    {
+      "name": "shadowtls-server-outbound-randomized",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "randomized"
+        }
+      },
+      "outboundOnly": true,
+      "clientSkipReason": "Main client is unchanged and retains TLS fingerprint/record parsing defects; this rerun verifies the bundled server outbound fix."
+    },
+    {
+      "name": "shadowtls-server-outbound-randomizednoalpn",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "randomizednoalpn"
+        }
+      },
+      "outboundOnly": true,
+      "clientSkipReason": "Main client is unchanged and retains TLS fingerprint/record parsing defects; this rerun verifies the bundled server outbound fix."
+    }
+  ]
+}

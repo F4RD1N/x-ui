@@ -1,0 +1,589 @@
+{
+  "protocol": "shadowtls",
+  "network_scope": "isolated loopback namespace only",
+  "cases": [
+    {
+      "name": "shadowtls-v1-vless-tls12",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "version": 1
+      },
+      "coverTLS": "1.2"
+    },
+    {
+      "name": "shadowtls-v2-vless-tls12",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "version": 2,
+        "password": "matrix-v2-password"
+      },
+      "coverTLS": "1.2"
+    },
+    {
+      "name": "shadowtls-v2-vless-tls13",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "version": 2,
+        "password": "matrix-v2-password"
+      }
+    },
+    {
+      "name": "shadowtls-v3-vless-strict",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3"
+    },
+    {
+      "name": "shadowtls-v3-vless-nonstrict",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "strict": false
+      }
+    },
+    {
+      "name": "shadowtls-v3-vless-nonstrict-tls12",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "strict": false
+      },
+      "coverTLS": "1.2"
+    },
+    {
+      "name": "shadowtls-v3-vless-custom",
+      "protocol": "shadowtls",
+      "base": "shadowtls-custom"
+    },
+    {
+      "name": "shadowtls-v3-vless-dialect120",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "inner": {
+          "settings": {
+            "dialects": [
+              120
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "shadowtls-v1-socks",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "version": 1,
+        "password": null,
+        "inner": {
+          "protocol": "socks",
+          "settings": {
+            "clients": null,
+            "decryption": null,
+            "auth": "password",
+            "accounts": [
+              {
+                "user": "matrix-socks",
+                "pass": "matrix-inner-password"
+              }
+            ],
+            "udp": false
+          }
+        }
+      },
+      "client": {
+        "innerUsername": "matrix-socks"
+      },
+      "coverTLS": "any",
+      "udp": false
+    },
+    {
+      "name": "shadowtls-v2-socks",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "version": 2,
+        "password": "matrix-v2-password",
+        "inner": {
+          "protocol": "socks",
+          "settings": {
+            "clients": null,
+            "decryption": null,
+            "auth": "password",
+            "accounts": [
+              {
+                "user": "matrix-socks",
+                "pass": "matrix-inner-password"
+              }
+            ],
+            "udp": false
+          }
+        }
+      },
+      "client": {
+        "innerUsername": "matrix-socks"
+      },
+      "coverTLS": "any",
+      "udp": false
+    },
+    {
+      "name": "shadowtls-v3-socks",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "version": 3,
+        "password": null,
+        "inner": {
+          "protocol": "socks",
+          "settings": {
+            "clients": null,
+            "decryption": null,
+            "auth": "password",
+            "accounts": [
+              {
+                "user": "matrix-socks",
+                "pass": "matrix-inner-password"
+              }
+            ],
+            "udp": false
+          }
+        }
+      },
+      "client": {
+        "innerUsername": "matrix-socks"
+      },
+      "coverTLS": "any",
+      "udp": false
+    },
+    {
+      "name": "shadowtls-aes-128-gcm-single",
+      "protocol": "shadowtls",
+      "base": "shadowtls-aead",
+      "settings": {
+        "inner": {
+          "settings": {
+            "method": "aes-128-gcm",
+            "password": "matrix-aead-server",
+            "clients": null
+          }
+        }
+      },
+      "udp": false
+    },
+    {
+      "name": "shadowtls-aes-128-gcm-multi",
+      "protocol": "shadowtls",
+      "base": "shadowtls-aead",
+      "settings": {
+        "inner": {
+          "settings": {
+            "method": "aes-128-gcm",
+            "password": "matrix-aead-server",
+            "clients": [
+              {
+                "method": "aes-128-gcm",
+                "password": "matrix-aead-first"
+              },
+              {
+                "method": "aes-128-gcm",
+                "password": "matrix-aead-second"
+              }
+            ]
+          }
+        }
+      },
+      "udp": false
+    },
+    {
+      "name": "shadowtls-aes-256-gcm-single",
+      "protocol": "shadowtls",
+      "base": "shadowtls-aead",
+      "settings": {
+        "inner": {
+          "settings": {
+            "method": "aes-256-gcm",
+            "password": "matrix-aead-server",
+            "clients": null
+          }
+        }
+      },
+      "udp": false
+    },
+    {
+      "name": "shadowtls-aes-256-gcm-multi",
+      "protocol": "shadowtls",
+      "base": "shadowtls-aead",
+      "settings": {
+        "inner": {
+          "settings": {
+            "method": "aes-256-gcm",
+            "password": "matrix-aead-server",
+            "clients": [
+              {
+                "method": "aes-256-gcm",
+                "password": "matrix-aead-first"
+              },
+              {
+                "method": "aes-256-gcm",
+                "password": "matrix-aead-second"
+              }
+            ]
+          }
+        }
+      },
+      "udp": false
+    },
+    {
+      "name": "shadowtls-chacha20-ietf-poly1305-single",
+      "protocol": "shadowtls",
+      "base": "shadowtls-aead",
+      "settings": {
+        "inner": {
+          "settings": {
+            "method": "chacha20-ietf-poly1305",
+            "password": "matrix-aead-server",
+            "clients": null
+          }
+        }
+      },
+      "udp": false
+    },
+    {
+      "name": "shadowtls-chacha20-ietf-poly1305-multi",
+      "protocol": "shadowtls",
+      "base": "shadowtls-aead",
+      "settings": {
+        "inner": {
+          "settings": {
+            "method": "chacha20-ietf-poly1305",
+            "password": "matrix-aead-server",
+            "clients": [
+              {
+                "method": "chacha20-ietf-poly1305",
+                "password": "matrix-aead-first"
+              },
+              {
+                "method": "chacha20-ietf-poly1305",
+                "password": "matrix-aead-second"
+              }
+            ]
+          }
+        }
+      },
+      "udp": false
+    },
+    {
+      "name": "shadowtls-xchacha20-ietf-poly1305-single",
+      "protocol": "shadowtls",
+      "base": "shadowtls-aead",
+      "settings": {
+        "inner": {
+          "settings": {
+            "method": "xchacha20-ietf-poly1305",
+            "password": "matrix-aead-server",
+            "clients": null
+          }
+        }
+      },
+      "udp": false
+    },
+    {
+      "name": "shadowtls-xchacha20-ietf-poly1305-multi",
+      "protocol": "shadowtls",
+      "base": "shadowtls-aead",
+      "settings": {
+        "inner": {
+          "settings": {
+            "method": "xchacha20-ietf-poly1305",
+            "password": "matrix-aead-server",
+            "clients": [
+              {
+                "method": "xchacha20-ietf-poly1305",
+                "password": "matrix-aead-first"
+              },
+              {
+                "method": "xchacha20-ietf-poly1305",
+                "password": "matrix-aead-second"
+              }
+            ]
+          }
+        }
+      },
+      "udp": false
+    },
+    {
+      "name": "shadowtls-2022-blake3-aes-128-gcm-single",
+      "protocol": "shadowtls",
+      "base": "shadowtls-ss2022",
+      "settings": {
+        "inner": {
+          "settings": {
+            "method": "2022-blake3-aes-128-gcm",
+            "password": "CwsLCwsLCwsLCwsLCwsLCw==",
+            "clients": null
+          }
+        }
+      }
+    },
+    {
+      "name": "shadowtls-2022-blake3-aes-128-gcm-multi",
+      "protocol": "shadowtls",
+      "base": "shadowtls-ss2022",
+      "settings": {
+        "inner": {
+          "settings": {
+            "method": "2022-blake3-aes-128-gcm",
+            "password": "CwsLCwsLCwsLCwsLCwsLCw==",
+            "clients": [
+              {
+                "password": "DAwMDAwMDAwMDAwMDAwMDA=="
+              },
+              {
+                "password": "DQ0NDQ0NDQ0NDQ0NDQ0NDQ=="
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "shadowtls-2022-blake3-aes-256-gcm-single",
+      "protocol": "shadowtls",
+      "base": "shadowtls-ss2022",
+      "settings": {
+        "inner": {
+          "settings": {
+            "method": "2022-blake3-aes-256-gcm",
+            "password": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws=",
+            "clients": null
+          }
+        }
+      }
+    },
+    {
+      "name": "shadowtls-2022-blake3-aes-256-gcm-multi",
+      "protocol": "shadowtls",
+      "base": "shadowtls-ss2022",
+      "settings": {
+        "inner": {
+          "settings": {
+            "method": "2022-blake3-aes-256-gcm",
+            "password": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws=",
+            "clients": [
+              {
+                "password": "DAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAw="
+              },
+              {
+                "password": "DQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0="
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "shadowtls-2022-blake3-chacha20-poly1305-single",
+      "protocol": "shadowtls",
+      "base": "shadowtls-ss2022",
+      "settings": {
+        "inner": {
+          "settings": {
+            "method": "2022-blake3-chacha20-poly1305",
+            "password": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws=",
+            "clients": null
+          }
+        }
+      }
+    },
+    {
+      "name": "shadowtls-fingerprint-chrome",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "chrome"
+        }
+      }
+    },
+    {
+      "name": "shadowtls-fingerprint-firefox",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "firefox"
+        }
+      }
+    },
+    {
+      "name": "shadowtls-fingerprint-safari",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "safari"
+        }
+      }
+    },
+    {
+      "name": "shadowtls-fingerprint-ios",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "ios"
+        }
+      }
+    },
+    {
+      "name": "shadowtls-fingerprint-android",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "android"
+        }
+      },
+      "expect": "deny",
+      "note": "TLS1.2-only fingerprint is incompatible with strictv3; explicit option preserved."
+    },
+    {
+      "name": "shadowtls-fingerprint-edge",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "edge"
+        }
+      }
+    },
+    {
+      "name": "shadowtls-fingerprint-360",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "360"
+        }
+      },
+      "expect": "deny",
+      "note": "TLS1.2-only fingerprint is incompatible with strictv3; explicit option preserved."
+    },
+    {
+      "name": "shadowtls-fingerprint-qq",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "qq"
+        }
+      }
+    },
+    {
+      "name": "shadowtls-fingerprint-random",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "random"
+        }
+      }
+    },
+    {
+      "name": "shadowtls-fingerprint-randomized",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "randomized"
+        }
+      }
+    },
+    {
+      "name": "shadowtls-fingerprint-randomizednoalpn",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "randomizednoalpn"
+        }
+      }
+    },
+    {
+      "name": "shadowtls-timeout-0",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "handshakeTimeout": 0
+      }
+    },
+    {
+      "name": "shadowtls-timeout-1",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "handshakeTimeout": 1
+      }
+    },
+    {
+      "name": "shadowtls-timeout-300",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "handshakeTimeout": 300
+      }
+    },
+    {
+      "name": "shadowtls-server-timeout301-reject",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "handshakeTimeout": 301
+      },
+      "expect": "reject"
+    },
+    {
+      "name": "shadowtls-v3-strict-tls12-deny",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "coverTLS": "1.2",
+      "expect": "deny"
+    },
+    {
+      "name": "shadowtls-wrong-sni-deny",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "clientExport": {
+          "serverName": "wrong-name.test"
+        }
+      },
+      "expect": "deny"
+    },
+    {
+      "name": "shadowtls-malformed-ca-deny",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "clientExport": {
+          "ca": "not-a-certificate"
+        }
+      },
+      "expect": "deny"
+    },
+    {
+      "name": "shadowtls-unknown-fingerprint-deny",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "unsupported-matrix-fingerprint"
+        }
+      },
+      "expect": "deny"
+    }
+  ]
+}

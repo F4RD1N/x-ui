@@ -1,0 +1,162 @@
+{
+  "cases": [
+    {
+      "name": "shadowtls-fingerprint-android-v2-tls12",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "version": 2,
+        "strict": false,
+        "clientExport": {
+          "fingerprint": "android"
+        },
+        "password": "matrix-legacy-fingerprint-password"
+      },
+      "coverTLS": "1.2"
+    },
+    {
+      "name": "shadowtls-fingerprint-android-v3-tls12",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "version": 3,
+        "strict": false,
+        "clientExport": {
+          "fingerprint": "android"
+        }
+      },
+      "coverTLS": "1.2"
+    },
+    {
+      "name": "shadowtls-fingerprint-360-v2-tls12",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "version": 2,
+        "strict": false,
+        "clientExport": {
+          "fingerprint": "360"
+        },
+        "password": "matrix-legacy-fingerprint-password"
+      },
+      "coverTLS": "1.2"
+    },
+    {
+      "name": "shadowtls-fingerprint-360-v3-tls12",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "version": 3,
+        "strict": false,
+        "clientExport": {
+          "fingerprint": "360"
+        }
+      },
+      "coverTLS": "1.2"
+    },
+    {
+      "name": "shadowtls-fingerprint-android-strict-expected-denial",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "android"
+        }
+      },
+      "expect": "deny"
+    },
+    {
+      "name": "shadowtls-fingerprint-360-strict-expected-denial",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "360"
+        }
+      },
+      "expect": "deny"
+    },
+    {
+      "name": "shadowtls-server-outbound-randomized",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "randomized"
+        }
+      },
+      "outboundOnly": true,
+      "clientSkipReason": "Immutable client retains the pinned uTLS randomized supported-group/keyshare mismatch; this case verifies bundled server outbound normalization only."
+    },
+    {
+      "name": "shadowtls-server-outbound-randomizednoalpn",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "randomizednoalpn"
+        }
+      },
+      "outboundOnly": true,
+      "clientSkipReason": "Immutable client retains the pinned uTLS randomized supported-group/keyshare mismatch; this case verifies bundled server outbound normalization only."
+    },
+    {
+      "name": "shadowtls-server-outbound-randomized-v2-nonstrict",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "version": 2,
+        "strict": false,
+        "clientExport": {
+          "fingerprint": "randomized"
+        },
+        "password": "matrix-randomized-v2-secret"
+      },
+      "outboundOnly": true,
+      "clientSkipReason": "This verifies per-connection randomized spec normalization in bundled-server v2/non-strict outbound only; immutable-client limitation remains."
+    },
+    {
+      "name": "shadowtls-server-outbound-randomized-v3-nonstrict",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "version": 3,
+        "strict": false,
+        "clientExport": {
+          "fingerprint": "randomized"
+        }
+      },
+      "outboundOnly": true,
+      "clientSkipReason": "This verifies per-connection randomized spec normalization in bundled-server v2/non-strict outbound only; immutable-client limitation remains."
+    },
+    {
+      "name": "shadowtls-server-outbound-randomizednoalpn-v2-nonstrict",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "version": 2,
+        "strict": false,
+        "clientExport": {
+          "fingerprint": "randomizednoalpn"
+        },
+        "password": "matrix-randomized-v2-secret"
+      },
+      "outboundOnly": true,
+      "clientSkipReason": "This verifies per-connection randomized spec normalization in bundled-server v2/non-strict outbound only; immutable-client limitation remains."
+    },
+    {
+      "name": "shadowtls-server-outbound-randomizednoalpn-v3-nonstrict",
+      "protocol": "shadowtls",
+      "base": "shadowtls-v3",
+      "settings": {
+        "version": 3,
+        "strict": false,
+        "clientExport": {
+          "fingerprint": "randomizednoalpn"
+        }
+      },
+      "outboundOnly": true,
+      "clientSkipReason": "This verifies per-connection randomized spec normalization in bundled-server v2/non-strict outbound only; immutable-client limitation remains."
+    }
+  ]
+}

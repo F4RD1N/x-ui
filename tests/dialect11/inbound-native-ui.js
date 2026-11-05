@@ -39,7 +39,7 @@ const fixtures = {
   mieru: {clients: [{username: uuid, password: 'synthetic-password', email: 'mieru'}], transport: 'tcp', handshakeTimeout: 10},
   dnstt: {domain: 'tunnel.example', privateKey: '11'.repeat(32), inner: {protocol: 'vless'}, clients: [{id: uuid, email: 'dnstt'}], mtu: 1232, handshakeTimeout: 30},
   openvpn: {network: 'tcp', certificates: {ca: pem, cert: pem, key: '-----BEGIN PRIVATE KEY-----\nSYNTHETIC\n-----END PRIVATE KEY-----'}, clients: [{commonName: 'synthetic-client', email: 'openvpn', certificate:pem,privateKey:'CLIENT KEY'}], limits: {handshakeSeconds: 15}},
-  shadowtls: {version: 3, strict: true, handshake: {address: 'tls.example', port: 443}, handshakeTimeout: 10, clients: [{password: uuid, email: 'shadowtls'}], inner: {protocol: 'socks', settings: {auth: 'password', accounts: [{user: 'synthetic', pass: 'synthetic'}], udp: false}}},
+  shadowtls: {version: 3, strict: true, handshake: {address: 'tls.example', port: 443}, handshakeTimeout: 10, clients: [{password: uuid, email: 'shadowtls', innerUsername:'synthetic'}], inner: {protocol: 'socks', settings: {auth: 'password', accounts: [{user: 'synthetic', pass: 'synthetic'}], udp: false}}},
   orbit: {transport: 'tcp', handshakeTimeout: 15, tls: {certificate: pem.split('\n'), key: ['-----BEGIN PRIVATE KEY-----', 'SYNTHETIC', '-----END PRIVATE KEY-----']}, clients: [{key: 'vck1_' + 'A'.repeat(86), email: 'orbit'}]},
 };
 (async () => {
@@ -48,6 +48,7 @@ const fixtures = {
   try {
     browser = await chromium.launch({headless:true, executablePath:process.env.CHROME || undefined,args:['--no-sandbox','--disable-dev-shm-usage']});
     const page = await browser.newPage();
+    await page.route(/^https?:\/\//, route => route.abort());
     page.on('pageerror', error => { errors.push(error.message); console.error(error.message); });
     page.on('console', message => {if (message.type() === 'error') errors.push(message.text());});
     await page.goto(pathToFileURL(fixtureFile).href);
@@ -57,7 +58,7 @@ const fixtures = {
       for (const [protocol,settings] of Object.entries(fixtures)) {
         await page.evaluate(({protocol,settings,theme}) => {
           themeSwitcher.currentTheme=theme;
-          const inbound=Inbound.fromJson({protocol,settings:{...settings,futureOption:{retain:true}},port:18080,streamSettings:protocol==='anytls'?{network:'tcp',security:'tls'}:undefined});
+          const inbound=Inbound.fromJson({protocol,settings:{...settings,futureOption:{retain:true}},port:18080,streamSettings:protocol==='anytls'?{network:'tcp',security:'tls',tlsSettings:{certificates:[{certificate:['-----BEGIN CERTIFICATE-----','SYNTHETIC','-----END CERTIFICATE-----'],key:['-----BEGIN PRIVATE KEY-----','SYNTHETIC','-----END PRIVATE KEY-----']}]}}:undefined});
           inModal.show({inbound,isEdit:true});
         }, {protocol,settings,theme});
         await page.waitForSelector('.ant-modal-body .ant-form');
@@ -145,6 +146,25 @@ const fixtures = {
     assert.equal(await page.evaluate(()=>inModal.inbound.clients[0].toJson().key),'vck1_'+'B'.repeat(86));
     assert.ok(await page.evaluate(()=>inModal.inbound.settings.generationError));
     checks.push({credentialGenerationButtons:5,jsonPayload:true,customBasePath:true,failurePreservesCredentials:true});
+    for (const method of ['2022-blake3-aes-128-gcm','2022-blake3-aes-256-gcm','2022-blake3-chacha20-poly1305','aes-128-gcm']) {
+      const settings={...fixtures.shadowtls,inner:{protocol:'shadowsocks',settings:{method,password:method.startsWith('2022-')?Buffer.alloc(method.includes('128')?16:32,7).toString('base64'):'shared-password'}}};
+      await page.evaluate(settings=>{inModal.show({inbound:Inbound.fromJson({protocol:'shadowtls',settings,port:18080}),isEdit:true});},settings);
+      for (const [label,value] of [['Client server name','tls.example'],['Client CA certificate',pem],['Client TLS fingerprint','chrome']]) {
+        const item=page.locator('.ant-modal-body .ant-form-item').filter({has:page.locator('.ant-form-item-label',{hasText:label})}).first();
+        const input=item.locator(label==='Client CA certificate'?'textarea':'input');
+        await input.fill(value);await input.press('Tab');
+      }
+      assert.deepEqual(await page.evaluate(()=>inModal.inbound.settings.validationErrors),[]);
+      await page.evaluate(()=>{window.submitted=0;inModal.confirm=()=>window.submitted++;inModal.ok();});
+      assert.equal(await page.evaluate(()=>window.submitted),1,method+' shared mode saves');
+      assert.equal(await page.evaluate(()=>Object.hasOwn(inModal.inbound.settings.toJson().inner.settings,'clients')),false);
+      assert.deepEqual(await page.evaluate(()=>inModal.inbound.settings.toJson().clientExport),{serverName:'tls.example',ca:pem,fingerprint:'chrome'});
+      checks.push({shadowtlsSingleUser:method,actualTrustControls:true,save:true});
+    }
+    await page.evaluate(settings=>{inModal.show({inbound:Inbound.fromJson({protocol:'openvpn',settings,port:18080}),isEdit:true});},fixtures.openvpn);
+    assert.equal(await page.locator('.ant-modal-body .ant-form-item').filter({has:page.locator('.ant-form-item-label',{hasText:'Client server name'})}).count(),0);
+    assert.equal(await page.locator('.ant-modal-body .ant-form-item').filter({has:page.locator('.ant-form-item-label',{hasText:'Client CA certificate'})}).count(),0);
+    checks.push({openvpnIgnoredExportFieldsHidden:true});
     await page.evaluate(() => {inModal.inbound.settings.advancedJSON='{broken';window.submitted=0;inModal.confirm=()=>window.submitted++;inModal.ok();});
     assert.equal(await page.evaluate(() => window.submitted),0);
     assert.ok((await page.evaluate(() => inModal.inbound.settings.validationErrors)).length);

@@ -1,0 +1,64 @@
+{
+  "cases": [
+    {
+      "name": "openvpn-tcp4-localhost-forced-family",
+      "protocol": "openvpn",
+      "listen": "127.0.0.1",
+      "settings": {
+        "network": "tcp"
+      },
+      "outboundSettings": {
+        "server": {
+          "network": "tcp4",
+          "address": "localhost"
+        },
+        "domainStrategy": "ForceIPv4"
+      }
+    },
+    {
+      "name": "openvpn-tcp6-localhost-forced-family",
+      "protocol": "openvpn",
+      "listen": "::1",
+      "settings": {
+        "network": "tcp"
+      },
+      "outboundSettings": {
+        "server": {
+          "network": "tcp6",
+          "address": "localhost"
+        },
+        "domainStrategy": "ForceIPv6"
+      }
+    },
+    {
+      "name": "openvpn-udp4-localhost-forced-family",
+      "protocol": "openvpn",
+      "listen": "127.0.0.1",
+      "settings": {
+        "network": "udp"
+      },
+      "outboundSettings": {
+        "server": {
+          "network": "udp4",
+          "address": "localhost"
+        },
+        "domainStrategy": "ForceIPv4"
+      }
+    },
+    {
+      "name": "openvpn-udp6-localhost-forced-family",
+      "protocol": "openvpn",
+      "listen": "::1",
+      "settings": {
+        "network": "udp"
+      },
+      "outboundSettings": {
+        "server": {
+          "network": "udp6",
+          "address": "localhost"
+        },
+        "domainStrategy": "ForceIPv6"
+      }
+    }
+  ]
+}

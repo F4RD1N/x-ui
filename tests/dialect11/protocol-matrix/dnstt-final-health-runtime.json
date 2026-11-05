@@ -1,0 +1,85 @@
+{
+  "cases": [
+    {
+      "name": "dnstt-extra-multiple-resolvers-udp",
+      "protocol": "dnstt",
+      "base": "generated",
+      "dnsResolver": {
+        "transport": "udp",
+        "hostname": true,
+        "unavailableFirst": true
+      },
+      "transferBytes": 32768,
+      "transferTimeoutSeconds": 90,
+      "outboundOnly": true,
+      "clientSkipReason": "Unchanged main client retains unhealthy-resolver starvation; this verifies the isolated bundled server outbound health scheduler."
+    },
+    {
+      "name": "dnstt-extra-multiple-resolvers-dot",
+      "protocol": "dnstt",
+      "base": "generated",
+      "dnsResolver": {
+        "transport": "dot",
+        "hostname": true,
+        "unavailableFirst": true
+      },
+      "transferBytes": 32768,
+      "transferTimeoutSeconds": 90,
+      "outboundOnly": true,
+      "clientSkipReason": "Unchanged main client retains unhealthy-resolver starvation; this verifies the isolated bundled server outbound health scheduler."
+    },
+    {
+      "name": "dnstt-extra-multiple-resolvers-doh",
+      "protocol": "dnstt",
+      "base": "generated",
+      "dnsResolver": {
+        "transport": "doh",
+        "hostname": true,
+        "unavailableFirst": true
+      },
+      "transferBytes": 32768,
+      "transferTimeoutSeconds": 90,
+      "outboundOnly": true,
+      "clientSkipReason": "Unchanged main client retains unhealthy-resolver starvation; this verifies the isolated bundled server outbound health scheduler."
+    },
+    {
+      "name": "dnstt-vless-dot-standard",
+      "protocol": "dnstt",
+      "base": "dnstt-vless",
+      "udp": true,
+      "dnsResolver": {
+        "transport": "dot",
+        "hostname": true,
+        "fingerprint": ""
+      }
+    },
+    {
+      "name": "dnstt-vless-doh-standard",
+      "protocol": "dnstt",
+      "base": "dnstt-vless",
+      "udp": true,
+      "dnsResolver": {
+        "transport": "doh",
+        "hostname": true,
+        "fingerprint": ""
+      }
+    },
+    {
+      "name": "dnstt-socks-doh-standard",
+      "protocol": "dnstt",
+      "base": "dnstt-socks",
+      "udp": false,
+      "dnsResolver": {
+        "transport": "doh",
+        "hostname": true,
+        "fingerprint": ""
+      }
+    },
+    {
+      "name": "dnstt-vless-generated",
+      "protocol": "dnstt",
+      "base": "generated",
+      "udp": true
+    }
+  ]
+}

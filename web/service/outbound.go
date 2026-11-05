@@ -126,8 +126,9 @@ type TestOutboundResult struct {
 }
 
 // TestOutbound tests an outbound by creating a temporary xray instance and measuring response time.
-// allOutboundsJSON must be a JSON array of all outbounds; they are copied into the test config unchanged.
-// Only the test inbound and a route rule (to the tested outbound tag) are added.
+// allOutboundsJSON supplies dependencies, while outboundJSON is the selected
+// outbound's current configuration. ShadowTLS carriers are tested through their
+// associated inner proxy, since a carrier alone does not encode a destination.
 func (s *OutboundService) TestOutbound(outboundJSON string, testURL string, allOutboundsJSON string) (*TestOutboundResult, error) {
 	if testURL == "" {
 		testURL = "https://www.google.com/generate_204"
@@ -174,8 +175,9 @@ func (s *OutboundService) TestOutbound(outboundJSON string, testURL string, allO
 			}, nil
 		}
 	}
-	if len(allOutbounds) == 0 {
-		allOutbounds = []any{testOutbound}
+	outboundTag, allOutbounds, err := prepareOutboundTest(testOutbound, allOutbounds)
+	if err != nil {
+		return &TestOutboundResult{Success: false, Error: err.Error()}, nil
 	}
 
 	// Find an available port for test inbound
@@ -254,6 +256,60 @@ func (s *OutboundService) TestOutbound(outboundJSON string, testURL string, allO
 		Delay:      delay,
 		StatusCode: statusCode,
 	}, nil
+}
+
+// prepareOutboundTest keeps the selected configuration authoritative even when
+// the caller's dependency list still contains an older copy of that outbound.
+func prepareOutboundTest(selected map[string]any, dependencies []any) (string, []any, error) {
+	tag, _ := selected["tag"].(string)
+	outbounds := append([]any(nil), dependencies...)
+	found := false
+	for i, value := range outbounds {
+		outbound, ok := value.(map[string]any)
+		if !ok || outbound["tag"] != tag {
+			continue
+		}
+		if found {
+			return "", nil, fmt.Errorf("Duplicate outbound tag %q", tag)
+		}
+		outbounds[i] = selected
+		found = true
+	}
+	if !found {
+		outbounds = append(outbounds, selected)
+	}
+	if selected["protocol"] != "shadowtls" {
+		return tag, outbounds, nil
+	}
+
+	innerTag := ""
+	for _, value := range outbounds {
+		outbound, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		chain, _ := outbound["proxySettings"].(map[string]any)
+		if chain["tag"] != tag || chain["transportLayer"] != true {
+			continue
+		}
+		switch outbound["protocol"] {
+		case "vless", "socks", "shadowsocks":
+		default:
+			continue
+		}
+		candidate, _ := outbound["tag"].(string)
+		if candidate == "" || candidate == tag {
+			continue
+		}
+		if innerTag != "" {
+			return "", nil, fmt.Errorf("ShadowTLS carrier has multiple inner outbounds; test the intended inner outbound instead")
+		}
+		innerTag = candidate
+	}
+	if innerTag == "" {
+		return "", nil, fmt.Errorf("ShadowTLS carrier requires a VLESS, SOCKS, or Shadowsocks inner outbound with transportLayer chaining")
+	}
+	return innerTag, outbounds, nil
 }
 
 // createTestConfig creates a test config by copying all outbounds unchanged and adding
@@ -356,6 +412,14 @@ func (s *OutboundService) testConnection(proxyPort int, testURL string) (int64, 
 			DisableCompression: true,
 		},
 	}
+	return measureOutboundHTTP(client, testURL)
+}
+
+// measureOutboundHTTP measures response-header latency after a warmup. Any HTTP
+// status proves the destination responded, but an incomplete response body is a
+// transport failure and must not be presented as a successful test.
+func measureOutboundHTTP(client *http.Client, testURL string) (int64, int, error) {
+	defer client.CloseIdleConnections()
 
 	// Warmup request: establishes SOCKS/TLS connection, DNS, and TCP to the target.
 	// This mirrors real-world usage where connections are reused.
@@ -363,8 +427,11 @@ func (s *OutboundService) testConnection(proxyPort int, testURL string) (int64, 
 	if err != nil {
 		return 0, 0, common.NewErrorf("Request failed: %v", err)
 	}
-	io.Copy(io.Discard, warmupResp.Body)
+	_, err = io.Copy(io.Discard, warmupResp.Body)
 	warmupResp.Body.Close()
+	if err != nil {
+		return 0, warmupResp.StatusCode, fmt.Errorf("Warmup response failed: %w", err)
+	}
 
 	// Measure the actual request on the warm connection
 	startTime := time.Now()
@@ -374,8 +441,11 @@ func (s *OutboundService) testConnection(proxyPort int, testURL string) (int64, 
 	if err != nil {
 		return 0, 0, common.NewErrorf("Request failed: %v", err)
 	}
-	io.Copy(io.Discard, resp.Body)
+	_, err = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
+	if err != nil {
+		return 0, resp.StatusCode, fmt.Errorf("Response failed: %w", err)
+	}
 
 	return delay, resp.StatusCode, nil
 }

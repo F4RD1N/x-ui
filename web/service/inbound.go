@@ -624,6 +624,10 @@ func (s *InboundService) buildRuntimeInboundForAPI(tx *gorm.DB, inbound *model.I
 		return nil, err
 	}
 	runtimeInbound.Settings = settings
+	runtimeInbound.StreamSettings, err = coreInboundStreamSettings(runtimeInbound.Protocol, runtimeInbound.StreamSettings)
+	if err != nil {
+		return nil, err
+	}
 	return &runtimeInbound, nil
 }
 

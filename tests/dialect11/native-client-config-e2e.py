@@ -197,6 +197,12 @@ def disable_subscriptions(panel, cases):
     panel.p = h.launch([panel.panel_bin, 'run'], panel.root, panel.logs / 'panel.log', panel.env)
     h.require(h.wait_port(h.PANEL_PORT, 20), 'panel failed to restart with subscriptions disabled')
     panel.login()
+    # HTTP/login becomes ready before the asynchronous Xray startup completes.
+    # Wait for a real TCP protocol listener before capturing the child PID; an
+    # immediate /proc scan can otherwise kill a correctly starting test panel.
+    anytls = next((case for case in cases if case['protocol'] == 'anytls'), None)
+    h.require(anytls is not None and h.wait_port(anytls['port'], 20),
+              'server core listener failed to become ready after panel restart')
     with socket.socket() as probe:
         probe.settimeout(.3)
         h.require(probe.connect_ex(('127.0.0.1', h.SUB_PORT)) != 0, 'subscription listener still enabled')

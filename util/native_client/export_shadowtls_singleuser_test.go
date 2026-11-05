@@ -59,3 +59,51 @@ func TestShadowTLSSingleUserInnerSS2022ClientExports(t *testing.T) {
 		t.Fatal("empty inner proxy outbound")
 	}
 }
+
+func TestShadowTLSManagedInnerCannotExportSharedServerKey(t *testing.T) {
+	for _, clients := range []any{[]any{}, nil, "invalid"} {
+		settings := map[string]any{
+			"version":   float64(3),
+			"handshake": map[string]any{"address": "cover.example.test", "port": float64(443)},
+			"clients":   []any{map[string]any{"email": "only@example.test", "password": "outer-session-secret"}},
+			"inner": map[string]any{"protocol": "shadowsocks", "settings": map[string]any{
+				"method": "2022-blake3-aes-128-gcm", "password": "AAAAAAAAAAAAAAAAAAAAAA==", "clients": clients,
+			}},
+		}
+		raw, err := json.Marshal(settings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inbound := &model.Inbound{Protocol: model.ShadowTLS, Listen: "127.0.0.1", Port: 34591, Settings: string(raw)}
+		outs, err := ClientOutbounds(inbound, model.Client{Email: "only@example.test"}, "192.0.2.9")
+		if err == nil || outs != nil {
+			t.Fatalf("managed clients %#v must not export a shared server key", clients)
+		}
+	}
+}
+
+func TestShadowTLSLegacyEmptyClientsKeepSingleUserSemantics(t *testing.T) {
+	for _, clients := range []any{[]any{}, nil} {
+		settings := map[string]any{
+			"version":   float64(3),
+			"handshake": map[string]any{"address": "cover.example.test", "port": float64(443)},
+			"clients":   []any{map[string]any{"email": "only@example.test", "password": "outer-session-secret"}},
+			"inner": map[string]any{"protocol": "shadowsocks", "settings": map[string]any{
+				"method": "aes-128-gcm", "password": "shared-inner-secret", "clients": clients,
+			}},
+		}
+		raw, err := json.Marshal(settings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inbound := &model.Inbound{Protocol: model.ShadowTLS, Listen: "127.0.0.1", Port: 34591, Settings: string(raw)}
+		outs, err := ClientOutbounds(inbound, model.Client{Email: "only@example.test"}, "192.0.2.9")
+		if err != nil {
+			t.Fatal(err)
+		}
+		server := outs[0]["settings"].(map[string]any)["servers"].([]any)[0].(map[string]any)
+		if server["password"] != "shared-inner-secret" || server["uot"] != nil {
+			t.Fatalf("incorrect legacy single-user export: %#v", server)
+		}
+	}
+}

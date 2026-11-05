@@ -278,6 +278,10 @@ func portableCandidateConfig(filename string) (*xray.Config, error) {
 				return coreInboundProjectionError(string(inbound.Protocol), err)
 			}
 			inbound.Settings = settings
+			inbound.StreamSettings, err = coreInboundStreamSettings(inbound.Protocol, inbound.StreamSettings)
+			if err != nil {
+				return err
+			}
 			if strings.TrimSpace(inbound.StreamSettings) != "" {
 				var stream map[string]json.RawMessage
 				if json.Unmarshal([]byte(inbound.StreamSettings), &stream) != nil || stream == nil {

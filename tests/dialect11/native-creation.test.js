@@ -98,7 +98,7 @@ test('OpenVPN issues a client with exact CA/proof/wrapping request and keeps loc
     assert.deepEqual(plain(ctx.settings.data), before);
 });
 
-for (const variant of ['socks', 'vless', '2022-blake3-aes-128-gcm', '2022-blake3-aes-256-gcm', '2022-blake3-chacha20-poly1305', 'chacha20-ietf-poly1305']) test(`ShadowTLS adds matching ${variant} account without changing server or existing credentials`, async () => {
+for (const variant of ['socks', 'vless', '2022-blake3-aes-128-gcm', '2022-blake3-aes-256-gcm', 'chacha20-ietf-poly1305']) test(`ShadowTLS adds matching ${variant} account without changing server or existing credentials`, async () => {
     const data = base('shadowtls');
     if (variant === 'vless') data.inner = {protocol: 'vless', settings: {decryption: 'none', clients: [{email: 'existing', id: '11111111-2222-4333-8444-555555555555'}]}};
     else if (variant !== 'socks') data.inner = {protocol: 'shadowsocks', settings: {network: 'tcp', method: variant, password: 'existing-server-key', clients: [{email: 'existing', password: 'existing-inner', method: variant}]}};
@@ -229,4 +229,102 @@ test('changed credential or duplicate identity rejects binding synchronization a
     before = plain(ctx.settings.toJson());
     assert.throws(() => ctx.settings.syncGeneratedClientBindings(), /binding changed/);
     assert.deepEqual(plain(ctx.settings.toJson()), before);
+});
+
+for (const method of ['2022-blake3-aes-128-gcm', '2022-blake3-aes-256-gcm', '2022-blake3-chacha20-poly1305', 'aes-128-gcm', 'chacha20-ietf-poly1305']) test(`ShadowTLS v3 shared ${method} saves and adds only outer identities`, async () => {
+    const data = base('shadowtls');
+    data.inner = {protocol: 'shadowsocks', settings: {network: 'tcp', method, password: method.startsWith('2022-') ? Buffer.alloc(method.includes('128') ? 16 : 32, 7).toString('base64') : 'shared-inner-password'}};
+    const ctx = fixture('shadowtls', data);
+    assert.deepEqual(plain(ctx.settings.validationErrors), []);
+    ctx.settings.rememberClientBindings();
+    ctx.settings.clients[0].email = 'renamed-outer';
+    assert.equal(ctx.settings.syncGeneratedClientBindings(), true);
+    const client = await ctx.settings.addGeneratedClient();
+    assert.ok(client, ctx.settings.generationError);
+    assert.equal(ctx.settings.generatedClientInner(client), null);
+    assert.deepEqual(plain(ctx.settings.data.inner), data.inner);
+    assert.equal(Object.hasOwn(ctx.settings.data.inner.settings, 'clients'), false);
+    assert.deepEqual(plain(ctx.settings.validationErrors), []);
+});
+
+test('ShadowTLS refuses unsupported managed ChaCha without modifying existing settings', async () => {
+    const data = base('shadowtls');
+    data.inner = {protocol: 'shadowsocks', settings: {method: '2022-blake3-chacha20-poly1305', password: Buffer.alloc(32, 1).toString('base64'), clients: [{email: 'existing', password: Buffer.alloc(32, 2).toString('base64')}]}};
+    const ctx = fixture('shadowtls', data), before = plain(ctx.settings.toJson());
+    assert.match(ctx.settings.validationErrors.join(';'), /multi-user SS2022 requires an AES-GCM/);
+    assert.equal(await ctx.settings.addGeneratedClient(), null);
+    assert.deepEqual(plain(ctx.settings.toJson()), before);
+});
+
+test('ShadowTLS empty managed SS2022 list stays explicit and is never changed into shared credentials', async () => {
+    const data = base('shadowtls');
+    data.inner = {protocol: 'shadowsocks', settings: {method: '2022-blake3-aes-128-gcm', password: Buffer.alloc(16, 1).toString('base64'), clients: []}};
+    const ctx = fixture('shadowtls', data), before = plain(ctx.settings.toJson());
+    assert.equal(ctx.settings.syncGeneratedClientBindings(), true);
+    assert.equal(await ctx.settings.addGeneratedClient(), null);
+    assert.deepEqual(plain(ctx.settings.toJson()), before);
+    for (const malformed of [null, {}, [null]]) {
+        ctx.settings.data.inner.settings.clients = malformed;
+        assert.ok(ctx.settings.validationErrors.length);
+    }
+});
+
+test('ShadowTLS SS2022 validates key sizes and permits opted-in UUID identities', () => {
+    for (const [method, size] of [['2022-blake3-aes-128-gcm', 16], ['2022-blake3-aes-256-gcm', 32]]) {
+        const data = base('shadowtls');
+        data.inner = {protocol: 'shadowsocks', settings: {method, password: Buffer.alloc(size, 1).toString('base64'), clients: [{email: 'existing', password: Buffer.alloc(size, 2).toString('base64')}]}};
+        const ctx = fixture('shadowtls', data);
+        assert.deepEqual(plain(ctx.settings.validationErrors), []);
+        for (const bad of ['not-base64!', Buffer.alloc(size - 1).toString('base64'), Buffer.alloc(size + 1).toString('base64')]) {
+            ctx.settings.data.inner.settings.password = bad;
+            assert.match(ctx.settings.validationErrors.join(';'), /correctly sized base64/);
+        }
+        ctx.settings.data.inner.settings.password = data.inner.settings.password;
+        const account = ctx.settings.data.inner.settings.clients[0];
+        account.password = '11111111-2222-4333-8444-555555555555';
+        assert.ok(ctx.settings.validationErrors.length);
+        account.uuidIdentityKeys = true;
+        assert.deepEqual(plain(ctx.settings.validationErrors), []);
+        account.password = 'not-a-key';
+        assert.ok(ctx.settings.validationErrors.length);
+    }
+});
+
+test('ShadowTLS exposes export trust fields while OpenVPN preserves but does not advertise ignored fields', () => {
+    const shadow = fixture('shadowtls', base('shadowtls')).settings;
+    for (const [path, value] of [['clientExport.serverName', 'tls.example'], ['clientExport.ca', cert], ['clientExport.fingerprint', 'chrome']]) {
+        const field = shadow.fields.find(field => field.path === path);
+        assert.ok(field);
+        shadow.setField(field, value);
+        assert.equal(shadow.fieldValue(field), value);
+    }
+    const vpnData = base('openvpn'); vpnData.clientExport.serverName = 'legacy-kept.example'; vpnData.clientExport.ca = cert;
+    const vpn = fixture('openvpn', vpnData).settings;
+    assert.equal(vpn.fields.some(field => ['clientExport.serverName', 'clientExport.ca'].includes(field.path)), false);
+    assert.equal(vpn.toJson().clientExport.serverName, 'legacy-kept.example');
+    assert.equal(vpn.toJson().clientExport.ca, cert);
+});
+
+test('Mieru inbound enforces credential limits in UTF-8 bytes', () => {
+    const ctx = fixture('mieru', base('mieru')), client = ctx.settings.clients[0];
+    client.data.username = 'ی'.repeat(128); client.data.password = '🔐'.repeat(1024);
+    assert.deepEqual(plain(client.validationErrors), []);
+    client.data.username += 'ی'; assert.match(client.validationErrors.join(';'), /UTF-8 byte length/);
+    client.data.username = 'valid'; client.data.password += '🔐'; assert.match(client.validationErrors.join(';'), /UTF-8 byte length/);
+});
+
+test('legacy AEAD empty and null lists preserve core single-user fallback semantics', async () => {
+    for (const clients of [[], null]) {
+        const data = base('shadowtls');
+        data.inner = {protocol: 'shadowsocks', settings: {method: 'aes-256-gcm', password: 'shared-password', clients}};
+        const ctx = fixture('shadowtls', data);
+        assert.deepEqual(plain(ctx.settings.validationErrors), []);
+        const added = await ctx.settings.addGeneratedClient();
+        assert.ok(added, ctx.settings.generationError);
+        assert.equal(ctx.settings.generatedClientInner(added), null);
+        assert.equal(ctx.settings.syncGeneratedClientBindings(), true);
+        assert.deepEqual(plain(ctx.settings.data.inner), data.inner);
+        ctx.settings.data.inner.settings.password = '';
+        assert.ok(ctx.settings.validationErrors.length);
+    }
 });

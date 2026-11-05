@@ -383,7 +383,19 @@ func (c *serverSession) open(id uint32) error {
 		c.mu.Unlock()
 		return net.ErrClosed
 	}
-	if len(c.streams) >= int(c.owner.maxStreams) {
+	// A peer can close a stream and immediately reuse the carrier. Its old
+	// workers may still be finishing cancellation, so count only live logical
+	// streams here. The global slot below remains held until every old worker
+	// exits, including a blocked FIN write, and bounds retained resources.
+	active := 0
+	for _, stream := range c.streams {
+		stream.mu.Lock()
+		if !stream.closed {
+			active++
+		}
+		stream.mu.Unlock()
+	}
+	if active >= int(c.owner.maxStreams) {
 		c.mu.Unlock()
 		return errors.New("AnyTLS stream capacity exceeded")
 	}
@@ -395,7 +407,7 @@ func (c *serverSession) open(id uint32) error {
 	}
 	r, w := net.Pipe()
 	ctx, cancel := context.WithCancel(c.ctx)
-	s := &serverStream{session: c, id: id, read: r, deliver: w, queue: make(chan []byte, 8), ctx: ctx, cancel: cancel, pumpDone: make(chan struct{})}
+	s := &serverStream{session: c, id: id, read: r, deliver: w, queue: make(chan []byte, 8), queueSpace: make(chan struct{}, 1), ctx: ctx, cancel: cancel, pumpDone: make(chan struct{})}
 	c.streams[id] = s
 	c.wg.Add(2)
 	c.mu.Unlock()
@@ -423,6 +435,7 @@ type serverStream struct {
 	once          sync.Once
 	writeMu       sync.Mutex
 	queue         chan []byte
+	queueSpace    chan struct{}
 	mu            sync.Mutex
 	queued        int
 	closed        bool
@@ -431,17 +444,46 @@ type serverStream struct {
 }
 
 func (s *serverStream) enqueue(p []byte) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed || s.queued+len(p) > streamQueueBytes {
+	if len(p) > streamQueueBytes {
 		return false
 	}
-	select {
-	case s.queue <- p:
-		s.queued += len(p)
-		return true
-	default:
-		return false
+	var timer *time.Timer
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
+	for {
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			return false
+		}
+		if s.queued+len(p) <= streamQueueBytes {
+			select {
+			case s.queue <- p:
+				s.queued += len(p)
+				s.mu.Unlock()
+				return true
+			default:
+			}
+		}
+		s.mu.Unlock()
+		// A normal upload can arrive faster than its routed destination reads.
+		// Apply bounded TCP backpressure instead of discarding a valid stream
+		// after eight small frames. Waiting owns no session/write lock and
+		// cancellation always releases it. The finite stall bound prevents a
+		// non-reading destination from holding the carrier's control loop forever.
+		if timer == nil {
+			timer = time.NewTimer(serverWriteTimeout)
+		}
+		select {
+		case <-s.ctx.Done():
+			return false
+		case <-timer.C:
+			return false
+		case <-s.queueSpace:
+		}
 	}
 }
 func (s *serverStream) pump() {
@@ -454,6 +496,10 @@ func (s *serverStream) pump() {
 			s.mu.Lock()
 			s.queued -= len(p)
 			s.mu.Unlock()
+			select {
+			case s.queueSpace <- struct{}{}:
+			default:
+			}
 			if err != nil {
 				return
 			}
@@ -620,12 +666,25 @@ func (c *serverSession) serveUDP(ctx context.Context, st *serverStream) {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
-	links := make(map[xnet.Destination]*transport.Link)
+	type destinationFlow struct {
+		link  *transport.Link
+		close func()
+	}
+	var linksMu sync.Mutex
+	links := make(map[xnet.Destination]*destinationFlow)
+	// Keep admission until the response worker has actually exited, even
+	// when its route was removed so a later datagram may create a fresh one.
+	flowSlots := make(chan struct{}, 64)
 	defer func() {
 		cancel()
-		for _, link := range links {
-			common.Interrupt(link.Reader)
-			common.Interrupt(link.Writer)
+		linksMu.Lock()
+		active := make([]*destinationFlow, 0, len(links))
+		for _, flow := range links {
+			active = append(active, flow)
+		}
+		linksMu.Unlock()
+		for _, flow := range active {
+			flow.close()
 		}
 		wg.Wait()
 	}()
@@ -653,13 +712,17 @@ func (c *serverSession) serveUDP(ctx context.Context, st *serverStream) {
 				return
 			}
 		}
-		if destination.Port == 0 {
+		if destination.Port == 0 || ctx.Err() != nil {
 			return
 		}
 		timer.Update()
-		link := links[destination]
-		if link == nil {
-			if len(links) >= 64 {
+		linksMu.Lock()
+		flow := links[destination]
+		linksMu.Unlock()
+		if flow == nil {
+			select {
+			case flowSlots <- struct{}{}:
+			default:
 				return
 			}
 			// Dispatcher and sniffers mutate their outbound/content records.
@@ -677,20 +740,52 @@ func (c *serverSession) serveUDP(ctx context.Context, st *serverStream) {
 				child := *parent
 				routeCtx = session.ContextWithInbound(routeCtx, &child)
 			}
-			link, err = c.dispatcher.Dispatch(routeCtx, destination)
+			routeCtx, cancelRoute := context.WithCancel(routeCtx)
+			link, err := c.dispatcher.Dispatch(routeCtx, destination)
 			if err != nil {
-				return
+				cancelRoute()
+				<-flowSlots
+				if connected {
+					return
+				}
+				continue
 			}
-			links[destination] = link
-			tracked := link
-			context.AfterFunc(ctx, func() { common.Interrupt(tracked.Reader); common.Interrupt(tracked.Writer) })
+			flow = &destinationFlow{link: link}
+			owned := flow
+			stopLink := context.AfterFunc(routeCtx, func() {
+				common.Interrupt(link.Reader)
+				common.Interrupt(link.Writer)
+			})
+			var closeOnce sync.Once
+			flow.close = func() {
+				closeOnce.Do(func() {
+					linksMu.Lock()
+					if links[destination] == owned {
+						delete(links, destination)
+					}
+					linksMu.Unlock()
+					// Stop the hook and cancel the child context on every exit:
+					// repeated route replacement must not retain old links.
+					stopLink()
+					cancelRoute()
+					common.Interrupt(link.Reader)
+					common.Interrupt(link.Writer)
+				})
+			}
+			linksMu.Lock()
+			links[destination] = flow
+			linksMu.Unlock()
 			wg.Add(1)
-			go func(link *transport.Link, destination xnet.Destination) {
+			go func(flow *destinationFlow, destination xnet.Destination) {
 				defer wg.Done()
-				defer nativebridge.RecoverWorker(func(error) { cancel() })
-				defer cancel()
+				defer func() { <-flowSlots }()
+				defer flow.close()
+				defer nativebridge.RecoverWorker(func(error) {})
+				if connected {
+					defer cancel()
+				}
 				for {
-					mb, readErr := link.Reader.ReadMultiBuffer()
+					mb, readErr := flow.link.Reader.ReadMultiBuffer()
 					for i, b := range mb {
 						if b.Len() > 65535 {
 							buf.ReleaseMulti(mb[i:])
@@ -722,6 +817,9 @@ func (c *serverSession) serveUDP(ctx context.Context, st *serverStream) {
 						}
 						if writeErr == nil {
 							_, writeErr = st.Write(data)
+							if writeErr != nil {
+								cancel()
+							}
 						}
 						b.Release()
 						if writeErr != nil {
@@ -734,12 +832,15 @@ func (c *serverSession) serveUDP(ctx context.Context, st *serverStream) {
 						return
 					}
 				}
-			}(link, destination)
+			}(flow, destination)
 		}
 		packet := buf.FromBytes(payload)
 		packet.UDP = &destination
-		if err = link.Writer.WriteMultiBuffer(buf.MultiBuffer{packet}); err != nil {
-			return
+		if err = flow.link.Writer.WriteMultiBuffer(buf.MultiBuffer{packet}); err != nil {
+			flow.close()
+			if connected {
+				return
+			}
 		}
 	}
 }

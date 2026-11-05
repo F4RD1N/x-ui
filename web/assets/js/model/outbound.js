@@ -1481,7 +1481,7 @@ Outbound.TrojanSettings = class extends CommonClass {
     }
 };
 Outbound.ShadowsocksSettings = class extends CommonClass {
-    constructor(address, port, password, method, uot, UoTVersion, uuidIdentityKeys = false) {
+    constructor(address, port, password, method, uot, UoTVersion, uuidIdentityKeys = false, level) {
         super();
         this.address = address;
         this.port = port;
@@ -1490,6 +1490,8 @@ Outbound.ShadowsocksSettings = class extends CommonClass {
         this.uot = uot;
         this.UoTVersion = UoTVersion;
         this.uuidIdentityKeys = uuidIdentityKeys;
+        this.level = level;
+        this._uotVersionKey = 'UoTVersion';
     }
 
     get supportsUuidIdentityKeys() {
@@ -1504,15 +1506,19 @@ Outbound.ShadowsocksSettings = class extends CommonClass {
     static fromJson(json = {}) {
         let servers = json.servers;
         if (ObjectUtil.isArrEmpty(servers)) servers = [{}];
-        return new Outbound.ShadowsocksSettings(
+        const versionKey = Object.prototype.hasOwnProperty.call(servers[0], 'uotVersion') ? 'uotVersion' : 'UoTVersion';
+        const settings = new Outbound.ShadowsocksSettings(
             servers[0].address,
             servers[0].port,
             servers[0].password,
             servers[0].method,
             servers[0].uot,
-            servers[0].UoTVersion,
+            servers[0][versionKey],
             servers[0].uuidIdentityKeys,
+            servers[0].level,
         );
+        settings._uotVersionKey = versionKey;
+        return settings;
     }
 
     toJson() {
@@ -1523,7 +1529,8 @@ Outbound.ShadowsocksSettings = class extends CommonClass {
                 password: this.password,
                 method: this.method,
                 uot: this.uot,
-                UoTVersion: this.UoTVersion,
+                [this._uotVersionKey]: this.UoTVersion,
+                ...(this.level !== undefined ? {level: this.level} : {}),
                 ...(this.uuidIdentityKeys !== false ? {uuidIdentityKeys: this.uuidIdentityKeys} : {}),
             }],
         };
@@ -1802,9 +1809,21 @@ Outbound.NativeSettings = class extends CommonClass {
 
     changeInputMode(mode) {
         if (this.kind === 'openvpn') {
+            const structuredAuth = this.read('auth.user') || this.read('auth.pass');
+            const username = structuredAuth ? this.read('auth.user') : this.read('username');
+            const password = structuredAuth ? this.read('auth.pass') : this.read('password');
+            const mtu = this.read('advanced.mtu') || (this.read('mtu') ?? this.read('advanced.mtu'));
             for (const key of ['server', 'auth', 'crypto', 'certificates', 'advanced', 'ovpn', 'ovpnBase64']) this.write(key, undefined);
-            if (mode === 'structured') for (const [key, value] of Object.entries(Outbound.NativeSettings.defaults('openvpn'))) this.write(key, value);
-            else this.write(mode === 'text' ? 'ovpn' : 'ovpnBase64', '');
+            if (mode === 'structured') {
+                for (const key of ['username', 'password', 'mtu']) this.write(key, undefined);
+                for (const [key, value] of Object.entries(Outbound.NativeSettings.defaults('openvpn'))) this.write(key, value);
+                if (username !== undefined) this.write('auth.user', username);
+                if (password !== undefined) this.write('auth.pass', password);
+                if (mtu !== undefined) this.write('advanced.mtu', mtu);
+            } else {
+                this.write(mode === 'text' ? 'ovpn' : 'ovpnBase64', '');
+                this.write('username', username); this.write('password', password); this.write('mtu', mtu);
+            }
         } else if (this.kind === 'orbit') {
             for (const key of ['link', 'address', 'port', 'key', 'transport', 'host', 'path', 'peer', 'fingerprint', 'fp', 'userAgent', 'ua', 'headers', 'browser', 'security', 'reality']) this.write(key, undefined);
             if (mode === 'link') this.write('link', '');
@@ -1938,9 +1957,9 @@ Outbound.NativeSettings = class extends CommonClass {
 
     resolverFields(index) {
         const prefix = 'resolvers.' + index + '.';
-        const fields = [{path: prefix + 'transport', label: 'Resolver transport', type: 'select', options: ['udp', 'dot', 'doh']}, {path: prefix + 'address', label: 'Resolver address', type: 'text'}];
+        const fields = [{path: prefix + 'transport', label: 'Resolver transport', type: 'select', options: ['udp', 'dot', 'doh']}, {path: prefix + 'address', label: 'Resolver address', type: 'text'}, {path: prefix + 'bootstrap', label: 'Bootstrap IP', type: 'text'}];
         if (this.read(prefix + 'transport') !== 'udp') {
-            for (const [path, label] of [['bootstrap', 'Bootstrap IP'], ['serverName', 'TLS server name'], ['fingerprint', 'TLS fingerprint'], ['caPem', 'Custom CA PEM']]) fields.push({path: prefix + path, label, type: path === 'caPem' ? 'textarea' : 'text'});
+            for (const [path, label] of [['serverName', 'TLS server name'], ['fingerprint', 'TLS fingerprint'], ['caPem', 'Custom CA PEM']]) fields.push({path: prefix + path, label, type: path === 'caPem' ? 'textarea' : 'text'});
         }
         return fields;
     }
@@ -1978,7 +1997,7 @@ Outbound.NativeSettings = class extends CommonClass {
                     if (!object(resolver)) { errors.push('Each DNS resolver must be an object.'); return; }
                     required('resolvers.' + i + '.address');
                     if (!['udp', 'dot', 'doh'].includes(resolver.transport)) errors.push('Resolver transport must be udp, dot or doh.');
-                    if (resolver.transport === 'udp' && ['bootstrap', 'serverName', 'fingerprint', 'caPem'].some(key => resolver[key])) errors.push('UDP resolvers cannot use TLS fields.');
+                    if (resolver.transport === 'udp' && ['serverName', 'fingerprint', 'caPem'].some(key => resolver[key])) errors.push('UDP resolvers cannot use TLS fields.');
                 });
                 if (!object(this.read('inner')) || !['vless', 'socks'].includes(this.read('inner.protocol'))) errors.push('Choose the inner VLESS or SOCKS protocol.');
                 if (this.read('inner.protocol') === 'vless') uuid('inner.uuid');
@@ -1992,6 +2011,15 @@ Outbound.NativeSettings = class extends CommonClass {
                 const base64 = this.read('ovpnBase64') !== undefined;
                 if ([structured, text, base64].filter(Boolean).length !== 1) errors.push('Choose exactly one OpenVPN configuration format.');
                 if (structured) endpoint('server.');
+                if (this.read('server.network') !== undefined && !['', 'udp', 'tcp', 'udp4', 'udp6', 'tcp4', 'tcp6', 'tcp-client', 'tcp4-client', 'tcp6-client'].includes(String(this.read('server.network')).toLowerCase())) errors.push('server.network has an unsupported value.');
+                choice('certificates.keyDirection', ['', 0, 1]);
+                if (this.read('advanced.remoteCertTls') !== undefined && !['server', ''].includes(String(this.read('advanced.remoteCertTls')).toLowerCase())) errors.push('advanced.remoteCertTls has an unsupported value.');
+                if (this.read('domainStrategy') !== undefined && !['', 'forceip', 'forceipv4', 'forceipv6', 'forceipv4v6', 'forceipv6v4'].includes(String(this.read('domainStrategy')).toLowerCase())) errors.push('domainStrategy has an unsupported value.');
+                for (const path of ['advanced.mtu', 'mtu']) if (this.read(path) !== 0) integer(path, 576, 65535);
+                if (this.read('mtu') && this.read('advanced.mtu') && this.read('mtu') !== this.read('advanced.mtu')) errors.push('mtu and advanced.mtu must match.');
+                if ((this.read('auth.user') || this.read('auth.pass')) && (this.read('username') || this.read('password'))) errors.push('Use auth credentials or username/password overrides, not both.');
+                if (this.read('crypto.dataCiphers') !== undefined && (!Array.isArray(this.read('crypto.dataCiphers')) || this.read('crypto.dataCiphers').some(value => typeof value !== 'string' || !value.trim()))) errors.push('Data ciphers must be an array of nonempty names.');
+                if (['tlsAuth', 'tlsCrypt', 'tlsCryptV2'].filter(key => this.read('certificates.' + key)).length > 1) errors.push('Choose only one TLS control-channel key format.');
                 if (text && !(typeof this.read('ovpn') === 'string' && this.read('ovpn').trim()) && !(Array.isArray(this.read('ovpn')) && this.read('ovpn').length && this.read('ovpn').every(line => typeof line === 'string'))) errors.push('Inline OpenVPN configuration is required.');
                 if (base64) required('ovpnBase64');
                 if (this.proofEnabled) {
@@ -2019,7 +2047,7 @@ Outbound.NativeSettings = class extends CommonClass {
             case 'mieru':
                 endpoint(); required('username'); required('password'); choice('transport', ['tcp', 'udp']);
                 if (this.read('uuidMetadataTrailer') === true) uuid('username');
-                if ((this.read('username') || '').length > 256 || (this.read('password') || '').length > 4096) errors.push('Mieru credentials exceed the supported length.');
+                if (new TextEncoder().encode(this.read('username') || '').length > 256 || new TextEncoder().encode(this.read('password') || '').length > 4096) errors.push('Mieru credentials exceed the supported UTF-8 byte length.');
                 break;
         }
         if (this.kind !== 'openvpn') integer('handshakeTimeout', 0, this.kind === 'orbit' ? 90 : this.kind === 'anytls' ? 4294967295 : 300);

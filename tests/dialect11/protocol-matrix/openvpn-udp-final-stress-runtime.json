@@ -1,0 +1,34 @@
+{
+  "cases": [
+    {
+      "name": "openvpn-udp-soak-no-halfclose",
+      "protocol": "openvpn",
+      "ipv6": true,
+      "concurrentStreams": 4,
+      "sustainSeconds": 30,
+      "settings": {
+        "network": "udp",
+        "tunnel": {
+          "ipv6": "fd12:aa:bc::/64"
+        }
+      },
+      "halfClose": false,
+      "udpDiagnostics": true
+    },
+    {
+      "name": "openvpn-stress-udp",
+      "protocol": "openvpn",
+      "ipv6": true,
+      "concurrentStreams": 4,
+      "sustainSeconds": 30,
+      "settings": {
+        "network": "udp",
+        "tunnel": {
+          "ipv6": "fd12:aa:bc::/64"
+        }
+      },
+      "halfClose": true,
+      "udpDiagnostics": true
+    }
+  ]
+}

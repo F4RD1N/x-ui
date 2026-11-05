@@ -241,6 +241,10 @@ func validateNativeInboundSettings(inbound *model.Inbound) error {
 		return err
 	}
 	runtimeInbound.Settings = settings
+	runtimeInbound.StreamSettings, err = coreInboundStreamSettings(runtimeInbound.Protocol, runtimeInbound.StreamSettings)
+	if err != nil {
+		return err
+	}
 	raw, err := json.Marshal(runtimeInbound.GenXrayInboundConfig())
 	if err != nil {
 		return err

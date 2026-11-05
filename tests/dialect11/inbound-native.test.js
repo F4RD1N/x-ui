@@ -44,7 +44,7 @@ const configs = {
   mieru: {clients: [{username: UUID, password: 'synthetic-password', email: 'mieru', uuidMetadataTrailer: true}], transport: 'udp', handshakeTimeout: 10},
   dnstt: {domain: 'tunnel.example', privateKey: '11'.repeat(32), inner: {protocol: 'vless'}, clients: [{id: UUID, email: 'dnstt'}], mtu: 1232},
   openvpn: {network: 'tcp', certificates: {ca: PEM, cert: PEM, key: '-----BEGIN PRIVATE KEY-----\nSYNTHETIC\n-----END PRIVATE KEY-----'}, clients: [{commonName: 'synthetic-client', email: 'openvpn', clientProof: {keyId: 'test', key: '22'.repeat(32)}}], clientProof: {required: true}},
-  shadowtls: {version: 3, strict: true, handshake: {address: 'tls.example', port: 443}, clients: [{password: UUID, email: 'shadowtls', requireUuidSessionId: true}], inner: {protocol: 'socks', settings: {auth: 'password', accounts: [{user: 'synthetic', pass: 'synthetic'}], udp: false}}},
+  shadowtls: {version: 3, strict: true, handshake: {address: 'tls.example', port: 443}, clients: [{password: UUID, email: 'shadowtls', innerUsername: 'synthetic', requireUuidSessionId: true}], inner: {protocol: 'socks', settings: {auth: 'password', accounts: [{user: 'synthetic', pass: 'synthetic'}], udp: false}}},
   orbit: {transport: 'tcp', tls: {certificate: PEM.split('\n'), key: ['-----BEGIN PRIVATE KEY-----', 'SYNTHETIC', '-----END PRIVATE KEY-----']}, clients: [{key: 'vck1_' + 'A'.repeat(86), email: 'orbit', expiresAt: 2000000000}]},
 };
 for (const [protocol, settings] of Object.entries(configs)) {

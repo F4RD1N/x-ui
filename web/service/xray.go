@@ -134,6 +134,10 @@ func (s *XrayService) buildXrayConfig(templateConfig string) (*xray.Config, erro
 			return nil, coreInboundProjectionError(string(inbound.Protocol), err)
 		}
 		inbound.Settings = settings
+		inbound.StreamSettings, err = coreInboundStreamSettings(inbound.Protocol, inbound.StreamSettings)
+		if err != nil {
+			return nil, err
+		}
 
 		if len(inbound.StreamSettings) > 0 {
 			// Unmarshal stream JSON

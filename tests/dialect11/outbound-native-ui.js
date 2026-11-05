@@ -41,6 +41,7 @@ const fixtures = {
     try {
         browser = await chromium.launch({headless: true, executablePath: process.env.CHROME || undefined, args: ['--no-sandbox', '--disable-dev-shm-usage']});
         const page = await browser.newPage();
+        await page.route(/^https?:\/\//, route => route.abort());
         page.on('pageerror', error => errors.push(error.message));
         page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
         await page.goto(pathToFileURL(fixtureFile).href);
@@ -108,6 +109,24 @@ const fixtures = {
         assert.equal(await page.evaluate(()=>outModal.outbound.toJson().settings.link.includes('transport=quic')),true);
         assert.equal(await page.locator('.ant-modal-body .ant-alert-info, .ant-modal-body .ant-alert-warning').count(),0);
         checks.push({orbitQuicSettingsRetained:true,conciseForm:true});
+        await page.evaluate(settings=>outModal.show({isEdit:true,outbound:{tag:'dns-bootstrap',protocol:'dnstt',settings}}),{...fixtures.dnstt,resolvers:[{transport:'udp',address:'resolver.example:53'}]});
+        const bootstrap=page.locator('.ant-modal-body .ant-form-item').filter({has:page.locator('.ant-form-item-label',{hasText:'Bootstrap IP 1'})}).locator('input');
+        await bootstrap.fill('127.0.0.1');await bootstrap.press('Tab');
+        assert.equal(await page.evaluate(()=>outModal.isValid),true);
+        assert.equal(await page.evaluate(()=>outModal.outbound.toJson().settings.resolvers[0].bootstrap),'127.0.0.1');
+        await page.evaluate(()=>{window.submitted=[];outModal.confirm=value=>window.submitted.push(value);});
+        await page.locator('.ant-modal-footer button.ant-btn-primary').click();
+        assert.equal(await page.evaluate(()=>window.submitted.length),1);
+        checks.push({udpResolverBootstrapTypedEdit:true,actualOKClick:true});
+        await page.evaluate(()=>outModal.show({isEdit:true,outbound:{tag:'ovpn-modes',protocol:'openvpn',settings:{ovpn:'client',username:'alice',password:'secret',mtu:1500}}}));
+        await page.evaluate(()=>outModal.outbound.settings.changeInputMode('structured'));
+        const server=page.locator('.ant-modal-body .ant-form-item').filter({has:page.locator('.ant-form-item-label',{hasText:'Server address'})}).first().locator('input');
+        await server.fill('127.0.0.1');await server.press('Tab');
+        assert.equal(await page.evaluate(()=>outModal.isValid),true);
+        const migrated=await page.evaluate(()=>outModal.outbound.toJson().settings);
+        assert.equal(migrated.advanced.mtu,1500);assert.deepEqual(migrated.auth,{user:'alice',pass:'secret'});
+        assert.equal(migrated.username,undefined);assert.equal(migrated.mtu,undefined);
+        checks.push({openvpnFormatSwitchPreservesOverrides:true});
         await page.evaluate(() => { outModal.toggleJson(true); outModal.cm.setValue('{broken'); outModal.check(); });
         assert.equal(await page.evaluate(() => outModal.isValid), false);
         assert.equal(await page.locator('.ant-modal-footer button.ant-btn-primary').isDisabled(), true, 'invalid JSON disables actual modal OK');

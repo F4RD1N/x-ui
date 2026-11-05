@@ -92,6 +92,18 @@ numeric `bootstrap` to avoid recursive DNS dependencies. Resolver TLS supports
 Certificate verification remains enabled. Do not place resolver TLS settings
 on the authoritative inbound's outer stream.
 
+This bundled core distributes queries among healthy configured resolvers in
+round-robin order. With multiple resolvers, a timeout or transport failure pauses
+that member for twice the query timeout, bounded to one through thirty seconds.
+Only one recovery probe may use that member after its pause; a successful probe
+restores it. Older outstanding queries cannot undo a newer health decision.
+When all members are unavailable, queries wait for recovery eligibility or their
+own cancellation instead of repeatedly dialing. There is no extra background
+probe, same-query replay, unconfigured resolver, or TLS-verification fallback.
+The single-resolver path is unchanged. This scheduling is an implementation
+feature of the bundled outbound; exporting a resolver list does not add it to
+an older client core.
+
 The client query timeout defaults to five seconds, exceeding the authority's
 maximum one-second long poll. An explicitly shorter timeout reduces tolerance
 for resolver latency and scheduling delays. Noise authentication pins the

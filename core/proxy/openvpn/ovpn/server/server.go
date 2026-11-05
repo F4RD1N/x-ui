@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -129,6 +130,10 @@ type Session struct {
 func Serve(ctx context.Context, conn PacketConn, cfg Config) (*Session, error) {
 	if conn == nil {
 		return nil, errors.New("openvpn server: missing transport")
+	}
+	if err := ctx.Err(); err != nil {
+		conn.Close()
+		return nil, err
 	}
 	if err := validate(&cfg); err != nil {
 		conn.Close()
@@ -310,6 +315,10 @@ func (s *Session) writer() {
 	for {
 		select {
 		case b := <-s.outgoing:
+			// Let the control loop admit another application packet after a
+			// queued packet moves to the transport writer. Writes remain bounded
+			// by the queue and a single in-flight transport packet.
+			s.signal()
 			if err := s.conn.WritePacket(b); err != nil {
 				s.ioError(err)
 				return
@@ -354,6 +363,15 @@ func (s *Session) loop() {
 		close(s.done)
 	}()
 	for {
+		// A slow TCP peer is ordinary backpressure, not a reason to terminate
+		// an authenticated tunnel. Stop accepting application packets before
+		// they fill the queue, while continuing to process input, TLS events,
+		// cancellation and timers. Reserve half the queue for control traffic
+		// so a rekey can progress during a sustained download.
+		dataWrites := s.writes
+		if len(s.outgoing) >= cap(s.outgoing)/2 {
+			dataWrites = nil
+		}
 		select {
 		case <-s.ctx.Done():
 			s.stop(s.ctx.Err())
@@ -365,7 +383,7 @@ func (s *Session) loop() {
 			s.packet(b)
 		case e := <-s.events:
 			s.event(e)
-		case r := <-s.writes:
+		case r := <-dataWrites:
 			if s.data == nil {
 				r.result <- ErrAuthentication
 				break
@@ -513,6 +531,12 @@ func (s *Session) keyWorker(k *keyState) {
 	fail := func(err error) { s.report(event{key: k, err: err}) }
 	k.adapter.SetReadDeadline(time.Now().Add(s.cfg.HandshakeTimeout))
 	if err := k.tls.HandshakeContext(ctx); err != nil {
+		// The TLS read deadline and the control-loop timer race to observe
+		// the same timeout. Preserve the public cause whichever wins.
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
+			fail(ErrHandshakeTimeout)
+			return
+		}
 		fail(errors.New("openvpn server: TLS handshake failed"))
 		return
 	}

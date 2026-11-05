@@ -1,0 +1,366 @@
+{
+  "protocol": "anytls",
+  "network_scope": "isolated loopback namespace only",
+  "cases": [
+    {
+      "name": "anytls-generated-inline-cert",
+      "protocol": "anytls",
+      "base": "generated"
+    },
+    {
+      "name": "anytls-standard-file-cert",
+      "protocol": "anytls",
+      "base": "anytls-normal"
+    },
+    {
+      "name": "anytls-uuid-middle",
+      "protocol": "anytls",
+      "base": "anytls-custom"
+    },
+    {
+      "name": "anytls-nonuuid-middle-fallback",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "client": {
+        "uuidHashMiddle": true
+      }
+    },
+    {
+      "name": "anytls-policy-level3",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "client": {
+        "level": 3
+      }
+    },
+    {
+      "name": "anytls-password4096",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "client": {
+        "password": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm"
+      }
+    },
+    {
+      "name": "anytls-default-zero-limits",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "settings": {
+        "handshakeTimeout": 0,
+        "maxStreams": 0
+      }
+    },
+    {
+      "name": "anytls-one-stream-reuse",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "settings": {
+        "handshakeTimeout": 1,
+        "maxStreams": 1
+      },
+      "durationSeconds": 1.0
+    },
+    {
+      "name": "anytls-upper-server-limits",
+      "protocol": "anytls",
+      "base": "anytls-custom",
+      "settings": {
+        "handshakeTimeout": 300,
+        "maxStreams": 1024
+      }
+    },
+    {
+      "name": "anytls-tls12-alpn",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "stream": {
+        "tlsSettings": {
+          "minVersion": "1.2",
+          "maxVersion": "1.2",
+          "alpn": [
+            "http/1.1"
+          ],
+          "serverName": "e2e.test",
+          "rejectUnknownSni": true
+        }
+      },
+      "outboundSettings": {
+        "tlsSettings": {
+          "minVersion": "1.2",
+          "maxVersion": "1.2",
+          "alpn": [
+            "http/1.1"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anytls-tls13-alpn",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "stream": {
+        "tlsSettings": {
+          "minVersion": "1.3",
+          "maxVersion": "1.3",
+          "alpn": [
+            "h2"
+          ],
+          "serverName": "e2e.test",
+          "rejectUnknownSni": true
+        }
+      },
+      "outboundSettings": {
+        "tlsSettings": {
+          "minVersion": "1.3",
+          "maxVersion": "1.3",
+          "alpn": [
+            "h2"
+          ]
+        }
+      }
+    },
+    {
+      "name": "anytls-tls12-ecdsa-cipher",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "stream": {
+        "tlsSettings": {
+          "minVersion": "1.2",
+          "maxVersion": "1.2",
+          "cipherSuites": "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"
+        }
+      },
+      "outboundSettings": {
+        "tlsSettings": {
+          "minVersion": "1.2",
+          "maxVersion": "1.2",
+          "cipherSuites": "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"
+        }
+      }
+    },
+    {
+      "name": "anytls-session-resumption",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "stream": {
+        "tlsSettings": {
+          "enableSessionResumption": true
+        }
+      },
+      "outboundSettings": {
+        "tlsSettings": {
+          "enableSessionResumption": true
+        }
+      }
+    },
+    {
+      "name": "anytls-private-root-only",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "outboundSettings": {
+        "tlsSettings": {
+          "disableSystemRoot": true
+        }
+      }
+    },
+    {
+      "name": "anytls-insecure-explicit-optin",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "outboundSettings": {
+        "tlsSettings": {
+          "serverName": "wrong-name.test",
+          "allowInsecure": true
+        }
+      }
+    },
+    {
+      "name": "anytls-pool-expiry-settings",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "outboundSettings": {
+        "idleSessionCheckInterval": 1,
+        "idleSessionTimeout": 1,
+        "minIdleSession": 0,
+        "handshakeTimeout": 3
+      },
+      "durationSeconds": 2.0
+    },
+    {
+      "name": "anytls-pool-minimum-idle",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "outboundSettings": {
+        "idleSessionCheckInterval": 1,
+        "idleSessionTimeout": 1,
+        "minIdleSession": 1
+      },
+      "durationSeconds": 2.0
+    },
+    {
+      "name": "anytls-pool-default-zeros",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "outboundSettings": {
+        "idleSessionCheckInterval": 0,
+        "idleSessionTimeout": 0,
+        "minIdleSession": 0,
+        "handshakeTimeout": 0
+      }
+    },
+    {
+      "name": "anytls-fingerprint-chrome",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "chrome"
+        }
+      }
+    },
+    {
+      "name": "anytls-fingerprint-firefox",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "firefox"
+        }
+      }
+    },
+    {
+      "name": "anytls-fingerprint-safari",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "safari"
+        }
+      }
+    },
+    {
+      "name": "anytls-fingerprint-ios",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "ios"
+        }
+      }
+    },
+    {
+      "name": "anytls-fingerprint-android",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "android"
+        }
+      }
+    },
+    {
+      "name": "anytls-fingerprint-edge",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "edge"
+        }
+      }
+    },
+    {
+      "name": "anytls-fingerprint-360",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "360"
+        }
+      }
+    },
+    {
+      "name": "anytls-fingerprint-qq",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "qq"
+        }
+      }
+    },
+    {
+      "name": "anytls-fingerprint-random",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "random"
+        }
+      }
+    },
+    {
+      "name": "anytls-fingerprint-randomized",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "randomized"
+        }
+      }
+    },
+    {
+      "name": "anytls-fingerprint-randomizednoalpn",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "settings": {
+        "clientExport": {
+          "fingerprint": "randomizednoalpn"
+        }
+      }
+    },
+    {
+      "name": "anytls-wrong-sni-deny",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "settings": {
+        "clientExport": {
+          "serverName": "wrong-name.test"
+        }
+      },
+      "expect": "deny"
+    },
+    {
+      "name": "anytls-timeout301-reject",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "settings": {
+        "handshakeTimeout": 301
+      },
+      "expect": "reject"
+    },
+    {
+      "name": "anytls-maxstreams1025-reject",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "settings": {
+        "maxStreams": 1025
+      },
+      "expect": "reject"
+    },
+    {
+      "name": "anytls-password4097-reject",
+      "protocol": "anytls",
+      "base": "anytls-normal",
+      "client": {
+        "password": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm"
+      },
+      "expect": "reject"
+    }
+  ],
+  "notes": [
+    "outboundSettings changes only separate panel outbound path; copied exported client JSON remains unchanged",
+    "Fingerprint invalid-name rejection and malformed numeric parsing covered by Go tests, not runtime deny",
+    "ECH-required configs excluded: unchanged client core TLS parser does not implement ECH",
+    "Negative password/mode wire authentication covered by AnyTLS server wire tests; harness account mutation changes both server and exported client"
+  ]
+}

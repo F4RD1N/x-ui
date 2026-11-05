@@ -1,0 +1,420 @@
+{
+  "cases": [
+    {
+      "id": "mieru-tcp-ordinary-timeout-0",
+      "name": "mieru-tcp-ordinary-timeout-0",
+      "protocol": "mieru",
+      "base": "generated",
+      "settings": {
+        "transport": "tcp",
+        "handshakeTimeout": 0
+      },
+      "client": {
+        "username": "synthetic-matrix-user",
+        "password": "synthetic-matrix-password",
+        "uuidMetadataTrailer": false
+      },
+      "udp": true,
+      "checks": [
+        "tcp_connect_latency",
+        "tcp_download_integrity",
+        "tcp_upload_integrity",
+        "tcp_full_duplex_integrity",
+        "udp_echo_boundaries",
+        "reconnect",
+        "routing"
+      ],
+      "status": "runtime_pending"
+    },
+    {
+      "id": "mieru-tcp-ordinary-timeout-1",
+      "name": "mieru-tcp-ordinary-timeout-1",
+      "protocol": "mieru",
+      "base": "generated",
+      "settings": {
+        "transport": "tcp",
+        "handshakeTimeout": 1
+      },
+      "client": {
+        "username": "synthetic-matrix-user",
+        "password": "synthetic-matrix-password",
+        "uuidMetadataTrailer": false
+      },
+      "udp": true,
+      "checks": [
+        "tcp_connect_latency",
+        "tcp_download_integrity",
+        "tcp_upload_integrity",
+        "tcp_full_duplex_integrity",
+        "udp_echo_boundaries",
+        "reconnect",
+        "routing"
+      ],
+      "status": "runtime_pending"
+    },
+    {
+      "id": "mieru-tcp-ordinary-timeout-10",
+      "name": "mieru-tcp-ordinary-timeout-10",
+      "protocol": "mieru",
+      "base": "generated",
+      "settings": {
+        "transport": "tcp",
+        "handshakeTimeout": 10
+      },
+      "client": {
+        "username": "synthetic-matrix-user",
+        "password": "synthetic-matrix-password",
+        "uuidMetadataTrailer": false
+      },
+      "udp": true,
+      "checks": [
+        "tcp_connect_latency",
+        "tcp_download_integrity",
+        "tcp_upload_integrity",
+        "tcp_full_duplex_integrity",
+        "udp_echo_boundaries",
+        "reconnect",
+        "routing"
+      ],
+      "status": "runtime_pending"
+    },
+    {
+      "id": "mieru-tcp-ordinary-timeout-300",
+      "name": "mieru-tcp-ordinary-timeout-300",
+      "protocol": "mieru",
+      "base": "generated",
+      "settings": {
+        "transport": "tcp",
+        "handshakeTimeout": 300
+      },
+      "client": {
+        "username": "synthetic-matrix-user",
+        "password": "synthetic-matrix-password",
+        "uuidMetadataTrailer": false
+      },
+      "udp": true,
+      "checks": [
+        "tcp_connect_latency",
+        "tcp_download_integrity",
+        "tcp_upload_integrity",
+        "tcp_full_duplex_integrity",
+        "udp_echo_boundaries",
+        "reconnect",
+        "routing"
+      ],
+      "status": "runtime_pending"
+    },
+    {
+      "id": "mieru-tcp-custom-timeout-0",
+      "name": "mieru-tcp-custom-timeout-0",
+      "protocol": "mieru",
+      "base": "generated",
+      "settings": {
+        "transport": "tcp",
+        "handshakeTimeout": 0
+      },
+      "client": {
+        "username": "a3ac6533-7c27-45c4-93f2-9192745e218b",
+        "password": "synthetic-matrix-password",
+        "uuidMetadataTrailer": true
+      },
+      "udp": true,
+      "checks": [
+        "tcp_connect_latency",
+        "tcp_download_integrity",
+        "tcp_upload_integrity",
+        "tcp_full_duplex_integrity",
+        "udp_echo_boundaries",
+        "reconnect",
+        "routing"
+      ],
+      "status": "runtime_pending"
+    },
+    {
+      "id": "mieru-tcp-custom-timeout-1",
+      "name": "mieru-tcp-custom-timeout-1",
+      "protocol": "mieru",
+      "base": "generated",
+      "settings": {
+        "transport": "tcp",
+        "handshakeTimeout": 1
+      },
+      "client": {
+        "username": "a3ac6533-7c27-45c4-93f2-9192745e218b",
+        "password": "synthetic-matrix-password",
+        "uuidMetadataTrailer": true
+      },
+      "udp": true,
+      "checks": [
+        "tcp_connect_latency",
+        "tcp_download_integrity",
+        "tcp_upload_integrity",
+        "tcp_full_duplex_integrity",
+        "udp_echo_boundaries",
+        "reconnect",
+        "routing"
+      ],
+      "status": "runtime_pending"
+    },
+    {
+      "id": "mieru-tcp-custom-timeout-10",
+      "name": "mieru-tcp-custom-timeout-10",
+      "protocol": "mieru",
+      "base": "generated",
+      "settings": {
+        "transport": "tcp",
+        "handshakeTimeout": 10
+      },
+      "client": {
+        "username": "a3ac6533-7c27-45c4-93f2-9192745e218b",
+        "password": "synthetic-matrix-password",
+        "uuidMetadataTrailer": true
+      },
+      "udp": true,
+      "checks": [
+        "tcp_connect_latency",
+        "tcp_download_integrity",
+        "tcp_upload_integrity",
+        "tcp_full_duplex_integrity",
+        "udp_echo_boundaries",
+        "reconnect",
+        "routing"
+      ],
+      "status": "runtime_pending"
+    },
+    {
+      "id": "mieru-tcp-custom-timeout-300",
+      "name": "mieru-tcp-custom-timeout-300",
+      "protocol": "mieru",
+      "base": "generated",
+      "settings": {
+        "transport": "tcp",
+        "handshakeTimeout": 300
+      },
+      "client": {
+        "username": "a3ac6533-7c27-45c4-93f2-9192745e218b",
+        "password": "synthetic-matrix-password",
+        "uuidMetadataTrailer": true
+      },
+      "udp": true,
+      "checks": [
+        "tcp_connect_latency",
+        "tcp_download_integrity",
+        "tcp_upload_integrity",
+        "tcp_full_duplex_integrity",
+        "udp_echo_boundaries",
+        "reconnect",
+        "routing"
+      ],
+      "status": "runtime_pending"
+    },
+    {
+      "id": "mieru-udp-ordinary-timeout-0",
+      "name": "mieru-udp-ordinary-timeout-0",
+      "protocol": "mieru",
+      "base": "generated",
+      "settings": {
+        "transport": "udp",
+        "handshakeTimeout": 0
+      },
+      "client": {
+        "username": "synthetic-matrix-user",
+        "password": "synthetic-matrix-password",
+        "uuidMetadataTrailer": false
+      },
+      "udp": true,
+      "checks": [
+        "tcp_connect_latency",
+        "tcp_download_integrity",
+        "tcp_upload_integrity",
+        "tcp_full_duplex_integrity",
+        "udp_echo_boundaries",
+        "reconnect",
+        "routing"
+      ],
+      "status": "runtime_pending"
+    },
+    {
+      "id": "mieru-udp-ordinary-timeout-1",
+      "name": "mieru-udp-ordinary-timeout-1",
+      "protocol": "mieru",
+      "base": "generated",
+      "settings": {
+        "transport": "udp",
+        "handshakeTimeout": 1
+      },
+      "client": {
+        "username": "synthetic-matrix-user",
+        "password": "synthetic-matrix-password",
+        "uuidMetadataTrailer": false
+      },
+      "udp": true,
+      "checks": [
+        "tcp_connect_latency",
+        "tcp_download_integrity",
+        "tcp_upload_integrity",
+        "tcp_full_duplex_integrity",
+        "udp_echo_boundaries",
+        "reconnect",
+        "routing"
+      ],
+      "status": "runtime_pending"
+    },
+    {
+      "id": "mieru-udp-ordinary-timeout-10",
+      "name": "mieru-udp-ordinary-timeout-10",
+      "protocol": "mieru",
+      "base": "generated",
+      "settings": {
+        "transport": "udp",
+        "handshakeTimeout": 10
+      },
+      "client": {
+        "username": "synthetic-matrix-user",
+        "password": "synthetic-matrix-password",
+        "uuidMetadataTrailer": false
+      },
+      "udp": true,
+      "checks": [
+        "tcp_connect_latency",
+        "tcp_download_integrity",
+        "tcp_upload_integrity",
+        "tcp_full_duplex_integrity",
+        "udp_echo_boundaries",
+        "reconnect",
+        "routing"
+      ],
+      "status": "runtime_pending"
+    },
+    {
+      "id": "mieru-udp-ordinary-timeout-300",
+      "name": "mieru-udp-ordinary-timeout-300",
+      "protocol": "mieru",
+      "base": "generated",
+      "settings": {
+        "transport": "udp",
+        "handshakeTimeout": 300
+      },
+      "client": {
+        "username": "synthetic-matrix-user",
+        "password": "synthetic-matrix-password",
+        "uuidMetadataTrailer": false
+      },
+      "udp": true,
+      "checks": [
+        "tcp_connect_latency",
+        "tcp_download_integrity",
+        "tcp_upload_integrity",
+        "tcp_full_duplex_integrity",
+        "udp_echo_boundaries",
+        "reconnect",
+        "routing"
+      ],
+      "status": "runtime_pending"
+    },
+    {
+      "id": "mieru-udp-custom-timeout-0",
+      "name": "mieru-udp-custom-timeout-0",
+      "protocol": "mieru",
+      "base": "generated",
+      "settings": {
+        "transport": "udp",
+        "handshakeTimeout": 0
+      },
+      "client": {
+        "username": "a3ac6533-7c27-45c4-93f2-9192745e218b",
+        "password": "synthetic-matrix-password",
+        "uuidMetadataTrailer": true
+      },
+      "udp": true,
+      "checks": [
+        "tcp_connect_latency",
+        "tcp_download_integrity",
+        "tcp_upload_integrity",
+        "tcp_full_duplex_integrity",
+        "udp_echo_boundaries",
+        "reconnect",
+        "routing"
+      ],
+      "status": "runtime_pending"
+    },
+    {
+      "id": "mieru-udp-custom-timeout-1",
+      "name": "mieru-udp-custom-timeout-1",
+      "protocol": "mieru",
+      "base": "generated",
+      "settings": {
+        "transport": "udp",
+        "handshakeTimeout": 1
+      },
+      "client": {
+        "username": "a3ac6533-7c27-45c4-93f2-9192745e218b",
+        "password": "synthetic-matrix-password",
+        "uuidMetadataTrailer": true
+      },
+      "udp": true,
+      "checks": [
+        "tcp_connect_latency",
+        "tcp_download_integrity",
+        "tcp_upload_integrity",
+        "tcp_full_duplex_integrity",
+        "udp_echo_boundaries",
+        "reconnect",
+        "routing"
+      ],
+      "status": "runtime_pending"
+    },
+    {
+      "id": "mieru-udp-custom-timeout-10",
+      "name": "mieru-udp-custom-timeout-10",
+      "protocol": "mieru",
+      "base": "generated",
+      "settings": {
+        "transport": "udp",
+        "handshakeTimeout": 10
+      },
+      "client": {
+        "username": "a3ac6533-7c27-45c4-93f2-9192745e218b",
+        "password": "synthetic-matrix-password",
+        "uuidMetadataTrailer": true
+      },
+      "udp": true,
+      "checks": [
+        "tcp_connect_latency",
+        "tcp_download_integrity",
+        "tcp_upload_integrity",
+        "tcp_full_duplex_integrity",
+        "udp_echo_boundaries",
+        "reconnect",
+        "routing"
+      ],
+      "status": "runtime_pending"
+    },
+    {
+      "id": "mieru-udp-custom-timeout-300",
+      "name": "mieru-udp-custom-timeout-300",
+      "protocol": "mieru",
+      "base": "generated",
+      "settings": {
+        "transport": "udp",
+        "handshakeTimeout": 300
+      },
+      "client": {
+        "username": "a3ac6533-7c27-45c4-93f2-9192745e218b",
+        "password": "synthetic-matrix-password",
+        "uuidMetadataTrailer": true
+      },
+      "udp": true,
+      "checks": [
+        "tcp_connect_latency",
+        "tcp_download_integrity",
+        "tcp_upload_integrity",
+        "tcp_full_duplex_integrity",
+        "udp_echo_boundaries",
+        "reconnect",
+        "routing"
+      ],
+      "status": "runtime_pending"
+    }
+  ]
+}

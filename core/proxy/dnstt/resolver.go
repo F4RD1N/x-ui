@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	utls "github.com/refraction-networking/utls"
@@ -26,11 +25,11 @@ import (
 )
 
 type resolverSet struct {
-	members []*dnsResolver
-	next    atomic.Uint64
-	stop    func() bool
-	cancel  context.CancelFunc
-	once    sync.Once
+	members   []*dnsResolver
+	scheduler *resolverScheduler
+	stop      func() bool
+	cancel    context.CancelFunc
+	once      sync.Once
 }
 
 func newResolverSet(ctx context.Context, c *Config, d internet.Dialer) (*resolverSet, error) {
@@ -49,6 +48,9 @@ func newResolverSet(ctx context.Context, c *Config, d internet.Dialer) (*resolve
 		}
 		set.members = append(set.members, resolver)
 	}
+	if len(set.members) > 1 {
+		set.scheduler = newResolverScheduler(base, len(set.members), time.Duration(c.QueryTimeout)*time.Second)
+	}
 	set.stop = context.AfterFunc(base, func() { set.Close() })
 	return set, nil
 }
@@ -56,11 +58,18 @@ func (s *resolverSet) exchange(ctx context.Context, query []byte) ([]byte, error
 	if len(s.members) == 0 {
 		return nil, errors.New("dnstt: no resolver")
 	}
-	resolver := s.members[(s.next.Add(1)-1)%uint64(len(s.members))]
-	if resolver.cfg.Transport == "doh" {
-		return resolver.exchangeHTTP(ctx, query)
+	exchange := func(index int) ([]byte, error) {
+		resolver := s.members[index]
+		if resolver.cfg.Transport == "doh" {
+			return resolver.exchangeHTTP(ctx, query)
+		}
+		return resolver.exchangeStream(ctx, query)
 	}
-	return resolver.exchangeStream(ctx, query)
+	// Keep the established single-resolver transport and error semantics.
+	if s.scheduler == nil {
+		return exchange(0)
+	}
+	return s.scheduler.exchange(ctx, exchange)
 }
 func (s *resolverSet) Close() {
 	s.once.Do(func() {

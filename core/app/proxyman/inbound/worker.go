@@ -188,12 +188,8 @@ type udpConn struct {
 	done             *done.Instance
 	uplink           stats.Counter
 	downlink         stats.Counter
-	inactive         bool
+	ctx              context.Context
 	cancel           context.CancelFunc
-}
-
-func (c *udpConn) setInactive() {
-	c.inactive = true
 }
 
 func (c *udpConn) updateActivity() {
@@ -281,6 +277,7 @@ type udpWorker struct {
 
 	checker    *task.Periodic
 	activeConn map[connID]*udpConn
+	closed     bool // guarded by the worker lock
 
 	ctx  context.Context
 	cone bool
@@ -289,6 +286,9 @@ type udpWorker struct {
 func (w *udpWorker) getConnection(id connID) (*udpConn, bool) {
 	w.Lock()
 	defer w.Unlock()
+	if w.closed {
+		return nil, false
+	}
 
 	if conn, found := w.activeConn[id]; found && !conn.done.Done() {
 		conn.updateActivity()
@@ -296,6 +296,7 @@ func (w *udpWorker) getConnection(id connID) (*udpConn, bool) {
 	}
 
 	pReader, pWriter := pipe.New(pipe.DiscardOverflow(), pipe.WithSizeLimit(16*1024))
+	ctx, cancel := context.WithCancel(w.ctx)
 	conn := &udpConn{
 		reader: pReader,
 		writer: pWriter,
@@ -313,6 +314,8 @@ func (w *udpWorker) getConnection(id connID) (*udpConn, bool) {
 		done:     done.New(),
 		uplink:   w.uplinkCounter,
 		downlink: w.downlinkCounter,
+		ctx:      ctx,
+		cancel:   cancel,
 	}
 	w.activeConn[id] = conn
 
@@ -331,16 +334,21 @@ func (w *udpWorker) callback(b *buf.Buffer, source net.Destination, originalDest
 		b.UDP = &originalDest
 	}
 	conn, existing := w.getConnection(id)
+	if conn == nil {
+		b.Release()
+		return
+	}
 
 	// payload will be discarded in pipe is full.
 	conn.writer.WriteMultiBuffer(buf.MultiBuffer{b})
 
 	if !existing {
-		common.Must(w.checker.Start())
+		if !w.startConnection(id, conn) {
+			return
+		}
 
 		go func() {
-			ctx, cancel := context.WithCancel(w.ctx)
-			conn.cancel = cancel
+			ctx := conn.ctx
 			sid := session.NewID()
 			ctx = c.ContextWithID(ctx, sid)
 
@@ -377,18 +385,41 @@ func (w *udpWorker) callback(b *buf.Buffer, source net.Destination, originalDest
 				errors.LogInfoInner(ctx, err, "connection ends")
 			}
 			conn.Close()
-			// conn not removed by checker TODO may be lock worker here is better
-			if !conn.inactive {
-				conn.setInactive()
-				w.removeConn(id)
-			}
+			w.removeConn(id, conn)
 		}()
 	}
 }
 
-func (w *udpWorker) removeConn(id connID) {
+func (w *udpWorker) startConnection(id connID, conn *udpConn) bool {
+	// Start calls clean synchronously, so it must run outside the worker
+	// lock. Close can win between getConnection and Start; in that case
+	// stop the restarted timer before admitting the processing goroutine.
+	err := w.checker.Start()
+	w.RLock()
+	closed := w.closed
+	w.RUnlock()
+	if closed {
+		w.checker.Close()
+	}
+	if err != nil || closed {
+		conn.Close()
+		common.Interrupt(conn.reader)
+		w.removeConn(id, conn)
+		if err != nil {
+			errors.LogInfoInner(w.ctx, err, "UDP connection cleanup stopped")
+		}
+		return false
+	}
+	return true
+}
+
+func (w *udpWorker) removeConn(id connID, conn *udpConn) {
 	w.Lock()
-	delete(w.activeConn, id)
+	// A closed connection may already have been replaced under this ID.
+	// Its delayed cleanup must not delete the new generation.
+	if w.activeConn[id] == conn {
+		delete(w.activeConn, id)
+	}
 	w.Unlock()
 }
 
@@ -405,15 +436,15 @@ func (w *udpWorker) clean() error {
 	defer w.Unlock()
 
 	if len(w.activeConn) == 0 {
-		return errors.New("no more connections. stopping...")
+		// Keep the bounded per-listener checker alive until Close. Returning
+		// an error here races with a new connection's Start: Periodic may
+		// still report itself running, then stop after that Start returns.
+		return nil
 	}
 
 	for addr, conn := range w.activeConn {
 		if nowSec-atomic.LoadInt64(&conn.lastActivityTime) > 2*60 {
-			if !conn.inactive {
-				conn.setInactive()
-				delete(w.activeConn, addr)
-			}
+			delete(w.activeConn, addr)
 			conn.Close()
 		}
 	}
@@ -448,6 +479,7 @@ func (w *udpWorker) Start() error {
 func (w *udpWorker) Close() error {
 	w.Lock()
 	defer w.Unlock()
+	w.closed = true
 
 	var errs []interface{}
 

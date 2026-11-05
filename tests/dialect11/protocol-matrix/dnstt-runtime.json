@@ -1,0 +1,328 @@
+{
+  "protocol": "dnstt",
+  "cases": [
+    {
+      "name": "dnstt-vless-generated",
+      "protocol": "dnstt",
+      "base": "generated",
+      "udp": true
+    },
+    {
+      "name": "dnstt-socks",
+      "protocol": "dnstt",
+      "base": "dnstt-socks",
+      "udp": false
+    },
+    {
+      "name": "dnstt-mtu-512",
+      "protocol": "dnstt",
+      "base": "generated",
+      "settings": {
+        "mtu": 512
+      },
+      "udp": true
+    },
+    {
+      "name": "dnstt-mtu-4096",
+      "protocol": "dnstt",
+      "base": "generated",
+      "settings": {
+        "mtu": 4096
+      },
+      "udp": true
+    },
+    {
+      "name": "dnstt-server-minimum-limits",
+      "protocol": "dnstt",
+      "base": "generated",
+      "settings": {
+        "handshakeTimeout": 1,
+        "maxSessions": 1,
+        "maxStreams": 1
+      },
+      "udp": true,
+      "interCheckDelaySeconds": 0.3
+    },
+    {
+      "name": "dnstt-server-maximum-limits",
+      "protocol": "dnstt",
+      "base": "generated",
+      "settings": {
+        "handshakeTimeout": 300,
+        "maxSessions": 4096,
+        "maxStreams": 1024
+      },
+      "udp": true
+    },
+    {
+      "name": "dnstt-query-minimum",
+      "protocol": "dnstt",
+      "base": "generated",
+      "udp": true,
+      "outboundSettings": {
+        "tunnel": {
+          "queryTimeout": 1,
+          "maxConcurrentQueries": 1,
+          "minQueryIntervalMs": 1
+        }
+      },
+      "transferBytes": 32768
+    },
+    {
+      "name": "dnstt-query-concurrency-maximum",
+      "protocol": "dnstt",
+      "base": "generated",
+      "udp": true,
+      "outboundSettings": {
+        "tunnel": {
+          "queryTimeout": 60,
+          "maxConcurrentQueries": 256
+        }
+      }
+    },
+    {
+      "name": "dnstt-query-paced",
+      "protocol": "dnstt",
+      "base": "generated",
+      "udp": true,
+      "outboundSettings": {
+        "tunnel": {
+          "minQueryIntervalMs": 20
+        }
+      },
+      "transferBytes": 32768
+    },
+    {
+      "name": "dnstt-randomized-labels",
+      "protocol": "dnstt",
+      "base": "generated",
+      "udp": true,
+      "outboundSettings": {
+        "tunnel": {
+          "labelMin": 20,
+          "labelMax": 40,
+          "maxQnameLength": 200
+        }
+      }
+    },
+    {
+      "name": "dnstt-domain-single-label",
+      "protocol": "dnstt",
+      "base": "generated",
+      "settings": {
+        "domain": "tunnel"
+      },
+      "udp": true
+    },
+    {
+      "name": "dnstt-domain-uppercase-root",
+      "protocol": "dnstt",
+      "base": "generated",
+      "settings": {
+        "domain": "TuNnEl.Example.TEST."
+      },
+      "udp": true
+    },
+    {
+      "name": "dnstt-vless-dot-standard",
+      "protocol": "dnstt",
+      "base": "dnstt-vless",
+      "udp": true,
+      "dnsResolver": {
+        "transport": "dot",
+        "hostname": true,
+        "fingerprint": ""
+      }
+    },
+    {
+      "name": "dnstt-vless-dot-chrome",
+      "protocol": "dnstt",
+      "base": "dnstt-vless",
+      "udp": true,
+      "dnsResolver": {
+        "transport": "dot",
+        "hostname": true,
+        "fingerprint": "chrome"
+      }
+    },
+    {
+      "name": "dnstt-vless-dot-firefox",
+      "protocol": "dnstt",
+      "base": "dnstt-vless",
+      "udp": true,
+      "dnsResolver": {
+        "transport": "dot",
+        "hostname": true,
+        "fingerprint": "firefox"
+      }
+    },
+    {
+      "name": "dnstt-vless-dot-safari",
+      "protocol": "dnstt",
+      "base": "dnstt-vless",
+      "udp": true,
+      "dnsResolver": {
+        "transport": "dot",
+        "hostname": true,
+        "fingerprint": "safari"
+      }
+    },
+    {
+      "name": "dnstt-vless-doh-standard",
+      "protocol": "dnstt",
+      "base": "dnstt-vless",
+      "udp": true,
+      "dnsResolver": {
+        "transport": "doh",
+        "hostname": true,
+        "fingerprint": ""
+      }
+    },
+    {
+      "name": "dnstt-vless-doh-chrome",
+      "protocol": "dnstt",
+      "base": "dnstt-vless",
+      "udp": true,
+      "dnsResolver": {
+        "transport": "doh",
+        "hostname": true,
+        "fingerprint": "chrome"
+      }
+    },
+    {
+      "name": "dnstt-vless-doh-firefox",
+      "protocol": "dnstt",
+      "base": "dnstt-vless",
+      "udp": true,
+      "dnsResolver": {
+        "transport": "doh",
+        "hostname": true,
+        "fingerprint": "firefox"
+      }
+    },
+    {
+      "name": "dnstt-vless-doh-safari",
+      "protocol": "dnstt",
+      "base": "dnstt-vless",
+      "udp": true,
+      "dnsResolver": {
+        "transport": "doh",
+        "hostname": true,
+        "fingerprint": "safari"
+      }
+    },
+    {
+      "name": "dnstt-vless-udp-hostname-bootstrap",
+      "protocol": "dnstt",
+      "base": "dnstt-vless",
+      "udp": true,
+      "dnsResolver": {
+        "transport": "udp",
+        "hostname": true
+      }
+    },
+    {
+      "name": "dnstt-socks-dot-standard",
+      "protocol": "dnstt",
+      "base": "dnstt-socks",
+      "udp": false,
+      "dnsResolver": {
+        "transport": "dot",
+        "hostname": true,
+        "fingerprint": ""
+      }
+    },
+    {
+      "name": "dnstt-socks-dot-chrome",
+      "protocol": "dnstt",
+      "base": "dnstt-socks",
+      "udp": false,
+      "dnsResolver": {
+        "transport": "dot",
+        "hostname": true,
+        "fingerprint": "chrome"
+      }
+    },
+    {
+      "name": "dnstt-socks-dot-firefox",
+      "protocol": "dnstt",
+      "base": "dnstt-socks",
+      "udp": false,
+      "dnsResolver": {
+        "transport": "dot",
+        "hostname": true,
+        "fingerprint": "firefox"
+      }
+    },
+    {
+      "name": "dnstt-socks-dot-safari",
+      "protocol": "dnstt",
+      "base": "dnstt-socks",
+      "udp": false,
+      "dnsResolver": {
+        "transport": "dot",
+        "hostname": true,
+        "fingerprint": "safari"
+      }
+    },
+    {
+      "name": "dnstt-socks-doh-standard",
+      "protocol": "dnstt",
+      "base": "dnstt-socks",
+      "udp": false,
+      "dnsResolver": {
+        "transport": "doh",
+        "hostname": true,
+        "fingerprint": ""
+      }
+    },
+    {
+      "name": "dnstt-socks-doh-chrome",
+      "protocol": "dnstt",
+      "base": "dnstt-socks",
+      "udp": false,
+      "dnsResolver": {
+        "transport": "doh",
+        "hostname": true,
+        "fingerprint": "chrome"
+      }
+    },
+    {
+      "name": "dnstt-socks-doh-firefox",
+      "protocol": "dnstt",
+      "base": "dnstt-socks",
+      "udp": false,
+      "dnsResolver": {
+        "transport": "doh",
+        "hostname": true,
+        "fingerprint": "firefox"
+      }
+    },
+    {
+      "name": "dnstt-socks-doh-safari",
+      "protocol": "dnstt",
+      "base": "dnstt-socks",
+      "udp": false,
+      "dnsResolver": {
+        "transport": "doh",
+        "hostname": true,
+        "fingerprint": "safari"
+      }
+    },
+    {
+      "name": "dnstt-socks-udp-hostname-bootstrap",
+      "protocol": "dnstt",
+      "base": "dnstt-socks",
+      "udp": false,
+      "dnsResolver": {
+        "transport": "udp",
+        "hostname": true
+      }
+    }
+  ],
+  "harness_contract": {
+    "dnsResolver": "Harness-owned fixture forwards to authoritative UDP case.port and fills settings.clientExport.resolvers before panel add/export; copied main-client response remains unchanged. hostname uses e2e.test with bootstrap127.0.0.1. TLS uses existing fixture cert/key and caPem with serverName=e2e.test.",
+    "interCheckDelaySeconds": "Requested short drain between independent checks only for maxStreams1 to avoid measuring intentional capacity rejection as throughput failure."
+  },
+  "scope_note": "All12 original cases plus all TLS fingerprints for both inner types over DoT/DoH and hostname UDP bootstrap; no public resolvers. Remaining rejection/limit/lifecycle cases are covered by centrally executed core suite."
+}

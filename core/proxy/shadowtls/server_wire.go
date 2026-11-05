@@ -341,13 +341,24 @@ func serverHandshakeV3(raw, peer net.Conn, c *ServerConfig) (*Conn, *ServerUser,
 	if c.Strict && !serverHelloTLS13(serverHello) {
 		return nil, nil, camouflage(raw, peer)
 	}
-	random := append([]byte(nil), serverHello[6:38]...)
-	xor := sha256.Sum256(append([]byte(user.Password), random...))
-	handshakeMAC := newMAC(user.Password, random)
+	observer := new(serverHelloObserver)
+	if _, err := observer.observe(22, serverHello); err != nil {
+		return nil, nil, err
+	}
+	// A TLS 1.3 retry uses a sentinel random. Derive data authentication from
+	// the final ServerHello, which can arrive after compatibility CCS records.
+	// The channel publishes an immutable copy before that final hello reaches
+	// the client; only the flight goroutine mutates the observer and its MAC.
+	finalRandom := make(chan []byte, 1)
+	if observer.final {
+		finalRandom <- append([]byte(nil), observer.random...)
+	}
 	state := new(handshakeFlightState)
 	done := make(chan error, 1)
 	go func() {
 		defer state.finished(raw)
+		xor := sha256.Sum256(append([]byte(user.Password), observer.random...))
+		handshakeMAC := newMAC(user.Password, observer.random)
 		total := len(flight)
 		for total < maxHandshakeBytes {
 			t, v, b, err := readRecord(peer)
@@ -356,7 +367,23 @@ func serverHandshakeV3(raw, peer net.Conn, c *ServerConfig) (*Conn, *ServerUser,
 				return
 			}
 			total += len(b) + 5
+			changed, err := observer.observe(t, b)
+			if err != nil {
+				done <- err
+				return
+			}
+			if changed {
+				xor = sha256.Sum256(append([]byte(user.Password), observer.random...))
+				handshakeMAC = newMAC(user.Password, observer.random)
+				if observer.final {
+					finalRandom <- append([]byte(nil), observer.random...)
+				}
+			}
 			if t == 23 {
+				if !observer.final {
+					done <- errors.New("ShadowTLS encrypted flight arrived before final ServerHello")
+					return
+				}
 				for i := range b {
 					b[i] ^= xor[i%len(xor)]
 				}
@@ -371,6 +398,7 @@ func serverHandshakeV3(raw, peer net.Conn, c *ServerConfig) (*Conn, *ServerUser,
 		done <- errors.New("ShadowTLS handshake exceeds size limit")
 	}()
 	defer func() { _ = peer.Close(); <-done }()
+	var random []byte
 	total := len(frames)
 	for total < maxHandshakeBytes {
 		t, v, b, err := readRecord(raw)
@@ -378,7 +406,13 @@ func serverHandshakeV3(raw, peer net.Conn, c *ServerConfig) (*Conn, *ServerUser,
 			return nil, nil, err
 		}
 		total += len(b) + 5
-		if t == 23 && len(b) >= 4 {
+		if random == nil {
+			select {
+			case random = <-finalRandom:
+			default:
+			}
+		}
+		if t == 23 && len(b) >= 4 && random != nil {
 			mac := newMAC(user.Password, append(append([]byte(nil), random...), 'C'))
 			if matches(mac, b[4:], b[:4]) {
 				mac.Write(b[:4])

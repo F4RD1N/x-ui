@@ -486,6 +486,9 @@ func TestAnyTLSNativeInboundIPv6AddressAndInvalidUDPMode(t *testing.T) {
 func TestAnyTLSNativeInboundAdmissionIncludesBlockedFIN(t *testing.T) {
 	s, d := anyTLSNewTestServer(t, "p", false)
 	s.maxStreams = 2
+	// Logical streams close before their workers necessarily exit. The global
+	// worker bound must still include both blocked FIN writers below.
+	s.streamSlots = make(chan struct{}, 2)
 	reader, writer := net.Pipe()
 	defer reader.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -504,7 +507,7 @@ func TestAnyTLSNativeInboundAdmissionIncludesBlockedFIN(t *testing.T) {
 		}
 	}
 	// Neither FIN can finish: the peer deliberately never reads from reader.
-	// A closed logical stream still occupies admission until its worker exits.
+	// A closed logical stream still occupies global admission until worker exit.
 	until := time.Now().Add(time.Second)
 	for {
 		closed := 0

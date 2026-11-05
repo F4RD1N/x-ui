@@ -151,34 +151,55 @@ func TestWithDNSCacheOff(t *testing.T) {
 
 // The probe takes any DNS answer and nothing else.
 func TestProbeDNSCache(t *testing.T) {
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Skip(err)
-	}
-	defer pc.Close()
-	answer := true
-	go func() {
-		b := make([]byte, 512)
-		for {
-			n, a, err := pc.ReadFrom(b)
+	for _, test := range []struct {
+		name     string
+		response bool
+		wrongID  bool
+		short    bool
+		rcode    byte
+		want     bool
+	}{
+		{name: "matching response", response: true, want: true},
+		{name: "SERVFAIL still answers", response: true, rcode: 2, want: true},
+		{name: "wrong query ID", response: true, wrongID: true},
+		{name: "query is not a response"},
+		{name: "short response", response: true, short: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 			if err != nil {
-				return
+				t.Fatal(err)
 			}
-			if answer {
-				b[2] |= 0x80 // a response
-				b[3] = 0x02  // SERVFAIL counts
-			} else {
-				b[0] ^= 0xff // not the query's ID
+			done := make(chan struct{})
+			t.Cleanup(func() {
+				_ = pc.Close()
+				<-done
+			})
+			// Each fixture owns immutable response settings. The old shared
+			// answer bool raced between the probe caller and this goroutine.
+			go func() {
+				defer close(done)
+				b := make([]byte, 512)
+				n, a, err := pc.ReadFrom(b)
+				if err != nil {
+					return
+				}
+				if test.response {
+					b[2] |= 0x80 // a response
+				}
+				b[3] = test.rcode
+				if test.wrongID {
+					b[0] ^= 0xff // not the query's ID
+				}
+				if test.short {
+					n = 11
+				}
+				_, _ = pc.WriteTo(b[:n], a)
+			}()
+			if got := probeDNS(pc.LocalAddr().String()); got != test.want {
+				t.Fatalf("probeDNS = %t, want %t", got, test.want)
 			}
-			pc.WriteTo(b[:n], a)
-		}
-	}()
-	if !probeDNS(pc.LocalAddr().String()) {
-		t.Error("an answer was not taken")
-	}
-	answer = false
-	if probeDNS(pc.LocalAddr().String()) {
-		t.Error("a wrong ID was taken")
+		})
 	}
 }
 

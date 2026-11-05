@@ -20,6 +20,11 @@
     const generatedInner = new WeakMap();
     const rememberedInner = new WeakMap();
     const accountIdentity = (protocol, account) => protocol === 'vless' ? account.id : protocol === 'socks' ? account.user : account.password;
+    const sharedShadowSettings = data => {
+        const settings = data.inner?.settings;
+        return (data.version || 3) === 3 && data.inner?.protocol === 'shadowsocks' && settings
+            && (!Object.prototype.hasOwnProperty.call(settings, 'clients') || (!ss2022Sizes[settings.method] && (settings.clients === null || (Array.isArray(settings.clients) && !settings.clients.length))));
+    };
 
     function appendShadowAccount(data, client) {
         const inner = data.inner;
@@ -37,9 +42,16 @@
             if (settings.clients.some(account => account.id === id)) throw new Error('Generated inner UUID already exists. Try again.');
             settings.clients.push({id, email: client.email, level: 0});
         } else if (inner.protocol === 'shadowsocks') {
+            if (sharedShadowSettings(data)) {
+                if ((!ss2022Sizes[settings.method] && !aeadMethods.includes(String(settings.method).toLowerCase())) || !settings.password) throw new Error('Configure authenticated shared Shadowsocks credentials first.');
+                // A new outer identity shares the existing inner PSK. Adding an
+                // empty clients list here would turn SS2022 into deny-all mode.
+                return;
+            }
             if (!Array.isArray(settings.clients) || !settings.clients.length) throw new Error('Import per-client Shadowsocks credentials before adding a client.');
             if (settings.clients.some(account => account.email === client.email)) throw new Error('The inner client email already exists.');
             const method = String(settings.method || settings.clients[0].method || '').toLowerCase();
+            if (method === '2022-blake3-chacha20-poly1305') throw new Error('Inner multi-user SS2022 requires an AES-GCM method.');
             const size = ss2022Sizes[method];
             if (!size && !aeadMethods.includes(method)) throw new Error('Choose an authenticated Shadowsocks cipher first.');
             const password = base64(size || 32);
@@ -129,9 +141,11 @@
             if (protocol === 'shadowtls') {
                 const inner = data.inner;
                 const list = inner.protocol === 'socks' ? inner.settings.accounts : inner.settings.clients;
-                const binding = {protocol: inner.protocol, account: clone(list[list.length - 1])};
-                generatedInner.set(client, binding);
-                rememberedInner.set(client, binding);
+                if (Array.isArray(list) && list.length) {
+                    const binding = {protocol: inner.protocol, account: clone(list[list.length - 1])};
+                    generatedInner.set(client, binding);
+                    rememberedInner.set(client, binding);
+                }
             }
             return client;
         } catch (error) {
@@ -160,6 +174,7 @@
         if (this.protocol !== 'shadowtls') return true;
         const data = clone(this.data), inner = data.inner;
         const list = inner?.protocol === 'socks' ? inner.settings?.accounts : inner?.settings?.clients;
+        if (sharedShadowSettings(data)) return true;
         if (!Array.isArray(list)) throw new Error('Configure the inner client accounts first.');
         const emails = this.clients.map(client => client.email);
         if (new Set(emails).size !== emails.length) throw new Error('Client emails must be unique.');

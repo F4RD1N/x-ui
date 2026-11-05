@@ -1,0 +1,80 @@
+{
+  "cases": [
+    {
+      "name": "openvpn-stress-ipv6-lifecycle",
+      "protocol": "openvpn",
+      "ipv6": true,
+      "concurrentStreams": 4,
+      "sustainSeconds": 30,
+      "lifecycle": true,
+      "settings": {
+        "tunnel": {
+          "ipv6": "fd12:aa:bb::/64"
+        },
+        "network": "tcp"
+      },
+      "halfClose": true
+    },
+    {
+      "name": "anytls-stress-ipv6-lifecycle",
+      "protocol": "anytls",
+      "ipv6": true,
+      "concurrentStreams": 4,
+      "sustainSeconds": 30,
+      "lifecycle": true,
+      "halfClose": true
+    },
+    {
+      "name": "shadowtls-stress-ipv6-lifecycle",
+      "protocol": "shadowtls",
+      "ipv6": true,
+      "concurrentStreams": 4,
+      "sustainSeconds": 30,
+      "lifecycle": true,
+      "halfClose": true
+    },
+    {
+      "name": "dnstt-stress-ipv6-lifecycle",
+      "protocol": "dnstt",
+      "ipv6": true,
+      "concurrentStreams": 4,
+      "sustainSeconds": 30,
+      "lifecycle": true,
+      "halfClose": true
+    },
+    {
+      "name": "mieru-stress-ipv6-lifecycle",
+      "protocol": "mieru",
+      "ipv6": true,
+      "concurrentStreams": 4,
+      "sustainSeconds": 30,
+      "lifecycle": true,
+      "halfClose": true
+    },
+    {
+      "name": "openvpn-stress-udp",
+      "protocol": "openvpn",
+      "ipv6": true,
+      "concurrentStreams": 4,
+      "sustainSeconds": 30,
+      "settings": {
+        "network": "udp",
+        "tunnel": {
+          "ipv6": "fd12:aa:bc::/64"
+        }
+      },
+      "halfClose": true
+    },
+    {
+      "name": "mieru-stress-udp",
+      "protocol": "mieru",
+      "ipv6": true,
+      "concurrentStreams": 4,
+      "sustainSeconds": 30,
+      "settings": {
+        "transport": "udp"
+      },
+      "halfClose": true
+    }
+  ]
+}

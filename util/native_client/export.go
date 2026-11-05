@@ -485,7 +485,13 @@ func exportShadowTLSClient(settings, meta, client map[string]any, address string
 		// (ss2022.ServerConfig) or a server-level password (legacy AEAD), and
 		// every outer ShadowTLS client shares those server credentials. There
 		// is no inner account to select, so export them directly.
-		if rows, present := innerSettings["clients"].([]any); !present || len(rows) == 0 {
+		// SS2022 distinguishes an absent list from a managed deny-all list.
+		// Legacy AEAD instead accepts an empty/null list as single-user mode.
+		rows, listPresent := innerSettings["clients"]
+		accounts, validList := rows.([]any)
+		method := exportString(innerSettings["method"])
+		legacyEmpty := !strings.HasPrefix(method, "2022-") && (rows == nil || (validList && len(accounts) == 0))
+		if !listPresent || legacyEmpty {
 			method := exportString(innerSettings["method"])
 			password := exportString(innerSettings["password"])
 			if password == "" {
@@ -506,7 +512,7 @@ func exportShadowTLSClient(settings, meta, client map[string]any, address string
 		if err != nil {
 			return nil, err
 		}
-		method := exportString(account["method"])
+		method = exportString(account["method"])
 		if method == "" {
 			method = exportString(innerSettings["method"])
 		}

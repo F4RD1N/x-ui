@@ -1,0 +1,36 @@
+[
+  {
+    "name": "openvpn-udp-isolated-concurrent-131072",
+    "protocol": "openvpn",
+    "base": "openvpn-udp",
+    "ipv6": true,
+    "concurrentStreams": 4,
+    "transferBytes": 131072,
+    "sustainSeconds": 0,
+    "halfClose": false,
+    "settings": {
+      "network": "udp",
+      "tunnel": {
+        "ipv6": "fd12:aa:bc::/64"
+      }
+    },
+    "udpDiagnostics": true
+  },
+  {
+    "name": "openvpn-udp-isolated-concurrent-1048576",
+    "protocol": "openvpn",
+    "base": "openvpn-udp",
+    "ipv6": true,
+    "concurrentStreams": 4,
+    "transferBytes": 1048576,
+    "sustainSeconds": 0,
+    "halfClose": false,
+    "settings": {
+      "network": "udp",
+      "tunnel": {
+        "ipv6": "fd12:aa:bc::/64"
+      }
+    },
+    "udpDiagnostics": true
+  }
+]

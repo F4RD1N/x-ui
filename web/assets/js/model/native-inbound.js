@@ -3,6 +3,16 @@
     const clone = value => JSON.parse(JSON.stringify(value));
     const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
     const uuid = value => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value || '');
+    const ss2022Key = (value, size, uuidIdentity = false) => {
+        if (typeof value !== 'string') return false;
+        if (uuidIdentity) {
+            const identity = value.replace(/^urn:uuid:/i, '').replace(/^\{([\s\S]*)\}$/, '$1');
+            if (uuid(identity) || /^[0-9a-f]{32}$/i.test(identity)) return true;
+        }
+        const encoded = value.replace(/[\r\n]/g, '');
+        return /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)
+            && encoded.length * 3 / 4 - (encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0) === size;
+    };
     const nativeTelegramId = value => {
         if (value === undefined || value === null || (typeof value === 'string' && value.trim() === '')) return 0;
         if (typeof value === 'string') {
@@ -188,7 +198,11 @@
             });
             const require = (key, label) => { if (typeof data[key] !== 'string' || !data[key]) errors.push(`${label} is required`); };
             if (['anytls', 'mieru'].includes(this.protocol) || (this.protocol === 'shadowtls' && this.shadowVersion === 3)) require('password', 'Password');
-            if (this.protocol === 'mieru') { require('username', 'Username'); if (data.uuidMetadataTrailer && !uuid(data.username)) errors.push('UUID metadata compatibility requires a UUID username'); }
+            if (this.protocol === 'mieru') {
+                require('username', 'Username');
+                if (data.uuidMetadataTrailer && !uuid(data.username)) errors.push('UUID metadata compatibility requires a UUID username');
+                if (new TextEncoder().encode(data.username || '').length > 256 || new TextEncoder().encode(data.password || '').length > 4096) errors.push('Mieru credentials exceed the supported UTF-8 byte length');
+            }
             if (this.protocol === 'shadowtls' && this.shadowVersion === 3 && data.requireUuidSessionId && !uuid(data.password)) errors.push('UUID session ID compatibility requires a UUID password');
             if (this.protocol === 'shadowtls' && this.innerProtocol === 'socks') require('innerUsername', 'Inner SOCKS username');
             if (this.protocol === 'dnstt') {
@@ -329,7 +343,8 @@
         }
         get fields() {
             const fields = protocols[this.protocol].fields.filter(descriptor => !descriptor.show || descriptor.show(this.data));
-            if (['anytls', 'openvpn'].includes(this.protocol)) fields.push(field('clientExport.serverName', 'Client server name'), field('clientExport.ca', 'Client CA certificate', 'textarea'));
+            if (['anytls', 'shadowtls'].includes(this.protocol)) fields.push(field('clientExport.serverName', 'Client server name'), field('clientExport.ca', 'Client CA certificate', 'textarea'));
+            if (this.protocol === 'shadowtls') fields.push(field('clientExport.fingerprint', 'Client TLS fingerprint'));
             if (this.protocol === 'orbit' && ['ws', 'wss'].includes(this.data.transport)) fields.push(field('clientExport.serverName', 'Client server name'));
             if (this.protocol === 'orbit') fields.push(field('clientExport.address', 'Client server address'));
             if (this.protocol === 'openvpn') fields.push(field('clientExport.issuerPrivateKey', 'CA signing key', 'textarea'));
@@ -490,10 +505,16 @@
                     const settings = inner.settings || {};
                     const modern = ['aes-128-gcm', 'aes-256-gcm', 'chacha20-poly1305', 'xchacha20-poly1305', 'chacha20-ietf-poly1305', 'xchacha20-ietf-poly1305', 'aead_aes_128_gcm', 'aead_aes_256_gcm', 'aead_chacha20_poly1305', 'aead_xchacha20_poly1305'];
                     const ss2022 = ['2022-blake3-aes-128-gcm', '2022-blake3-aes-256-gcm', '2022-blake3-chacha20-poly1305'];
+                    const managed = Object.prototype.hasOwnProperty.call(settings, 'clients');
+                    const legacyShared = !ss2022.includes(settings.method) && (settings.clients === null || (Array.isArray(settings.clients) && settings.clients.length === 0));
+                    const accounts = managed && !legacyShared ? settings.clients : [settings];
                     if (settings.network && settings.network !== 'tcp') errors.push('Inner Shadowsocks currently supports TCP only');
+                    if (!Array.isArray(accounts) || accounts.some(client => !object(client))) errors.push('Inner Shadowsocks clients must be an array of objects');
                     if (ss2022.includes(settings.method)) {
-                        if (!settings.password || (settings.clients || []).some(client => !client.password)) errors.push('Inner SS2022 requires a base64 server key and each selected user key');
-                    } else if (!settings.clients?.length || settings.clients.some(client => !modern.includes(String(client.method || settings.method).toLowerCase()) || !client.password)) errors.push('Inner Shadowsocks requires authenticated AEAD clients; plain and legacy ciphers are unsupported');
+                        const size = settings.method === '2022-blake3-aes-128-gcm' ? 16 : 32;
+                        if (managed && settings.method === '2022-blake3-chacha20-poly1305') errors.push('Inner multi-user SS2022 requires an AES-GCM method');
+                        if (!ss2022Key(settings.password, size) || (managed && Array.isArray(accounts) && accounts.some(client => !object(client) || !ss2022Key(client.password, size, client.uuidIdentityKeys === undefined ? settings.uuidIdentityKeys === true : client.uuidIdentityKeys === true)))) errors.push('Inner SS2022 requires correctly sized base64 server and user keys');
+                    } else if (Array.isArray(accounts) && accounts.some(client => !object(client) || !modern.includes(String(client.method || settings.method).toLowerCase()) || typeof client.password !== 'string' || !client.password)) errors.push('Inner Shadowsocks requires authenticated AEAD clients; plain and legacy ciphers are unsupported');
                 }
             }
             if (this.protocol === 'orbit') {

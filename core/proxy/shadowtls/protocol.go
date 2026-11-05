@@ -92,6 +92,7 @@ type handshakeReader struct {
 	version      uint32
 	pending      []byte
 	serverRandom []byte
+	serverHello  serverHelloObserver
 	xor          [32]byte
 	mac          hash.Hash
 	v2mac        hash.Hash
@@ -160,10 +161,8 @@ func (r *handshakeReader) Read(p []byte) (int, error) {
 			return 0, e
 		}
 		if r.version == 3 {
-			if t == 22 && len(b) >= 38 && b[0] == 2 {
-				r.serverRandom = append([]byte(nil), b[6:38]...)
-				r.mac = newMAC(r.password, r.serverRandom)
-				r.xor = sha256.Sum256(append([]byte(r.password), r.serverRandom...))
+			if e := r.observeServerHello(t, b); e != nil {
+				return 0, e
 			}
 			if t == 23 {
 				if r.mac != nil && len(b) >= 4 && matches(r.mac, b[4:], b[:4]) {
@@ -182,6 +181,73 @@ func (r *handshakeReader) Read(p []byte) (int, error) {
 	n := copy(p, r.pending)
 	r.pending = r.pending[n:]
 	return n, nil
+}
+
+var helloRetryRequestRandom = [32]byte{
+	0xcf, 0x21, 0xad, 0x74, 0xe5, 0x9a, 0x61, 0x11,
+	0xbe, 0x1d, 0x8c, 0x02, 0x1e, 0x65, 0xb8, 0x91,
+	0xc2, 0xa2, 0x11, 0x16, 0x7a, 0xbb, 0x8c, 0x5e,
+	0x07, 0x9e, 0x09, 0xe2, 0xc8, 0xa8, 0x33, 0x9c,
+}
+
+// TLS 1.2 encrypted Finished still uses record type 22. Its CBC IV is random,
+// so its first byte can look like a ServerHello. Once the real ServerHello is
+// complete, ciphertext must never replace the random used for ShadowTLS MACs.
+// The one exception is RFC 8446 HelloRetryRequest: its sentinel random must be
+// replaced by the final ServerHello, even across a compatibility CCS record.
+func (r *handshakeReader) observeServerHello(typ byte, payload []byte) error {
+	changed, err := r.serverHello.observe(typ, payload)
+	if err != nil || !changed {
+		return err
+	}
+	r.serverRandom = append([]byte(nil), r.serverHello.random...)
+	r.mac = newMAC(r.password, r.serverRandom)
+	r.xor = sha256.Sum256(append([]byte(r.password), r.serverRandom...))
+	return nil
+}
+
+// Both directions use the same bounded handshake-message observer, so an HRR
+// followed by a final ServerHello selects the same authentication keys.
+type serverHelloObserver struct {
+	pending []byte
+	random  []byte
+	final   bool
+}
+
+func (o *serverHelloObserver) observe(typ byte, payload []byte) (bool, error) {
+	if o.final || typ != 22 {
+		return false, nil
+	}
+	if len(o.pending) == 0 && (len(payload) == 0 || payload[0] != 2) {
+		return false, nil
+	}
+	if len(o.pending) < 4 {
+		n := 4 - len(o.pending)
+		if n > len(payload) {
+			n = len(payload)
+		}
+		o.pending = append(o.pending, payload[:n]...)
+		payload = payload[n:]
+	}
+	if len(o.pending) < 4 {
+		return false, nil
+	}
+	size := 4 + (int(o.pending[1]) << 16) + (int(o.pending[2]) << 8) + int(o.pending[3])
+	if size < 42 || size > 65536 {
+		return false, errors.New("invalid ShadowTLS ServerHello size")
+	}
+	n := size - len(o.pending)
+	if n > len(payload) {
+		n = len(payload)
+	}
+	o.pending = append(o.pending, payload[:n]...)
+	if len(o.pending) < size {
+		return false, nil
+	}
+	o.random = append([]byte(nil), o.pending[6:38]...)
+	o.final = !bytes.Equal(o.random, helloRetryRequestRandom[:])
+	o.pending = nil
+	return true, nil
 }
 
 type Conn struct {
@@ -432,15 +498,23 @@ func (c *Conn) badMAC() error {
 
 // versionCappedSpec is the fingerprint's ClientHello with the version policy
 // applied: v1 offers TLS 1.2 at most, strict v3 only TLS 1.3. It is nil when
-// no cap applies, or when the fingerprint has no fixed spec (Go's own hello
-// already honours the Config caps; a randomized one cannot be capped).
+// no cap applies to a fixed preset, or when the fingerprint has no spec.
+// Randomized specs also need a local key-share consistency check before use.
 func versionCappedSpec(id utls.ClientHelloID, version uint32, strict bool) *utls.ClientHelloSpec {
-	if version != 1 && !(version == 3 && strict) {
+	capVersion := version == 1 || (version == 3 && strict)
+	randomized := id.Client == utls.HelloRandomized.Client || id.Client == utls.HelloRandomizedALPN.Client || id.Client == utls.HelloRandomizedNoALPN.Client
+	if !capVersion && !randomized {
 		return nil
 	}
 	spec, e := utls.UTLSIdToSpec(id)
 	if e != nil {
 		return nil
+	}
+	if randomized {
+		normalizeRandomizedKeyShares(&spec)
+	}
+	if !capVersion {
+		return &spec
 	}
 	allowed := func(v uint16) bool {
 		if v&0x0f0f == 0x0a0a { // GREASE keeps the fingerprint's shape
@@ -477,6 +551,48 @@ func versionCappedSpec(id utls.ClientHelloID, version uint32, strict bool) *utls
 		spec.CipherSuites = suites
 	}
 	return &spec
+}
+
+// The pinned randomized generator samples hybrid supported groups and initial
+// key shares independently. Some seeds produce an unadvertised key share,
+// which strict TLS servers reject, or advertise a hybrid group without its
+// share, which can trigger a hybrid HelloRetryRequest unsupported by uTLS.
+// Adjust only this connection's randomized spec. Keep valid hybrid pairs and
+// classical groups, including classical HelloRetryRequest support, intact.
+func normalizeRandomizedKeyShares(spec *utls.ClientHelloSpec) {
+	groups := make(map[utls.CurveID]bool)
+	shares := make(map[utls.CurveID]bool)
+	for _, ext := range spec.Extensions {
+		if curves, ok := ext.(*utls.SupportedCurvesExtension); ok {
+			for _, group := range curves.Curves {
+				groups[group] = true
+			}
+		}
+	}
+	for _, ext := range spec.Extensions {
+		if keys, ok := ext.(*utls.KeyShareExtension); ok {
+			kept := make([]utls.KeyShare, 0, len(keys.KeyShares))
+			for _, share := range keys.KeyShares {
+				if groups[share.Group] {
+					kept = append(kept, share)
+					shares[share.Group] = true
+				}
+			}
+			keys.KeyShares = kept
+		}
+	}
+	for _, ext := range spec.Extensions {
+		if curves, ok := ext.(*utls.SupportedCurvesExtension); ok {
+			kept := make([]utls.CurveID, 0, len(curves.Curves))
+			for _, group := range curves.Curves {
+				if (group == utls.X25519MLKEM768 || group == utls.X25519Kyber768Draft00) && !shares[group] {
+					continue
+				}
+				kept = append(kept, group)
+			}
+			curves.Curves = kept
+		}
+	}
 }
 
 const decoyUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"

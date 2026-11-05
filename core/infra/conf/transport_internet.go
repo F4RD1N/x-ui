@@ -588,6 +588,9 @@ type TLSCertConfig struct {
 
 // Build implements Buildable.
 func (c *TLSCertConfig) Build() (*tls.Certificate, error) {
+	if c.OcspStapling > uint64((1<<63-1)/time.Second) {
+		return nil, errors.New("ocspStapling interval exceeds timer range")
+	}
 	certificate := new(tls.Certificate)
 
 	cert, err := readFileOrString(c.CertFile, c.CertStr)

@@ -23,6 +23,7 @@ import (
 	"github.com/xtls/xray-core/proxy/nativebridge"
 	"github.com/xtls/xray-core/proxy/socks"
 	"github.com/xtls/xray-core/proxy/vless"
+	vencoding "github.com/xtls/xray-core/proxy/vless/encoding"
 	"github.com/xtls/xray-core/transport"
 	"github.com/xtls/xray-core/transport/internet/stat"
 	"www.bamsoftware.com/git/dnstt.git/dns"
@@ -458,7 +459,7 @@ func (s *Server) serveSession(conn *kcp.UDPSession, peer *serverPeer, dispatcher
 			if !inbound.Gateway.IsValid() {
 				inbound.Gateway = xnet.TCPDestination(xnet.IPAddress(wrapped.local.IP), xnet.Port(wrapped.local.Port))
 			}
-			_ = s.inner.Process(flow, xnet.Network_TCP, wrapped, &authenticatedDispatcher{Dispatcher: dispatcher, promote: func() bool {
+			_ = s.inner.Process(flow, xnet.Network_TCP, wrapped, &authenticatedDispatcher{Dispatcher: dispatcher, eagerVLESSResponse: !s.socksOnly, promote: func() bool {
 				if !s.queue.promote(peer) {
 					return false
 				}
@@ -595,7 +596,8 @@ func (s *Server) GetUsersCount(ctx context.Context) int64 {
 // reaches Dispatch/DispatchLink. Noise alone is deliberately not sufficient.
 type authenticatedDispatcher struct {
 	routing.Dispatcher
-	promote func() bool
+	promote            func() bool
+	eagerVLESSResponse bool
 }
 
 func (d *authenticatedDispatcher) Dispatch(ctx context.Context, target xnet.Destination) (*transport.Link, error) {
@@ -607,6 +609,27 @@ func (d *authenticatedDispatcher) Dispatch(ctx context.Context, target xnet.Dest
 func (d *authenticatedDispatcher) DispatchLink(ctx context.Context, target xnet.Destination, link *transport.Link) error {
 	if !d.promote() {
 		return errors.New("dnstt: authenticated session capacity reached")
+	}
+	if d.eagerVLESSResponse {
+		if !target.IsValid() {
+			return errors.New("dnstt: invalid inner destination")
+		}
+		// The ordinary VLESS handler has authenticated the user and encoded its
+		// response by this point, but buffers that header until target payload.
+		// Slow DNS uploads can outlive a client's first-response deadline when
+		// the destination waits for the complete request body. Flush the existing
+		// header here, without changing its bytes or the shared VLESS handler.
+		writer := link.Writer
+		if packets, ok := writer.(*vencoding.MultiLengthPacketWriter); ok {
+			writer = packets.Writer
+		}
+		buffered, ok := writer.(*buf.BufferedWriter)
+		if !ok {
+			return errors.New("dnstt: unexpected inner VLESS response writer")
+		}
+		if err := buffered.Flush(); err != nil {
+			return err
+		}
 	}
 	return d.Dispatcher.DispatchLink(ctx, target, link)
 }

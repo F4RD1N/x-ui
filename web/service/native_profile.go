@@ -100,7 +100,7 @@ func GenerateNativeInboundProfile(r NativeCredentialRequest) (*NativeInboundProf
 			client["password"] = id
 			settings["handshakeTimeout"], settings["maxStreams"] = 10, 128
 			if name == "" {
-				result.StreamSettings = map[string]any{"network": "tcp", "security": "tls", "tlsSettings": map[string]any{"minVersion": "1.2"}}
+				result.StreamSettings = map[string]any{"network": "tcp", "security": "tls", "tlsSettings": map[string]any{"minVersion": "1.2", "curvePreferences": nativeAnyTLSCompatibilityCurves()}}
 				result.Requirements = append(result.Requirements, NativeProfileRequirement{"serverName", "Enter the server DNS name or IP address before generating its certificate."})
 				return result, nil
 			}
@@ -121,7 +121,7 @@ func GenerateNativeInboundProfile(r NativeCredentialRequest) (*NativeInboundProf
 		case "anytls":
 			settings["clientExport"] = map[string]any{"serverName": name, "ca": pki.caPEM}
 			result.StreamSettings = map[string]any{"network": "tcp", "security": "tls", "tlsSettings": map[string]any{
-				"minVersion": "1.2", "certificates": []any{map[string]any{
+				"minVersion": "1.2", "curvePreferences": nativeAnyTLSCompatibilityCurves(), "certificates": []any{map[string]any{
 					"certificate": nativeProfilePEMLines(pki.serverPEM + pki.caPEM), "key": nativeProfilePEMLines(pki.serverKeyPEM),
 				}},
 			}}

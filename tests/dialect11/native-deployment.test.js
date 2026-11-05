@@ -104,12 +104,24 @@ test('generated validation does not relax missing deployment fields for Orbit WS
 
 for (const protocol of ['dnstt', 'shadowtls']) test(`${protocol} malformed nonblank deployment input is never treated as absent`, () => {
     const {NativeSettings} = fixture();
-    const invalid = protocol === 'dnstt' ? [' ', null, 123, 'single-label', 'bad..name', '.bad.example', 'https://bad.example', 'bad name.example'] : [' ', null, 123, 'https://cover.example', 'cover.example:443', 'bad name', '*.example'];
+    const invalid = protocol === 'dnstt' ? [' ', null, 123, '-invalid', 'invalid-', 'x'.repeat(64), 'bad..name', '.bad.example', 'https://bad.example', 'bad name.example', '192.0.2.1'] : [' ', null, 123, 'https://cover.example', 'cover.example:443', 'bad name', '*.example'];
     for (const value of invalid) {
         const data = generated(protocol);
         if (protocol === 'dnstt') data.domain = value;
         else data.handshake.address = value;
         assert.ok(new NativeSettings(protocol, data).generatedProfileErrors.length, JSON.stringify(value));
+    }
+});
+
+test('DNSTT preserves explicitly supplied single-label names supported by private DNS authorities', () => {
+    const {NativeSettings} = fixture();
+    // Both the core domain validator and profile generator accept these DNS
+    // names. Public delegation is deployment data, not a syntax requirement.
+    for (const domain of ['single-label', 'single-label.', 'tunnel.example', 'Tunnel.Example.']) {
+        const settings = new NativeSettings('dnstt', {...generated('dnstt'), domain});
+        assert.deepEqual(plain(settings.generatedProfileErrors), [], domain);
+        assert.deepEqual(plain(settings.validationErrors), [], domain);
+        assert.equal(settings.toJson().domain, domain);
     }
 });
 

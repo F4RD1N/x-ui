@@ -155,10 +155,19 @@ func TestCustomGeoValidateURL(t *testing.T) {
 	if _, err := s.sanitizeURL("ftp://x"); !errors.Is(err, ErrCustomGeoURLScheme) {
 		t.Fatal("ftp")
 	}
-	if sanitized, err := s.sanitizeURL("https://example.com/a.dat"); err != nil {
-		t.Fatal(err)
-	} else if sanitized != "https://example.com/a.dat" {
-		t.Fatalf("unexpected sanitized URL: %s", sanitized)
+	// Literal documentation addresses exercise URL and SSRF validation without
+	// depending on external DNS, network reachability, or a public site's DNS.
+	for _, raw := range []string{"https://192.0.2.1/a.dat", "https://[2001:db8::1]/a.dat?tag=one#two"} {
+		if sanitized, err := s.sanitizeURL(raw); err != nil {
+			t.Fatal(err)
+		} else if sanitized != raw {
+			t.Fatalf("unexpected sanitized URL: %s", sanitized)
+		}
+	}
+	for _, raw := range []string{"http://127.0.0.1/a.dat", "http://10.0.0.1/a.dat", "http://[::1]/a.dat", "http://169.254.169.254/a.dat"} {
+		if _, err := s.sanitizeURL(raw); !errors.Is(err, ErrCustomGeoSSRFBlocked) {
+			t.Fatalf("private literal was not rejected: %s: %v", raw, err)
+		}
 	}
 }
 

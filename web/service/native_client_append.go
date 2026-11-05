@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -56,6 +57,15 @@ func appendNativeInnerClients(protocol model.Protocol, stored, request map[strin
 		}
 	default:
 		return false, errors.New("unsupported ShadowTLS inner protocol")
+	}
+	if name == "shadowsocks" && nativeSharedShadowTLSInner(stored, innerSettings) {
+		// v3 authenticates each outer account independently. A single-user
+		// Shadowsocks inner has only a shared server credential, so there is
+		// no inner account to append. Never accept a replacement shared key.
+		if supplied, exists := request["inner"]; exists && !reflect.DeepEqual(supplied, inner) {
+			return false, errors.New("ShadowTLS add client cannot change shared inner settings")
+		}
+		return false, nil
 	}
 	current, ok := innerSettings[collection].([]any)
 	if !ok {
@@ -217,6 +227,9 @@ func renameNativeInnerClient(protocol model.Protocol, stored map[string]any, old
 	if !ok {
 		return false, errors.New("invalid stored ShadowTLS inner settings")
 	}
+	if name == "shadowsocks" && nativeSharedShadowTLSInner(stored, settings) {
+		return false, nil // The shared credential has no per-account email binding.
+	}
 	rows, ok := settings["clients"].([]any)
 	if !ok {
 		return false, errors.New("ShadowTLS email edit requires a managed inner account list")
@@ -250,4 +263,32 @@ func renameNativeInnerClient(protocol model.Protocol, stored map[string]any, old
 	updated[selected] = renamed
 	settings["clients"] = updated
 	return true, nil
+}
+
+// SS2022 treats a present clients field as managed authorization, including an
+// empty list. Legacy AEAD instead uses its server password for an absent, null
+// or empty list. In v1/v2 the inner proxy supplies account authorization, so
+// only v3 may manage outer clients independently of a shared Shadowsocks key.
+func nativeSharedShadowTLSInner(stored, settings map[string]any) bool {
+	if raw, present := settings["clients"]; present {
+		method, _ := settings["method"].(string)
+		if strings.HasPrefix(method, "2022-") {
+			return false
+		}
+		if raw != nil {
+			rows, ok := raw.([]any)
+			if !ok || len(rows) != 0 {
+				return false
+			}
+		}
+	}
+	raw, err := json.Marshal(stored["version"])
+	if err != nil {
+		return false
+	}
+	var version uint32
+	if json.Unmarshal(raw, &version) != nil {
+		return false
+	}
+	return version == 0 || version == 3
 }
