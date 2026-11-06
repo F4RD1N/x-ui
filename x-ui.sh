@@ -1277,36 +1277,11 @@ EOF
     [[ -f $anti_abuse_unit && -f $anti_abuse_nft ]] && anti_abuse_reload
     rm -f "$conf.prev"
     LOGI "DNS cache on: unbound at 127.0.0.1, forwarding to ${servers[*]}."
-    dns_core_follow
     # The names anti-abuse refuses, from the copy it keeps.
     [[ -f $anti_abuse_unit ]] && anti_abuse_domains load
     return $rc
 }
 
-# dns_core_follow starts the core again when its config does not follow the
-# DNS cache: users' DNS (port 53) goes to the cache while it is on, and must
-# not once it is gone. The panel decides when it builds the config.
-dns_core_follow() {
-    local cfg="${xui_folder}/bin/config.json" want=0 has=0
-    systemctl is-active --quiet x-ui || return 0
-    [[ -f $cfg ]] || return 0
-    if [[ -d $dns_state ]]; then
-        local i
-        for i in 1 2 3 4 5; do
-            dns_answers 127.0.0.1 && { want=1; break; }
-            sleep 1
-        done
-    fi
-    grep -q '"xui-dns-cache"' "$cfg" && has=1
-    [[ $want == "$has" ]] && return 0
-    if systemctl reload x-ui >/dev/null 2>&1; then
-        if [[ $want == 1 ]]; then
-            LOGI "Users' DNS now goes to the DNS cache (Xray restarted)."
-        else
-            LOGI "Users' DNS no longer goes to the DNS cache (Xray restarted)."
-        fi
-    fi
-}
 
 # dns_auto is the installer's: on, unless "x-ui dns off" turned it off or it
 # is already on.
@@ -1349,11 +1324,6 @@ dns_status() {
         echo -e "DNS cache: ${red}not answering${plain} (unbound $(systemctl is-active unbound 2>/dev/null); see: systemctl status unbound)"
     fi
     echo "  Forwards to: $(awk '$1 == "forward-addr:" { printf "%s%s", sep, $2; sep = ", " }' "$conf")"
-    if grep -qs '"xui-dns-cache"' "${xui_folder}/bin/config.json"; then
-        echo "  Users' DNS:  answered here (the core sends port 53 to the cache)"
-    else
-        echo "  Users' DNS:  not sent here yet (x-ui restart-xray)"
-    fi
     if dns_ours; then
         echo "  resolv.conf: $(awk '$1 == "nameserver" { printf "%s%s", sep, $2; sep = ", " }' /etc/resolv.conf)"
     else
@@ -1396,7 +1366,6 @@ dns_off() {
     fi
     # Anti-abuse lets through the private resolvers resolv.conf names again.
     [[ -f $anti_abuse_unit && -f $anti_abuse_nft ]] && anti_abuse_reload
-    dns_core_follow
     LOGI "DNS cache off; /etc/resolv.conf: $(awk '$1 == "nameserver" { printf "%s%s", sep, $2; sep = ", " }' /etc/resolv.conf 2>/dev/null)."
 }
 
@@ -1506,15 +1475,9 @@ anti_abuse_lists_timer="/etc/systemd/system/x-ui-anti-abuse-lists.timer"
 # taken: the last copy stays).
 anti_abuse_sources="${XUI_THREAT_SOURCES:-drop4 https://www.spamhaus.org/drop/drop_v4.json 500
 drop6 https://www.spamhaus.org/drop/drop_v6.json 10}"
-# Sinkholes: where researchers point seized botnet domains to count the
-# infected devices that still call them. Spamhaus XBL lists the IPs those
-# connections come from, so they are refused like the lists. From Emerging
-# Threats' rules, only the ones still named as sinkholes or inside their
-# operators' own networks: Microsoft, BitSight (AnubisNetworks), CERT.PL,
-# Dr.Web, Zinkhole, Fitsec, snkhole, Kaspersky.
 # Names that serve only malware, phishing and botnets (HaGeZi's Threat
-# Intelligence Feeds, mini: about 190,000), refused by the DNS cache, which
-# answers users' DNS: an infected device cannot look up where to call home.
+# Intelligence Feeds, mini: about 190,000), refused by the DNS cache, so the
+# core cannot connect to a name a device asked for that is on the list.
 # Fetched with the lists; needs the cache and about 2 GB of memory (the list
 # takes about 80 MB of the cache's). Names listed one per line in
 # anti_abuse_domains_allow are never refused.
@@ -1524,7 +1487,19 @@ anti_abuse_domains_min_mb="${XUI_THREAT_DOMAINS_MIN_MB:-1800}"
 anti_abuse_domains_name="x-ui-threats.conf"
 anti_abuse_domains_header="# Written by \"x-ui anti-abuse\""
 anti_abuse_domains_allow="/etc/x-ui/anti-abuse-allow-domains"
-anti_abuse_sinkholes="199.2.137.0/24 207.46.90.0/24 131.253.18.11 131.253.18.12 195.22.26.192/26 35.205.61.67 148.81.111.111 91.233.244.106 176.31.62.76 193.166.255.171 166.78.144.80 95.211.172.143"
+# Sinkholes: where researchers point seized botnet domains to count the
+# infected devices that still call them. Spamhaus XBL lists the IPs those
+# connections come from ("kins" and "andromeda" detections on our servers
+# named Shadowserver's sinkholes), so they are refused with the lists,
+# whichever botnet and whichever routing template. Lists of names catch few of
+# them (6 in 100 of the names that pointed at those two sinkholes), so these
+# are networks. Every network registered to The Shadowserver Foundation
+# (ARIN, 2,090 IPv4 addresses): it serves nothing a user needs.
+anti_abuse_sinkholes_shadowserver="64.62.148.96/30 64.62.156.0/24 64.62.195.136/30 64.62.195.152/29 64.62.197.0/24 64.62.200.232/29 64.62.202.96/27 64.71.131.152/29 64.71.137.248/29 64.71.138.160/29 64.71.145.204/30 64.71.153.68/30 64.71.165.224/29 64.71.166.48/29 64.71.188.176/29 64.124.59.0/24 64.124.78.2/31 65.49.1.0/24 65.49.20.64/26 65.49.51.32/27 66.160.133.128/29 66.220.2.184/30 66.220.6.192/27 66.220.10.136/30 66.220.11.96/29 66.220.13.248/30 66.220.23.112/29 72.52.106.100/30 72.52.116.48/29 74.82.47.0/26 158.69.188.40/29 184.105.76.248/29 184.105.139.64/26 184.105.143.128/26 184.105.184.208/29 184.105.192.0/29 184.105.237.192/26 184.105.247.160/29 184.105.247.192/26 199.165.159.0/24 216.218.135.112/29 216.218.135.208/29 216.218.185.160/29 216.218.196.12/30 216.218.206.64/26 216.218.207.16/29 216.218.208.112/29 216.218.214.208/29 216.218.224.88/29 216.218.229.0/27 216.218.244.248/30 2001:438:fffd:12::/64 2001:470:1:89::/64 2001:470:1:1ad::/64 2001:470:1:332::/64 2001:470:1:456::/64 2001:470:1:c11::/64 2001:470:1:c84::/64 2001:470:1:fb4::/64 2001:470:1:fb5::/64 2001:470:2cc::/48 2001:470:3f6::/48 2620:24:c040::/44"
+# From Emerging Threats' rules, only the ones still named as sinkholes or
+# inside their operators' own networks: Microsoft, BitSight (AnubisNetworks),
+# CERT.PL, Dr.Web, Zinkhole, Fitsec, snkhole, Kaspersky.
+anti_abuse_sinkholes="${anti_abuse_sinkholes_shadowserver} 199.2.137.0/24 207.46.90.0/24 131.253.18.11 131.253.18.12 195.22.26.192/26 35.205.61.67 148.81.111.111 91.233.244.106 176.31.62.76 193.166.255.171 166.78.144.80 95.211.172.143"
 
 # anti_abuse_uplinks prints the interfaces the default routes leave through.
 anti_abuse_uplinks() {
@@ -2219,7 +2194,7 @@ anti_abuse_status() {
         grep -oE '[0-9a-f.:]+ \. [0-9]+' | sed 's/ \. /:/' | paste -sd' ' -)
     echo "  Brute force:      $(anti_abuse_counter brute_force) attempts refused; refused for ${anti_abuse_brute_for} now: ${barred:-none}"
     if grep -qsF "$anti_abuse_domains_header" "$(anti_abuse_domains_conf)"; then
-        echo "  Refused names:    $(anti_abuse_domain_count) (malware, phishing, botnets; the DNS cache answers users' DNS)"
+        echo "  Refused names:    $(anti_abuse_domain_count) (malware, phishing, botnets; refused by the DNS cache)"
     else
         echo "  Refused names:    off (needs the DNS cache, x-ui dns, and about 2 GB of memory)"
     fi

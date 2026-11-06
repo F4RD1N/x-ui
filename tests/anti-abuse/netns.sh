@@ -288,12 +288,29 @@ lists "$(sources "file://$work/feeds/drop4.json")" || { echo "FAIL anti-abuse li
 threat_checks "threat lists loaded" || rc=1
 set4=$(in_srv nft list set inet xui_anti_abuse threats4)
 set6=$(in_srv nft list set inet xui_anti_abuse threats6)
-# 4 from the sources, 12 built-in sinkholes
-if [[ $set4 != *10.0.0.0* && $set4 != *11.0.0.0/4* && $set6 == *2001:db9::/32* && $set4 == *148.81.111.111* && $set4 == *199.2.137.0/24* && $(grep -c . <<<"$(grep '^# networks: 16$' "$work/lists/threats.nft")") == 1 ]]; then
-    echo "ok   private and too-wide entries left out; sinkholes in; 16 networks"
+# 4 from the sources, 63 Shadowserver networks, 12 other sinkholes
+if [[ $set4 != *10.0.0.0* && $set4 != *11.0.0.0/4* && $set6 == *2001:db9::/32* && $set4 == *148.81.111.111* && $set4 == *199.2.137.0/24* && $set4 == *216.218.135.112/29* && $set4 == *184.105.192.0/29* && $set6 == *2620:24:c040::/44* && $(grep -c . <<<"$(grep '^# networks: 79$' "$work/lists/threats.nft")") == 1 ]]; then
+    echo "ok   private and too-wide entries left out; sinkholes in; 79 networks"
 else
     echo "FAIL threat sets: $set4 $set6 $(grep '^# networks' "$work/lists/threats.nft")"; rc=1
 fi
+# The addresses Spamhaus named (kins, andromeda) are refused, their neighbours
+# outside Shadowserver's networks are not. "net" has no way out of this
+# namespace, so nothing here can reach a real sinkhole.
+for a in 216.218.135.114 216.218.135.120 184.105.192.2 184.105.192.9; do in_net ip route add local $a/32 dev lo; done
+in_srv python3 - <<'P6' || rc=1
+import socket, sys
+def tcp(ip):
+    s = socket.socket(); s.settimeout(2)
+    try: s.connect((ip, 443)); return "open"
+    except ConnectionRefusedError: return "refused"
+    except OSError as e: return "error %d" % e.errno
+    finally: s.close()
+got = {ip: tcp(ip) for ip in ("216.218.135.114", "184.105.192.2", "216.218.135.120", "184.105.192.9")}
+ok = list(got.values()) == ["refused", "refused", "open", "open"]
+print(("ok   " if ok else "FAIL ") + "the sinkholes Spamhaus named are refused, their neighbours open: %s" % got)
+sys.exit(0 if ok else 1)
+P6
 # Only connections the server opens are refused: a user on a listed network
 # still reaches the server.
 in_srv python3 - >"$work/in.log" 2>&1 <<'P5' &

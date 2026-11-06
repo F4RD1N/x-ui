@@ -1,7 +1,6 @@
 [Unit]
 Description=x-ui Service
-# after the DNS cache ("x-ui dns"), which users' DNS goes to
-After=network.target unbound.service
+After=network.target
 Wants=network.target
 
 [Service]
