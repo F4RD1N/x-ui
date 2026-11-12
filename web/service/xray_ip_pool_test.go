@@ -47,6 +47,9 @@ func TestLocalIPv4Ranges(t *testing.T) {
 	if got := rs[0].IPs; len(got) != 2 || got[0] != "103.76.130.12" || got[1] != "103.76.130.79" {
 		t.Fatalf("/24 ips = %v (the gateway must be left out)", got)
 	}
+	if rs[0].Label != "103.76.130.12, .79" || rs[1].Label != "154.193.163.98 – .126" {
+		t.Fatalf("labels = %q, %q", rs[0].Label, rs[1].Label)
+	}
 	got := rs[1].IPs
 	if len(got) != 29 || got[0] != "154.193.163.98" || got[28] != "154.193.163.126" {
 		t.Fatalf("/27 ips = %d %v (network, gateway and broadcast must be left out)", len(got), got)
@@ -86,5 +89,28 @@ func TestWithIPPools(t *testing.T) {
 	}
 	if string(withIPPools(raw, nil)) != string(raw) {
 		t.Fatalf("no pools must change nothing")
+	}
+}
+
+func TestIPRunsLabel(t *testing.T) {
+	addrs := func(ss ...string) (out []netip.Addr) {
+		for _, s := range ss {
+			out = append(out, netip.MustParseAddr(s))
+		}
+		return
+	}
+	for _, tc := range []struct {
+		in   []netip.Addr
+		want string
+	}{
+		{addrs("193.16.145.140", "193.16.145.141", "193.16.145.142", "193.16.145.143"), "193.16.145.140 – .143"},
+		{addrs("103.76.130.12", "103.76.130.79", "103.76.130.99", "103.76.130.153", "103.76.130.247"), "103.76.130.12, .79, .99, .153, .247"},
+		{addrs("193.16.145.59", "193.16.145.132", "193.16.145.133", "193.16.145.134", "193.16.145.135"), "193.16.145.59, .132 – .135"},
+		{addrs("10.0.0.255", "10.0.1.0", "10.0.2.7"), "10.0.0.255 – 10.0.1.0, 10.0.2.7"},
+		{addrs("10.0.0.5"), "10.0.0.5"},
+	} {
+		if got := ipRunsLabel(tc.in); got != tc.want {
+			t.Errorf("ipRunsLabel = %q, want %q", got, tc.want)
+		}
 	}
 }

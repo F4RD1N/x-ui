@@ -32,16 +32,6 @@
             const r = this.ipRanges.find(x => x.cidr === this.ipPool);
             return r ? r.ips : [];
         },
-        // "a – b, c": consecutive addresses shown as one run.
-        poolSummary() {
-            const n = ip => ip.split('.').reduce((a, o) => a * 256 + Number(o), 0);
-            const runs = [];
-            for (const ip of this.poolIPs()) {
-                const last = runs[runs.length - 1];
-                if (last && n(ip) === n(last[1]) + 1) last[1] = ip; else runs.push([ip, ip]);
-            }
-            return runs.map(([a, b]) => a === b ? a : a + ' – ' + b).join(', ');
-        },
         ok() {
             this.check();
             if (!this.isValid) return;

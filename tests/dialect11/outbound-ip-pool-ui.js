@@ -25,8 +25,8 @@ fs.writeFileSync(path.join(temp, 'f.html'), `<!doctype html><html><head><meta ch
 <script>window.themeSwitcher={currentTheme:'light'}; window.app={cmOptions:{}}; Vue.config.productionTip=false;</script>
 ${modal}</body></html>`);
 const ranges = [
-    {cidr: '103.76.130.0/24', ips: ['103.76.130.12', '103.76.130.79', '103.76.130.80']},
-    {cidr: '154.193.163.96/27', ips: Array.from({length: 29}, (_, i) => `154.193.163.${98 + i}`)},
+    {cidr: '103.76.130.0/24', label: '103.76.130.12, .79 – .80', ips: ['103.76.130.12', '103.76.130.79', '103.76.130.80']},
+    {cidr: '154.193.163.96/27', label: '154.193.163.98 – .126', ips: Array.from({length: 29}, (_, i) => `154.193.163.${98 + i}`)},
 ];
 (async () => {
     const errors = [];
@@ -54,12 +54,13 @@ const ranges = [
         await select.click();
         await page.waitForTimeout(300);
         const options = await page.locator('.ant-select-dropdown:visible li[role="option"]').allInnerTexts();
-        assert.deepEqual(options.map(s => s.trim()), ['none', '103.76.130.0/24 (3 IPs)', '154.193.163.96/27 (29 IPs)']);
-        await page.locator('.ant-select-dropdown:visible li[role="option"]', {hasText: '154.193.163.96/27'}).click();
+        assert.deepEqual(options.map(s => s.trim()), ['none', '103.76.130.12, .79 – .80 (3 IPs)', '154.193.163.98 – .126 (29 IPs)']);
+        await page.locator('.ant-select-dropdown:visible li[role="option"]', {hasText: '154.193.163.98 – .126'}).click();
         await page.waitForTimeout(300);
         assert.equal(await sendThrough.isDisabled(), true, 'Send Through is locked while a pool is chosen');
         const note = await page.locator('#out-modal').innerText();
-        assert.match(note, /Sends through 29 IPs: 154\.193\.163\.98 – 154\.193\.163\.126/);
+        assert.match(note, /Send Through is not used: Xray sends through these 29 IPs\./);
+        assert.match(await select.innerText(), /154\.193\.163\.98 – \.126 \(29 IPs\)/);
         await page.screenshot({path: path.join(temp, 'pool-chosen.png')});
 
         // OK hands the pool to the page together with the unchanged outbound
@@ -72,7 +73,7 @@ const ranges = [
         // a stored pool that is no longer on the server is shown as such
         await page.evaluate(r => outModal.show({isEdit: true, outbound: {tag: 'direct', protocol: 'freedom', settings: {}}, confirm: () => {}, tags: [], ipRanges: r, ipPool: '45.198.36.96/27'}), ranges);
         await page.waitForTimeout(300);
-        assert.match(await page.locator('#out-modal').innerText(), /Not on this server: Send Through above is used\./);
+        assert.match(await page.locator('#out-modal').innerText(), /no longer on this server[\s\S]*Not on this server: Send Through above is used\./);
 
         // a new outbound starts at "none"
         await page.evaluate(r => outModal.show({confirm: () => {}, tags: [], ipRanges: r}), ranges);

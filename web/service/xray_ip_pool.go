@@ -27,8 +27,9 @@ import (
 // an outbound may send from: the server's own, without the network, broadcast
 // and gateway addresses.
 type IPRange struct {
-	CIDR string   `json:"cidr"`
-	IPs  []string `json:"ips"`
+	CIDR  string   `json:"cidr"`  // the interface network: the stored value
+	Label string   `json:"label"` // what the dropdown shows: the addresses themselves
+	IPs   []string `json:"ips"`
 }
 
 // ipNoneValue is the dropdown's "none": the outbound keeps its own sendThrough.
@@ -139,6 +140,7 @@ func LocalIPv4Ranges() ([]IPRange, error) {
 		for _, ip := range ips {
 			r.IPs = append(r.IPs, ip.String())
 		}
+		r.Label = ipRunsLabel(ips)
 		out = append(out, r)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -147,6 +149,45 @@ func LocalIPv4Ranges() ([]IPRange, error) {
 		return a.Addr().Less(b.Addr())
 	})
 	return out, nil
+}
+
+// ipRunsLabel names a set of addresses by what it holds, since the interface
+// network (often a /24 a provider shares between customers) says nothing about
+// which of its addresses are the server's: "193.16.145.140 – .143",
+// "103.76.130.12, .79, .99". After the first, an address in the same /24 as
+// the one before it is shortened to its last octet.
+func ipRunsLabel(ips []netip.Addr) string {
+	var runs [][2]netip.Addr
+	for _, ip := range ips {
+		if n := len(runs); n > 0 && runs[n-1][1].Next() == ip {
+			runs[n-1][1] = ip
+			continue
+		}
+		runs = append(runs, [2]netip.Addr{ip, ip})
+	}
+	var parts []string
+	var prev netip.Addr
+	short := func(ip netip.Addr) string {
+		if prev.IsValid() && sameSlash24(prev, ip) {
+			return "." + strings.Split(ip.String(), ".")[3]
+		}
+		return ip.String()
+	}
+	for _, r := range runs {
+		s := short(r[0])
+		prev = r[0]
+		if r[1] != r[0] {
+			s += " – " + short(r[1])
+			prev = r[1]
+		}
+		parts = append(parts, s)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func sameSlash24(a, b netip.Addr) bool {
+	x, y := a.As4(), b.As4()
+	return x[0] == y[0] && x[1] == y[1] && x[2] == y[2]
 }
 
 func lastAddr(p netip.Prefix) netip.Addr {
