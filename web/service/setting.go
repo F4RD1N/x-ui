@@ -92,6 +92,9 @@ var defaultValueMap = map[string]string{
 	"externalTrafficInformEnable": "false",
 	"externalTrafficInformURI":    "",
 	"xrayOutboundTestUrl":         "https://www.google.com/generate_204",
+	// Outgoing IP pool per outbound tag (a CIDR of this server), set in the
+	// outbound form. Kept out of the template so a fetched template keeps it.
+	"outboundIPPools": "{}",
 	// Fetching the Xray config template from a URL on a timer. An empty URL or
 	// a zero interval means the fetch is off, so this is inert until asked for.
 	"xrayConfigUrl":      "",
@@ -378,6 +381,23 @@ func (s *SettingService) GetXrayOutboundTestUrl() (string, error) {
 
 func (s *SettingService) SetXrayOutboundTestUrl(url string) error {
 	return s.setString("xrayOutboundTestUrl", url)
+}
+
+func (s *SettingService) GetOutboundIPPools() (map[string]string, error) {
+	raw, err := s.getString("outboundIPPools")
+	if err != nil {
+		return nil, err
+	}
+	return ParseOutboundIPPools(raw)
+}
+
+func (s *SettingService) SetOutboundIPPools(raw string) error {
+	pools, err := ParseOutboundIPPools(raw)
+	if err != nil {
+		return err
+	}
+	b, _ := json.Marshal(pools)
+	return s.setString("outboundIPPools", string(b))
 }
 
 func (s *SettingService) GetListen() (string, error) {

@@ -34,7 +34,18 @@
         ></a-input>
       </a-form-item>
       <a-form-item label='{{ i18n "pages.xray.outbound.sendThrough" }}'>
-        <a-input v-model="outbound.sendThrough" placeholder="IP, or IP1,IP2,... (a pool: more UDP ports)"></a-input>
+        <a-input v-model="outbound.sendThrough" :disabled="outModal.ipPool !== 'none'" placeholder="IP, or IP1,IP2,... (a pool: more UDP ports)"></a-input>
+      </a-form-item>
+      <a-form-item label="IP pool">
+        <a-select v-model="outModal.ipPool" :dropdown-class-name="themeSwitcher.currentTheme">
+          <a-select-option value="none">none</a-select-option>
+          <a-select-option v-for="r in outModal.ipRanges" :key="r.cidr" :value="r.cidr">[[ r.cidr ]] ([[ r.ips.length ]] IPs)</a-select-option>
+          <a-select-option v-if="outModal.ipPool !== 'none' && !outModal.ipRanges.some(r => r.cidr === outModal.ipPool)" :value="outModal.ipPool">[[ outModal.ipPool ]] (not on this server)</a-select-option>
+        </a-select>
+        <div v-if="outModal.ipPool !== 'none'" :style="{ fontSize: '12px', lineHeight: '1.5', wordBreak: 'break-all' }">
+          <template v-if="outModal.poolIPs().length">Sends through [[ outModal.poolIPs().length ]] IPs: [[ outModal.poolSummary() ]]</template>
+          <template v-else>Not on this server: Send Through above is used.</template>
+        </div>
       </a-form-item>
 
       <a-form-item label="Chain through outbound">

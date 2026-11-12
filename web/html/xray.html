@@ -256,6 +256,10 @@
       oldXrayConfigUrl: '',
       xrayConfigInterval: 0,
       oldXrayConfigInterval: 0,
+      // Outgoing IP pool per outbound tag, and the server's ranges to pick from.
+      outboundIPPools: {},
+      oldOutboundIPPools: '{}',
+      ipRanges: [],
       // Reported by the fetch job, never edited here, so they take no "old"
       // counterpart and stay out of the save comparison.
       xrayConfigLastCheck: 0,
@@ -418,6 +422,9 @@
           this.oldXrayConfigInterval = this.xrayConfigInterval;
           this.xrayConfigLastCheck = result.xrayConfigLastCheck || 0;
           this.xrayConfigLastApply = result.xrayConfigLastApply || 0;
+          this.outboundIPPools = result.outboundIPPools || {};
+          this.oldOutboundIPPools = JSON.stringify(this.outboundIPPools);
+          this.ipRanges = result.ipRanges || [];
           this.saveBtnDisable = true;
         }
       },
@@ -438,7 +445,8 @@
           xraySetting: this.xraySetting,
           outboundTestUrl: this.outboundTestUrl || 'https://www.google.com/generate_204',
           xrayConfigUrl: this.xrayConfigUrl || '',
-          xrayConfigInterval: this.xrayConfigInterval || 0
+          xrayConfigInterval: this.xrayConfigInterval || 0,
+          outboundIPPools: JSON.stringify(this.outboundIPPools || {})
         });
         this.loading(false);
         if (msg.success) {
@@ -629,34 +637,48 @@
         outModal.show({
           title: '{{ i18n "pages.xray.outbound.addOutbound"}}',
           okText: '{{ i18n "pages.xray.outbound.addOutbound" }}',
-          confirm: (outbound) => {
+          confirm: (outbound, ipPool) => {
             outModal.loading();
             if (outbound.tag.length > 0) {
               this.templateSettings.outbounds.push(outbound);
               this.outboundSettings = JSON.stringify(this.templateSettings.outbounds);
+              this.setOutboundIPPool(null, outbound.tag, ipPool);
             }
             outModal.close();
           },
           isEdit: false,
-          tags: this.templateSettings.outbounds.map(obj => obj.tag)
+          tags: this.templateSettings.outbounds.map(obj => obj.tag),
+          ipRanges: this.ipRanges
         });
       },
       editOutbound(index) {
         outModal.show({
           title: '{{ i18n "pages.xray.outbound.editOutbound"}} ' + (index + 1),
           outbound: app.templateSettings.outbounds[index],
-          confirm: (outbound) => {
+          confirm: (outbound, ipPool) => {
             outModal.loading();
+            const oldTag = (this.templateSettings.outbounds[index] || {}).tag;
             this.templateSettings.outbounds[index] = outbound;
             this.outboundSettings = JSON.stringify(this.templateSettings.outbounds);
+            this.setOutboundIPPool(oldTag, outbound.tag, ipPool);
             outModal.close();
           },
           isEdit: true,
-          tags: this.outboundData.filter((o) => o.key != index).map(obj => obj.tag)
+          tags: this.outboundData.filter((o) => o.key != index).map(obj => obj.tag),
+          ipPool: this.outboundIPPools[(app.templateSettings.outbounds[index] || {}).tag] || 'none',
+          ipRanges: this.ipRanges
         });
+      },
+      // Keeps the pool map in step with the outbound's tag (renames, deletes).
+      setOutboundIPPool(oldTag, newTag, ipPool) {
+        const pools = Object.assign({}, this.outboundIPPools);
+        if (oldTag) delete pools[oldTag];
+        if (newTag && ipPool && ipPool !== 'none') pools[newTag] = ipPool;
+        this.outboundIPPools = pools;
       },
       deleteOutbound(index) {
         outbounds = this.templateSettings.outbounds;
+        this.setOutboundIPPool((outbounds[index] || {}).tag, null, null);
         outbounds.splice(index, 1);
         this.outboundSettings = JSON.stringify(outbounds);
       },
@@ -1157,7 +1179,8 @@
         this.saveBtnDisable = this.oldXraySetting === this.xraySetting
           && this.oldOutboundTestUrl === this.outboundTestUrl
           && this.oldXrayConfigUrl === this.xrayConfigUrl
-          && this.oldXrayConfigInterval === this.xrayConfigInterval;
+          && this.oldXrayConfigInterval === this.xrayConfigInterval
+          && this.oldOutboundIPPools === JSON.stringify(this.outboundIPPools || {});
       }
     },
     computed: {

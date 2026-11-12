@@ -63,7 +63,17 @@ func (a *XraySettingController) getXraySetting(c *gin.Context) {
 	xrayConfigInterval, _ := a.SettingService.GetXrayConfigInterval()
 	xrayConfigLastCheck, _ := a.SettingService.GetXrayConfigLastCheck()
 	xrayConfigLastApply, _ := a.SettingService.GetXrayConfigLastApply()
+	outboundIPPools, _ := a.SettingService.GetOutboundIPPools()
+	if outboundIPPools == nil {
+		outboundIPPools = map[string]string{}
+	}
+	ipRanges, err := service.LocalIPv4Ranges()
+	if err != nil || ipRanges == nil {
+		ipRanges = []service.IPRange{}
+	}
 	xrayResponse := map[string]interface{}{
+		"outboundIPPools":     outboundIPPools,
+		"ipRanges":            ipRanges,
 		"xraySetting":         json.RawMessage(xraySetting),
 		"inboundTags":         json.RawMessage(inboundTags),
 		"outboundTestUrl":     outboundTestUrl,
@@ -92,6 +102,15 @@ func (a *XraySettingController) updateSetting(c *gin.Context) {
 		outboundTestUrl = "https://www.google.com/generate_204"
 	}
 	_ = a.SettingService.SetXrayOutboundTestUrl(outboundTestUrl)
+
+	// Sent by pages that know the outbound IP pools; an older cached page
+	// leaves the stored pools alone.
+	if pools, ok := c.GetPostForm("outboundIPPools"); ok {
+		if err := a.SettingService.SetOutboundIPPools(pools); err != nil {
+			jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), err)
+			return
+		}
+	}
 
 	// Where the config template is fetched from, and how often. An interval of
 	// zero turns the fetch off, which is the default.

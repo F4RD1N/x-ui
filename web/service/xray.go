@@ -114,6 +114,11 @@ func (s *XrayService) buildXrayConfig(templateConfig string) (*xray.Config, erro
 		return nil, err
 	}
 	xrayConfig.OutboundConfigs = withDirectMark(xrayConfig.OutboundConfigs)
+	if pools, err := s.settingService.GetOutboundIPPools(); err != nil {
+		logger.Warning("outbound IP pools:", err)
+	} else {
+		xrayConfig.OutboundConfigs = withIPPools(xrayConfig.OutboundConfigs, pools)
+	}
 
 	s.inboundService.AddTraffic(nil, nil)
 
