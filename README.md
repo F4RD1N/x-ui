@@ -175,6 +175,23 @@ client given `*` sends `/*`). The path then no longer hides the inbound:
 anyone who opens a WebSocket on that port reaches VLESS, which still refuses
 unknown users.
 
+## Outgoing IP pools
+
+Every UDP flow a direct (freedom) outbound opens takes one local port, and one
+IP has only about 64k of them. A server with many users runs out, and the CPU
+climbs while the kernel looks for free ports. Give the outbound several of the
+server's IPs instead of one:
+
+```json
+{ "protocol": "freedom", "tag": "direct", "sendThrough": "203.0.113.11,203.0.113.12,203.0.113.13,203.0.113.14" }
+```
+
+Each IP adds its own ~64k ports. A user always leaves through the same IP of
+the pool (picked from their address), so sites don't see their IP change.
+Only the IPs the server actually has are used; the rest are skipped with a
+warning in the log. Use IPs of one family (all IPv4 or all IPv6). The panel's
+"Send Through" field takes the same list.
+
 ## Other changes
 
 - **Restarting Xray no longer races itself.** Stopping the core now waits for it

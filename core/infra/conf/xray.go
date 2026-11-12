@@ -270,7 +270,31 @@ func (c *OutboundDetourConfig) Build() (*core.OutboundHandlerConfig, error) {
 		return nil, err
 	}
 
-	if c.SendThrough != nil {
+	if c.SendThrough != nil && strings.Contains(*c.SendThrough, ",") {
+		// A pool: "ip1,ip2,...". The first one stays in Via, so everything
+		// that only checks Via still sees a source address.
+		var pool []string
+		seen := map[string]bool{}
+		for _, s := range strings.Split(*c.SendThrough, ",") {
+			s = strings.TrimSpace(s)
+			if s == "" {
+				continue
+			}
+			ip := net.ParseIP(s)
+			if ip == nil {
+				return nil, errors.New("sendThrough pool: ", s, " is not an IP address")
+			}
+			if !seen[ip.String()] {
+				seen[ip.String()] = true
+				pool = append(pool, ip.String())
+			}
+		}
+		if len(pool) == 0 {
+			return nil, errors.New("sendThrough pool is empty")
+		}
+		senderSettings.Via = net.NewIPOrDomain(net.ParseAddress(pool[0]))
+		senderSettings.ViaPool = pool
+	} else if c.SendThrough != nil {
 		address := ParseSendThough(c.SendThrough)
 		//Check if CIDR exists
 		if strings.Contains(*c.SendThrough, "/") {

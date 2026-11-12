@@ -68,6 +68,7 @@ type Handler struct {
 	mux             *mux.ClientManager
 	xudp            *mux.ClientManager
 	udp443          string
+	viaPool         *viaPool
 	uplinkCounter   stats.Counter
 	downlinkCounter stats.Counter
 }
@@ -91,6 +92,9 @@ func NewHandler(ctx context.Context, config *core.OutboundHandlerConfig) (outbou
 		switch s := senderSettings.(type) {
 		case *proxyman.SenderConfig:
 			h.senderSettings = s
+			if len(s.ViaPool) > 0 {
+				h.viaPool = newViaPool(s.ViaPool)
+			}
 			mss, err := internet.ToMemoryStreamConfig(s.StreamSettings)
 			if err != nil {
 				return nil, errors.New("failed to parse stream settings").Base(err).AtWarning()
@@ -331,6 +335,14 @@ func (h *Handler) SetOutboundGateway(ctx context.Context, ob *session.Outbound) 
 		addr := h.senderSettings.Via.AsAddress()
 		domain = h.senderSettings.Via.GetDomain()
 		switch {
+		case h.viaPool != nil:
+			var src net.Address
+			if inbound := session.InboundFromContext(ctx); inbound != nil && inbound.Source.IsValid() && inbound.Source.Address.Family().IsIP() {
+				src = inbound.Source.Address
+			}
+			ob.Gateway = h.viaPool.pick(src)
+			errors.LogDebug(ctx, "sendthrough pool: ", ob.Gateway)
+
 		case h.senderSettings.ViaCidr != "":
 			ob.Gateway = ParseRandomIP(addr, h.senderSettings.ViaCidr)
 

@@ -57,6 +57,9 @@ message SenderConfig {
   MultiplexingConfig multiplex_settings = 4;
   string via_cidr = 5;
   xray.transport.internet.DomainStrategy target_strategy = 6;
+  // Send traffic through one of these local IPs (sendThrough "ip1,ip2,...").
+  // Each client source IP always gets the same one.
+  repeated string via_pool = 7;
 }
 
 message MultiplexingConfig {
