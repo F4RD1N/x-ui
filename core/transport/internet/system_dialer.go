@@ -109,14 +109,23 @@ func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest ne
 			keepAliveConfig.Interval = time.Duration(sockopt.TcpKeepAliveInterval) * time.Second
 		}
 	}
+	localAddr := resolveSrcAddr(dest.Network, src)
 	dialer := &net.Dialer{
 		Timeout:         time.Second * 16,
-		LocalAddr:       resolveSrcAddr(dest.Network, src),
+		LocalAddr:       localAddr,
 		KeepAlive:       keepAlive,
 		KeepAliveConfig: keepAliveConfig,
 	}
 
-	if sockopt != nil || len(d.controllers) > 0 {
+	// Sending from a chosen address (sendThrough, IP pools) makes Go bind()
+	// before connect(). Without IP_BIND_ADDRESS_NO_PORT that bind picks the
+	// port on its own, so every connection needs a port of the address no
+	// other connection uses, whatever its destination, and with tens of
+	// thousands open the kernel spends its time searching for a free one.
+	// With it, connect() picks the port and shares it between destinations.
+	deferPort := dest.Network == net.Network_TCP && localAddr != nil
+
+	if sockopt != nil || len(d.controllers) > 0 || deferPort {
 		if sockopt != nil && sockopt.TcpMptcp {
 			dialer.SetMultipathTCP(true)
 		}
@@ -127,6 +136,11 @@ func (d *DefaultSystemDialer) Dial(ctx context.Context, src net.Address, dest ne
 				}
 			}
 			return c.Control(func(fd uintptr) {
+				if deferPort {
+					if err := setBindAddressNoPort(fd); err != nil {
+						errors.LogDebugInner(ctx, err, "failed to set IP_BIND_ADDRESS_NO_PORT")
+					}
+				}
 				if sockopt != nil {
 					if err := applyOutboundSocketOptions(network, address, fd, sockopt); err != nil {
 						errors.LogInfoInner(ctx, err, "failed to apply socket options")

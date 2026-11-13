@@ -196,6 +196,13 @@ Only the IPs the server actually has are used; the rest are skipped with a
 warning in the log. Use IPs of one family (all IPv4 or all IPv6). The panel's
 "Send Through" field takes the same list.
 
+A TCP connection sent from a chosen IP (a pool or a single Send Through
+address) leaves the choice of its local port to the kernel's `connect()`
+(`IP_BIND_ADDRESS_NO_PORT`), so connections to different destinations share
+ports. Before 11.15 each one took a port of that IP of its own, and a busy
+server with few IPs spent most of its CPU in the kernel looking for a free
+one.
+
 ## Other changes
 
 - **Restarting Xray no longer races itself.** Stopping the core now waits for it
