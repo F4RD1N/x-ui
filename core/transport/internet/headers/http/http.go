@@ -115,12 +115,15 @@ func (h *HeaderReader) Read(reader io.Reader) (*buf.Buffer, error) {
 		h.req = req
 	}
 
-	// Check req
+	// Check req. A path of "*" (or "/*") takes every path, as on WebSocket
+	// and HTTPUpgrade, so each client can send a path of its own. The query
+	// string is never compared.
 	path := h.req.URL.Path
 	hasThisURI := false
 	for _, u := range h.expectedHeader.Uri {
-		if u == path {
+		if u == path || u == "*" || u == "/*" {
 			hasThisURI = true
+			break
 		}
 	}
 

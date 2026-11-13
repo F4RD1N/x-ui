@@ -165,7 +165,7 @@ settings and an inbound's TLS certificates — you may enter an
 `http(s)://` link instead. On save the file is downloaded to `/etc/x-ui/certs`
 and the field is replaced with the local path.
 
-## Any path on WebSocket and HTTPUpgrade
+## Any path on WebSocket, HTTPUpgrade and TCP HTTP header
 
 An inbound whose WebSocket or HTTPUpgrade path is `*` takes every path, so
 each client can use a path of its own (`/feed/966695/assets/recent/media`,
@@ -174,6 +174,10 @@ still match exactly. Only the server needs this; clients are unchanged (a
 client given `*` sends `/*`). The path then no longer hides the inbound:
 anyone who opens a WebSocket on that port reaches VLESS, which still refuses
 unknown users.
+
+The same goes for a TCP inbound with the HTTP header (`"header": {"type":
+"http"}`): a request path of `*` (or `/*`) in its list takes every path. The
+query string after `?` is never compared, with or without `*`.
 
 ## Outgoing IP pools
 
