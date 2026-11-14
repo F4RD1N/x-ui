@@ -39,4 +39,10 @@ message Config {
   Fragment fragment = 5;
   uint32 proxy_protocol = 6;
   repeated Noise noises = 7;
+  // udp_route_each_destination routes every new destination of a full-cone
+  // UDP flow (XUDP, socks/shadowsocks/trojan UDP, ...) with the core's router
+  // and drops the datagrams of the ones not routed to this outbound.
+  // Numbered far above upstream's range: upstream Xray (26.6+) uses 8 for
+  // final_rules, and a fork-only field must never collide with a later merge.
+  bool udp_route_each_destination = 1001;
 }

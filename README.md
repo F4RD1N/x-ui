@@ -205,6 +205,59 @@ ports. Before 11.15 each one took a port of that IP of its own, and a busy
 server with few IPs spent most of its CPU in the kernel looking for a free
 one.
 
+## Route every UDP destination (11.19)
+
+Xray routes a UDP session once, by its first packet. Full-cone UDP (mux.cool
+and XUDP, socks and shadowsocks UDP, ...) lets every later packet of the
+session name its own destination, and a direct (freedom) outbound sent each one
+there without routing it. With an allow-list routing (`blocked` first, only
+listed domains, IPs and ports to `direct`) a session that opened to an allowed
+destination, say `8.8.8.8:53`, could then reach any IP and port. Turn the check
+on in the freedom outbound (off by default: the core then behaves as upstream):
+
+```json
+{ "protocol": "freedom", "tag": "direct", "settings": { "udpRouteEachDestination": true } }
+```
+
+The panel's outbound form has the same switch ("Route each UDP").
+
+- **What passes.** The session's own destinations (the one it was routed by,
+  the address it asked for before a sniffed domain replaced it, and the
+  address the socket was dialed to) always pass, so a QUIC session allowed by
+  its sniffed domain keeps working. Any other destination is routed by the
+  core's router with the session's own inbound, user, source and sniffed
+  protocol, as UDP to the new IP (or domain) and port, without DNS. The packet
+  passes only if that route is this outbound's own tag. `blocked`, another
+  outbound, a balancer that picks another outbound, or **no matching rule at
+  all** drop it. A destination that only the routing's default (first)
+  outbound would take is dropped even when that default is this outbound: list
+  it in a rule. The session goes on; only the packet is dropped.
+- **Overrides.** With `destinationOverride` set to an address every packet goes
+  there anyway, and nothing is checked. With a port-only override packets are
+  checked by the destination the client asked for, before the port changes.
+- **Only freedom checks.** UDP that the routing sends to a proxy outbound (a
+  vless/vmess/trojan/... outbound) is forwarded with each packet's own
+  destination as before, and the upstream server decides where it goes. If
+  that matters, turn the setting on in the upstream server's freedom outbound
+  with an allow-list there.
+- **Cost and bounds.** The router runs once per new destination of a session,
+  and the decision is kept (allowed and denied); the packets after it cost one
+  map lookup. A session routes at most 128 new destinations at once and 64 a
+  second after that; a packet to a new destination over that is dropped without
+  being routed (and counted), and tried again when the budget refills. A
+  session keeps at most 1024 decisions (then forgets them and starts again),
+  and all sessions of one outbound at most 262144.
+- **Counters.** `outbound>>>{tag}>>>udp>>>dropped_packets` and
+  `outbound>>>{tag}>>>udp>>>dropped_destinations` (read them with
+  `xray api statsquery`). The panel's traffic job resets every stats counter
+  every 10 seconds, so they show the last few seconds only.
+- **Log.** At most one Info line a minute per outbound: how many packets and
+  new destinations were dropped and an example, such as
+  `freedom [direct]: udpRouteEachDestination dropped 3 UDP packets; 1 new destinations not routed to this outbound, e.g. 45.33.1.1:554 -> (no route)`.
+  Nothing is logged per packet.
+- **Older cores** (before 11.19) accept the key and ignore it: the hole stays
+  open there.
+
 ## Other changes
 
 - **The TCP/UDP connection counts are read from the kernel's totals**

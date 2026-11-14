@@ -459,6 +459,9 @@ type udpOnDemand struct {
 	inbound     *session.Inbound
 	gateway     net.Address
 	udpOverride net.Destination
+	// guard, if not nil, checks each datagram's destination, the first one
+	// before the socket is dialed for it.
+	guard *udpRouteGuard
 	// activity is called on every datagram sent.
 	activity func()
 
@@ -473,7 +476,7 @@ type udpOnDemand struct {
 	conn   stat.Connection
 }
 
-func (h *Handler) newUDPOnDemand(ctx context.Context, dialer internet.Dialer, inbound *session.Inbound, gateway net.Address, udpOverride net.Destination) *udpOnDemand {
+func (h *Handler) newUDPOnDemand(ctx context.Context, dialer internet.Dialer, inbound *session.Inbound, gateway net.Address, udpOverride net.Destination, guard *udpRouteGuard) *udpOnDemand {
 	return &udpOnDemand{
 		// The flow may outlive the request's context (XUDP), and the socket
 		// is dialed later than a flow's would be.
@@ -483,6 +486,7 @@ func (h *Handler) newUDPOnDemand(ctx context.Context, dialer internet.Dialer, in
 		inbound:     inbound,
 		gateway:     gateway,
 		udpOverride: udpOverride,
+		guard:       guard,
 		activity:    func() {},
 		ready:       make(chan struct{}),
 	}
@@ -496,6 +500,14 @@ func (u *udpOnDemand) opened() bool {
 
 func (u *udpOnDemand) WriteMultiBuffer(mb buf.MultiBuffer) error {
 	if u.writer == nil {
+		if u.guard != nil {
+			// Routing saw only the flow's ping target: the socket is
+			// dialed only for a datagram whose destination is routed here.
+			mb = u.allowed(mb)
+			if len(mb) == 0 {
+				return nil
+			}
+		}
 		var first *net.Destination
 		for _, b := range mb {
 			if b.UDP != nil {
@@ -516,6 +528,22 @@ func (u *udpOnDemand) WriteMultiBuffer(mb buf.MultiBuffer) error {
 	}
 	u.activity()
 	return u.writer.WriteMultiBuffer(mb)
+}
+
+// allowed returns the datagrams of mb the guard lets through, in mb's own
+// array, and releases the others.
+func (u *udpOnDemand) allowed(mb buf.MultiBuffer) buf.MultiBuffer {
+	n := 0
+	for _, b := range mb {
+		if b.UDP != nil && !u.guard.allow(b.UDP) {
+			b.Release()
+			continue
+		}
+		mb[n] = b
+		n++
+	}
+	clear(mb[n:])
+	return mb[:n]
 }
 
 // open dials the socket as if the flow had opened with a datagram to first.
@@ -540,7 +568,10 @@ func (u *udpOnDemand) open(first net.Destination) error {
 	u.conn = conn
 	u.mu.Unlock()
 	errors.LogInfo(u.ctx, "connection opened to ", destination, ", local endpoint ", conn.LocalAddr(), ", remote endpoint ", conn.RemoteAddr())
-	u.writer = u.h.newUDPWriter(u.ctx, conn, u.udpOverride, destination)
+	if u.guard != nil {
+		u.guard.approveAddr(conn.RemoteAddr())
+	}
+	u.writer = u.h.newUDPWriter(u.ctx, conn, u.udpOverride, destination, u.guard)
 	u.reader = NewPacketReader(conn, u.udpOverride, destination)
 	close(u.ready)
 	return nil

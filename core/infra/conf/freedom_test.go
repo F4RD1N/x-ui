@@ -38,5 +38,22 @@ func TestFreedomConfig(t *testing.T) {
 				UserLevel: 1,
 			},
 		},
+		{
+			Input: `{
+				"udpRouteEachDestination": true
+			}`,
+			Parser: loadJSON(creator),
+			Output: &freedom.Config{
+				DomainStrategy:          internet.DomainStrategy_AS_IS,
+				UdpRouteEachDestination: true,
+			},
+		},
+		{
+			Input:  `{}`,
+			Parser: loadJSON(creator),
+			Output: &freedom.Config{
+				DomainStrategy: internet.DomainStrategy_AS_IS,
+			},
+		},
 	})
 }

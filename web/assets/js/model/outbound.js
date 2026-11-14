@@ -1220,6 +1220,7 @@ Outbound.FreedomSettings = class extends CommonClass {
         fragment = {},
         noises = [],
         ipsBlocked = [],
+        udpRouteEachDestination = false,
     ) {
         super();
         this.domainStrategy = domainStrategy;
@@ -1227,6 +1228,9 @@ Outbound.FreedomSettings = class extends CommonClass {
         this.fragment = fragment || {};
         this.noises = Array.isArray(noises) ? noises : [];
         this.ipsBlocked = Array.isArray(ipsBlocked) ? ipsBlocked : [];
+        // Route every UDP destination of a session, not only its first one
+        // (full-cone UDP: mux/XUDP, socks, shadowsocks); off by default.
+        this.udpRouteEachDestination = udpRouteEachDestination === true;
     }
 
     addNoise() {
@@ -1244,6 +1248,7 @@ Outbound.FreedomSettings = class extends CommonClass {
             json.fragment ? Outbound.FreedomSettings.Fragment.fromJson(json.fragment) : {},
             json.noises ? json.noises.map(noise => Outbound.FreedomSettings.Noise.fromJson(noise)) : [],
             json.ipsBlocked || [],
+            json.udpRouteEachDestination === true,
         );
     }
 
@@ -1254,6 +1259,8 @@ Outbound.FreedomSettings = class extends CommonClass {
             fragment: Object.keys(this.fragment).length === 0 ? undefined : this.fragment,
             noises: this.noises.length === 0 ? undefined : Outbound.FreedomSettings.Noise.toJsonArray(this.noises),
             ipsBlocked: this.ipsBlocked.length === 0 ? undefined : this.ipsBlocked,
+            // Only written when on, so templates without it stay as they were.
+            udpRouteEachDestination: this.udpRouteEachDestination ? true : undefined,
         };
     }
 };

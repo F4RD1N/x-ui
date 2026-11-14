@@ -23,6 +23,10 @@ type FreedomConfig struct {
 	Noise          *Noise    `json:"noise"`
 	Noises         []*Noise  `json:"noises"`
 	ProxyProtocol  uint32    `json:"proxyProtocol"`
+	// UDPRouteEachDestination routes every new destination of a full-cone
+	// UDP flow and drops the datagrams to the ones not routed to this
+	// outbound. Off by default.
+	UDPRouteEachDestination bool `json:"udpRouteEachDestination"`
 }
 
 type Fragment struct {
@@ -162,6 +166,7 @@ func (c *FreedomConfig) Build() (proto.Message, error) {
 	if c.ProxyProtocol > 0 && c.ProxyProtocol <= 2 {
 		config.ProxyProtocol = c.ProxyProtocol
 	}
+	config.UdpRouteEachDestination = c.UDPRouteEachDestination
 	return config, nil
 }
 

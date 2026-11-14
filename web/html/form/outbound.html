@@ -158,6 +158,18 @@
           >
           </a-select>
         </a-form-item>
+        <a-form-item>
+          <template slot="label">
+            <a-tooltip>
+              <template slot="title">
+                <span>Route each UDP destination, not only a session's first one: a packet whose destination does not route to this outbound is dropped, also when no rule matches it (list it in a rule, the default outbound is not used).</span>
+              </template>
+              Route each UDP
+              <a-icon type="question-circle"></a-icon>
+            </a-tooltip>
+          </template>
+          <a-switch v-model="outbound.settings.udpRouteEachDestination"></a-switch>
+        </a-form-item>
         <a-form-item label="Fragment">
           <a-switch
             :checked="Object.keys(outbound.settings.fragment).length >0"

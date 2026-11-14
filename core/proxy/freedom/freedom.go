@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"io"
+	"sync/atomic"
 	"time"
 
 	"github.com/pires/go-proxyproto"
@@ -22,6 +23,7 @@ import (
 	"github.com/xtls/xray-core/common/utils"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/policy"
+	"github.com/xtls/xray-core/features/routing"
 	"github.com/xtls/xray-core/features/stats"
 	"github.com/xtls/xray-core/proxy"
 	"github.com/xtls/xray-core/transport"
@@ -34,10 +36,18 @@ var useSplice bool
 func init() {
 	common.Must(common.RegisterConfig((*Config)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
 		h := new(Handler)
-		if err := core.RequireFeatures(ctx, func(pm policy.Manager) error {
+		if err := core.RequireFeatures(ctx, func(pm policy.Manager, r routing.Router, sm stats.Manager) error {
+			h.router = r
+			h.udpRouteDrops.sm = sm
 			return h.Init(config.(*Config), pm)
 		}); err != nil {
 			return nil, err
+		}
+		if h.config.GetUdpRouteEachDestination() {
+			// The counters exist from the start, at zero.
+			if oh := session.FullHandlerFromContext(ctx); oh != nil {
+				h.udpRouteDrops.counters(oh.Tag())
+			}
 		}
 		return h, nil
 	}))
@@ -53,6 +63,13 @@ func init() {
 type Handler struct {
 	policyManager policy.Manager
 	config        *Config
+	// router routes the new destinations of a UDP flow when the config's
+	// udpRouteEachDestination is on (udproute.go).
+	router        routing.Router
+	udpRouteDrops udpRouteDrops
+	// udpRouteCached counts the destination decisions all UDP flows of
+	// the handler remember (bounded by maxUDPRouteCached).
+	udpRouteCached atomic.Int64
 }
 
 // Init initializes the Handler with necessary parameters.
@@ -114,13 +131,18 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 	// opens with one dials its UDP socket only if ordinary UDP follows.
 	var echo *echoFlow
 	var udp *udpOnDemand
+	var guard *udpRouteGuard
 	if destination.Network == net.Network_UDP {
 		echo = h.newEchoFlow(ctx, dialer, ob, output)
+		guard = h.newUDPRouteGuard(ctx, ob, UDPOverride)
+		if guard != nil {
+			defer guard.release()
+		}
 	}
 	if echo != nil {
 		defer echo.Close()
 		if icmpecho.IsMarker(ob.Target) {
-			udp = h.newUDPOnDemand(ctx, dialer, inbound, outGateway, UDPOverride)
+			udp = h.newUDPOnDemand(ctx, dialer, inbound, outGateway, UDPOverride, guard)
 			defer udp.Close()
 		}
 	}
@@ -133,6 +155,9 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		}
 		defer conn.Close()
 		errors.LogInfo(ctx, "connection opened to ", destination, ", local endpoint ", conn.LocalAddr(), ", remote endpoint ", conn.RemoteAddr())
+		if guard != nil {
+			guard.approveAddr(conn.RemoteAddr())
+		}
 	}
 
 	var newCtx context.Context
@@ -183,7 +208,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 				writer = udp
 				copyOpts = nil
 			} else {
-				writer = h.newUDPWriter(ctx, conn, UDPOverride, destination)
+				writer = h.newUDPWriter(ctx, conn, UDPOverride, destination, guard)
 			}
 			if echo != nil {
 				writer = &echoSplitWriter{Writer: writer, echo: echo, target: ob.Target, udp: udp}
@@ -291,9 +316,12 @@ func (h *Handler) dial(ctx context.Context, dialer internet.Dialer, inbound *ses
 }
 
 // newUDPWriter is the writer of a UDP flow's datagrams to conn, dialed to
-// destination.
-func (h *Handler) newUDPWriter(ctx context.Context, conn net.Conn, UDPOverride net.Destination, destination net.Destination) buf.Writer {
+// destination. guard, if not nil, checks each datagram's destination.
+func (h *Handler) newUDPWriter(ctx context.Context, conn net.Conn, UDPOverride net.Destination, destination net.Destination, guard *udpRouteGuard) buf.Writer {
 	writer := NewPacketWriter(conn, h, UDPOverride, destination)
+	if pw, ok := writer.(*PacketWriter); ok {
+		pw.guard = guard
+	}
 	if h.config.Noises != nil {
 		errors.LogDebug(ctx, "NOISE", h.config.Noises)
 		writer = &NoisePacketWriter{
@@ -413,6 +441,10 @@ type PacketWriter struct {
 	// So, cache and keep the resolve result
 	ResolvedUDPAddr *utils.TypedSyncMap[string, net.Address]
 	LocalAddr       net.Address
+
+	// guard, if not nil, drops the datagrams whose destination the flow
+	// was not routed to (udpRouteEachDestination).
+	guard *udpRouteGuard
 }
 
 func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
@@ -425,6 +457,12 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 		var n int
 		var err error
 		if b.UDP != nil {
+			// The destination the client asked for is checked, before
+			// destinationOverride's port and before any lookup.
+			if w.guard != nil && !w.guard.allow(b.UDP) {
+				b.Release()
+				continue
+			}
 			if w.UDPOverride.Address != nil {
 				b.UDP.Address = w.UDPOverride.Address
 			}
