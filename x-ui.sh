@@ -806,8 +806,159 @@ host_swap() {
     echo "Swap: 1 GiB at ${host_swapfile} ($((mem_kb / 1024)) MiB of RAM)"
 }
 
-# host_setup runs the server setup: "install" (BBR and swap) or "update"
-# (BBR only; swap is a fresh install's).
+# host_ports widens the local ports the kernel hands out for outgoing
+# connections to 10000-65535 and lets TIME_WAIT sockets be reused for new
+# outgoing ones. The default range (32768-60999) runs out on a busy server:
+# the core's direct connections, or the panel's outbound test, then fail
+# with "address already in use". Ports something already listens on inside
+# the new range are reserved first, so they are never handed out (the panel
+# keeps reservations it did not make). A range or tw_reuse chosen in another
+# sysctl file is the admin's and stays.
+host_port_low=10000
+host_port_high=65535
+
+# host_port_reserved PORT LIST says whether ip_local_reserved_ports' LIST
+# ("62789,100-200") already holds PORT.
+host_port_reserved() {
+    local item
+    for item in ${2//,/ }; do
+        if [[ $item == *-* ]]; then
+            (( $1 >= ${item%-*} && $1 <= ${item#*-} )) && return 0
+        elif [[ $item =~ ^[0-9]+$ ]]; then
+            (( $1 == item )) && return 0
+        fi
+    done
+    return 1
+}
+host_ports() {
+    local lo hi port add="" cur prev
+    if host_sysctl_admin net.ipv4.ip_local_port_range; then
+        echo "Ports: outgoing range kept (set in this server's sysctl files)"
+    else
+        read -r lo hi < <(sysctl -n net.ipv4.ip_local_port_range 2>/dev/null)
+        cur=$(sysctl -n net.ipv4.ip_local_reserved_ports 2>/dev/null)
+        if [[ $lo =~ ^[0-9]+$ && $hi =~ ^[0-9]+$ ]] && (( lo > host_port_low || hi < host_port_high )); then
+            for port in $(ss -Hltnu 2>/dev/null | awk '{print $5}' | command sed -E 's/.*:([0-9]+)$/\1/' | sort -un); do
+                [[ $port =~ ^[0-9]+$ ]] || continue
+                if (( (port >= host_port_low && port < lo) || (port > hi && port <= host_port_high) )) &&
+                    ! host_port_reserved "$port" "$cur"; then
+                    add="${add:+$add,}$port"
+                fi
+            done
+            if [[ -n $add ]]; then
+                # live: added to what is reserved now (the panel's own ports
+                # among them); kept in x-ui's sysctl file for the next boot:
+                # only these, the panel reserves its own again when it starts
+                sysctl -q -w "net.ipv4.ip_local_reserved_ports=${cur:+$cur,}$add" >/dev/null 2>&1
+                prev=$(command sed -n 's/^net\.ipv4\.ip_local_reserved_ports = //p' "$host_sysctl" 2>/dev/null)
+                [[ -f $host_sysctl ]] || printf '# Written by x-ui (install and update); uninstall removes it.\n' >"$host_sysctl"
+                command sed -i '/^net\.ipv4\.ip_local_reserved_ports[[:space:]]*=/d' "$host_sysctl"
+                echo "net.ipv4.ip_local_reserved_ports = ${prev:+$prev,}$add" >>"$host_sysctl"
+            fi
+        fi
+        host_sysctl_set net.ipv4.ip_local_port_range "$host_port_low $host_port_high"
+        echo "Ports: outgoing range ${host_port_low}-${host_port_high}${add:+ (listening ports reserved first: $add)}"
+    fi
+    if host_sysctl_admin net.ipv4.tcp_tw_reuse; then
+        echo "Ports: tcp_tw_reuse kept (set in this server's sysctl files)"
+    else
+        host_sysctl_set net.ipv4.tcp_tw_reuse 1
+    fi
+}
+
+# host_rings raises the receive ring of every physical network card to 4096
+# descriptors (or the card's maximum, if lower). Many cards start at 512,
+# which a busy server overflows: packets are dropped before the kernel sees
+# them. A ring change resets that card for a second or two, so the cards go
+# one at a time and each must have its link back before the next: a bond
+# keeps carrying traffic on its other links. Cards whose ring cannot be
+# changed (most virtual ones) are left alone. Runs again at every boot
+# (x-ui-host.service), since the card forgets the setting.
+host_net=/sys/class/net
+host_rx_ring=4096
+host_rings() {
+    local d n max cur want i changed=""
+    if ! command -v ethtool >/dev/null 2>&1; then
+        echo "Network cards: ethtool is not installed, receive rings left alone"
+        return 0
+    fi
+    for d in "$host_net"/*; do
+        n=${d##*/}
+        [[ -e $d/device ]] || continue
+        read -r max cur < <(ethtool -g "$n" 2>/dev/null | awk '
+            /^Pre-set maximums/ { s = 1 } /^Current hardware settings/ { s = 2 }
+            /^RX:/ { if (s == 1) m = $2; else if (s == 2) c = $2 }
+            END { print m, c }')
+        [[ $max =~ ^[0-9]+$ && $cur =~ ^[0-9]+$ ]] || continue
+        want=$(( max < host_rx_ring ? max : host_rx_ring ))
+        (( cur < want )) || continue
+        ethtool -G "$n" rx "$want" >/dev/null 2>&1 || continue
+        changed="${changed:+$changed, }$n $cur -> $want"
+        for ((i = 0; i < 30; i++)); do
+            [[ $(cat "$d/carrier" 2>/dev/null) == 1 ]] && break
+            sleep 1
+        done
+        # a bond member: give the bond (LACP) time to take it back
+        [[ -e $d/master ]] && sleep "${host_ring_settle:-8}"
+    done
+    echo "Network cards: ${changed:-receive rings already ${host_rx_ring} (or not adjustable)}"
+}
+
+# host_governor runs every core at full speed (the "performance" cpufreq
+# governor) where the kernel lets the server choose: a power-saving governor
+# makes each packet take longer and the load look higher. Machines without
+# cpufreq (most virtual ones, or where the BIOS decides) are left alone.
+host_cpu=/sys/devices/system/cpu
+host_governor() {
+    local f set=0 seen=0
+    for f in "$host_cpu"/cpu[0-9]*/cpufreq/scaling_governor; do
+        [[ -w $f ]] || continue
+        seen=$((seen + 1))
+        [[ $(cat "$f" 2>/dev/null) == performance ]] && continue
+        command grep -qw performance "${f%/*}/scaling_available_governors" 2>/dev/null || continue
+        echo performance >"$f" 2>/dev/null && set=$((set + 1))
+    done
+    if ((seen == 0)); then
+        echo "CPU: no cpufreq governor to set here"
+    elif ((set > 0)); then
+        echo "CPU: performance governor on ${set} of ${seen} cores"
+    else
+        echo "CPU: performance governor already on"
+    fi
+}
+
+# host_boot is what x-ui-host.service runs at every boot: the settings the
+# hardware forgets (receive rings, governor). The sysctl ones come back from
+# x-ui's sysctl file by themselves.
+host_unit=/etc/systemd/system/x-ui-host.service
+host_boot() {
+    host_rings
+    host_governor
+}
+
+host_unit_install() {
+    command -v systemctl >/dev/null 2>&1 || return 0
+    cat >"$host_unit" <<'UNIT'
+[Unit]
+Description=x-ui server settings the hardware forgets (network card rings, CPU governor)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/x-ui host-boot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    systemctl daemon-reload >/dev/null 2>&1
+    systemctl enable x-ui-host.service >/dev/null 2>&1
+}
+
+# host_setup runs the server setup: "install" (BBR, ports, network cards,
+# CPU and swap) or "update" (the same without swap; swap is a fresh
+# install's).
 host_setup() {
     # (XUI_HOST_SETUP_IN_CONTAINER=1: the tests run it in a container.)
     if host_container && [[ ${XUI_HOST_SETUP_IN_CONTAINER:-} != 1 ]]; then
@@ -815,6 +966,10 @@ host_setup() {
         return 0
     fi
     host_bbr
+    host_ports
+    host_rings
+    host_governor
+    host_unit_install
     [[ ${1:-} == install ]] && host_swap
     return 0
 }
@@ -822,6 +977,11 @@ host_setup() {
 # host_revert takes x-ui's server setup away: its sysctl file and the
 # swapfile it added. The kernel keeps the running values until a reboot.
 host_revert() {
+    if [[ -f $host_unit ]]; then
+        systemctl disable x-ui-host.service >/dev/null 2>&1
+        rm -f "$host_unit"
+        systemctl daemon-reload >/dev/null 2>&1
+    fi
     rm -f "$host_sysctl" "$host_bbr_off"
     local line="^${host_swapfile}[[:space:]].*${host_fstab_tag}\$"
     if grep -q "$line" /etc/fstab 2>/dev/null; then
@@ -4475,8 +4635,14 @@ if [[ $# -gt 0 ]]; then
         exit $?
         ;;
     "host-setup")
-        # The installer's: BBR (install and update) and swap (install).
+        # The installer's: BBR, ports, network cards and CPU (install and
+        # update) and swap (install).
         host_setup "${2:-update}"
+        exit $?
+        ;;
+    "host-boot")
+        # x-ui-host.service's, at every boot: network card rings, CPU governor.
+        host_boot
         exit $?
         ;;
     "anti-abuse")

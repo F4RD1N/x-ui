@@ -154,6 +154,7 @@ install_base() {
     command -v tar  >/dev/null 2>&1 || pkgs+=(tar)
     command -v gzip >/dev/null 2>&1 || pkgs+=(gzip)
     command -v curl >/dev/null 2>&1 || pkgs+=(curl)
+    command -v ethtool >/dev/null 2>&1 || pkgs+=(ethtool)
     [[ -e /usr/share/zoneinfo/UTC ]] || pkgs+=(tzdata)
     [[ -s /etc/ssl/certs/ca-certificates.crt || -s /etc/pki/tls/certs/ca-bundle.crt || -s /etc/ssl/cert.pem ]] \
         || pkgs+=(ca-certificates)
@@ -359,11 +360,12 @@ configure() {
 }
 
 # ---- server setup ----------------------------------------------------------
-# BBR on every install and update; swap on a fresh install of a small
-# machine. Never a reason for the install to fail.
+# BBR, the outgoing port range, network card rings and the CPU governor on
+# every install and update; swap on a fresh install of a small machine.
+# Never a reason for the install to fail.
 HOST_RESULT="not run"
 host_server() {
-    info "Setting the server up (BBR, swap)"
+    info "Setting the server up (BBR, ports, network cards, CPU, swap)"
     local out
     out=$(/usr/bin/x-ui host-setup "$XUI_MODE" 2>&1)
     echo "$out" | sed 's/^/  /'

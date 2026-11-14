@@ -20,7 +20,8 @@
 #   - a WebSocket inbound with path "*" takes clients with any path, early
 #     data (?ed=) included;
 #   - the core's memory limit (GOMEMLIMIT) is sized for the container's 1 GiB;
-#   - BBR replaces cubic (host setup forced on in the container);
+#   - BBR replaces cubic, the outgoing port range is widened and
+#     x-ui-host.service is enabled (host setup forced on in the container);
 #   - "x-ui update" keeps a changed login; anti-abuse and the DNS cache turned
 #     off stay off through an update and come back with "on";
 #   - a panel from before this version (no saved template) keeps its old
@@ -285,6 +286,8 @@ run_distro() {
     check "BBR replaces cubic" in_c 'XUI_HOST_SETUP_IN_CONTAINER=1 x-ui host-setup update | grep -q "BBR: on (was cubic)" && [[ $(sysctl -n net.ipv4.tcp_congestion_control) == bbr ]] && grep -q "tcp_congestion_control = bbr" /etc/sysctl.d/60-x-ui.conf'
     check "BBR left alone the second time" in_c 'XUI_HOST_SETUP_IN_CONTAINER=1 x-ui host-setup update | grep -q "BBR: already on"'
     check "swap fails cleanly where it cannot be turned on" in_c 'out=$(XUI_HOST_SETUP_IN_CONTAINER=1 x-ui host-setup install); echo "$out" | grep -q "^Swap: "; [[ ! -e /swapfile ]] || swapon --show | grep -q /swapfile'
+    check "ports: outgoing range 10000-65535 and tcp_tw_reuse, written down" in_c 'XUI_HOST_SETUP_IN_CONTAINER=1 x-ui host-setup update >/dev/null; [[ $(sysctl -n net.ipv4.ip_local_port_range | tr "\t" " ") == "10000 65535" && $(sysctl -n net.ipv4.tcp_tw_reuse) == 1 ]] && grep -q "^net.ipv4.ip_local_port_range = 10000 65535" /etc/sysctl.d/60-x-ui.conf'
+    check "x-ui-host.service enabled, host-boot runs (rings and governor where there are any)" in_c 'systemctl is-enabled x-ui-host.service | grep -qx enabled && out=$(x-ui host-boot) && echo "$out" | grep -q "^Network cards: " && echo "$out" | grep -q "^CPU: "'
 
     # ---- update keeps the login; off stays off -------------------------------
     in_c '/usr/local/x-ui/x-ui setting -username bob -password S3cret -port 61000 -webBasePath secretpath >/dev/null && systemctl restart x-ui'
@@ -341,7 +344,7 @@ import sqlite3; c = sqlite3.connect('/etc/x-ui/x-ui.db'); c.execute(\\\"delete f
     check "uninstall" in_c 'echo y | x-ui uninstall >/root/uninstall.log 2>&1; true'
     check "resolv.conf as before the install" in_c 'diff <(readlink /etc/resolv.conf; cat /etc/resolv.conf) <(readlink /root/resolv.conf.before; cat /root/resolv.conf.before) >/dev/null'
     check "nothing of x-ui left" in_c '! nft list table inet xui_anti_abuse >/dev/null 2>&1 && ! nft list table inet xui_direct_guard >/dev/null 2>&1 &&
-        [[ ! -e /etc/sysctl.d/60-x-ui.conf && ! -e /etc/x-ui && ! -e /usr/local/x-ui && ! -e /etc/systemd/system/unbound.service.d/90-x-ui.conf ]] &&
+        [[ ! -e /etc/sysctl.d/60-x-ui.conf && ! -e /etc/x-ui && ! -e /usr/local/x-ui && ! -e /etc/systemd/system/unbound.service.d/90-x-ui.conf && ! -e /etc/systemd/system/x-ui-host.service ]] &&
         ! ls /etc/unbound/unbound.conf.d/x-ui.conf >/dev/null 2>&1 && ! systemctl is-active --quiet unbound'
 
     docker rm -f "$C" >/dev/null 2>&1
