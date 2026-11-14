@@ -205,6 +205,13 @@ one.
 
 ## Other changes
 
+- **Network speed and traffic count the uplink only.** The overview's
+  upload/download speed and total traffic come from the interfaces that carry
+  the default route (for example `bond0`), not from every interface added up,
+  which counted each packet twice on a bonded server (the bond and its member
+  card) and again on a GRE tunnel. Without a default route every interface
+  but the loopback is counted, as before.
+
 - **Restarting Xray no longer races itself.** Stopping the core now waits for it
   to exit (escalating to `SIGKILL`) before the new one starts, which is what
   caused `address already in use` on a port the previous core still held. The

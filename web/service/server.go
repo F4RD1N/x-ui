@@ -306,22 +306,22 @@ func (s *ServerService) GetStatus(lastStatus *Status) *Status {
 		status.Loads = []float64{avgState.Load1, avgState.Load5, avgState.Load15}
 	}
 
-	// Network stats
-	ioStats, err := net.IOCounters(false)
+	// Network stats: the uplink only (see netuplink.go)
+	ioStats, err := net.IOCounters(true)
 	if err != nil {
 		logger.Warning("get io counters failed:", err)
 	} else if len(ioStats) > 0 {
-		ioStat := ioStats[0]
-		status.NetTraffic.Sent = ioStat.BytesSent
-		status.NetTraffic.Recv = ioStat.BytesRecv
+		status.NetTraffic.Sent, status.NetTraffic.Recv = uplinkTraffic(ioStats, defaultRouteInterfaces())
 
 		if lastStatus != nil {
 			duration := now.Sub(lastStatus.T)
 			seconds := float64(duration) / float64(time.Second)
-			up := uint64(float64(status.NetTraffic.Sent-lastStatus.NetTraffic.Sent) / seconds)
-			down := uint64(float64(status.NetTraffic.Recv-lastStatus.NetTraffic.Recv) / seconds)
-			status.NetIO.Up = up
-			status.NetIO.Down = down
+			// A counter that went down (an interface reset, a new uplink)
+			// gives no speed for this round rather than a wrapped one.
+			if seconds > 0 && status.NetTraffic.Sent >= lastStatus.NetTraffic.Sent && status.NetTraffic.Recv >= lastStatus.NetTraffic.Recv {
+				status.NetIO.Up = uint64(float64(status.NetTraffic.Sent-lastStatus.NetTraffic.Sent) / seconds)
+				status.NetIO.Down = uint64(float64(status.NetTraffic.Recv-lastStatus.NetTraffic.Recv) / seconds)
+			}
 		}
 	} else {
 		logger.Warning("can not find io counters")
