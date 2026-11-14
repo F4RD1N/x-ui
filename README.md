@@ -205,6 +205,13 @@ one.
 
 ## Other changes
 
+- **The TCP/UDP connection counts are read from the kernel's totals**
+  (`/proc/net/sockstat`), not by counting the lines of `/proc/net/tcp` and
+  `/proc/net/udp`. With a few hundred thousand connections those files are
+  hundreds of megabytes, take seconds to generate and hold the kernel's
+  socket-table locks meanwhile; the panel read them every 2 seconds, which
+  kept several cores busy and slowed the core's own socket work.
+
 - **Network speed and traffic count the uplink only.** The overview's
   upload/download speed and total traffic come from the interfaces that carry
   the default route (for example `bond0`), not from every interface added up,

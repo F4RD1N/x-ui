@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,8 +51,52 @@ func getLinesNum(filename string) (int, error) {
 
 // GetTCPCount returns the number of active TCP connections by reading
 // /proc/net/tcp and /proc/net/tcp6 when available.
+// sockstatCounts reads the kernel's socket totals from <root>/net/sockstat and
+// sockstat6: TCP sockets in use (IPv4 and IPv6) plus those in TIME_WAIT, and
+// UDP sockets in use. They cost a few lines to read, where /proc/net/tcp
+// lists every socket: on a server with hundreds of thousands of connections
+// that file is hundreds of megabytes, takes seconds to generate and holds the
+// kernel's socket-table locks while it does.
+func sockstatCounts(root string) (tcp, udp int, ok bool) {
+	fields := map[string]map[string]int{}
+	for _, name := range []string{"sockstat", "sockstat6"} {
+		b, err := os.ReadFile(filepath.Join(root, "net", name))
+		if err != nil {
+			if name == "sockstat" {
+				return 0, 0, false
+			}
+			continue
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			proto, rest, found := strings.Cut(line, ":")
+			if !found {
+				continue
+			}
+			f := strings.Fields(rest)
+			m := map[string]int{}
+			for i := 0; i+1 < len(f); i += 2 {
+				if v, err := strconv.Atoi(f[i+1]); err == nil {
+					m[f[i]] = v
+				}
+			}
+			fields[strings.TrimSpace(proto)] = m
+		}
+	}
+	t4, ok4 := fields["TCP"]["inuse"]
+	u4, okU := fields["UDP"]["inuse"]
+	if !ok4 || !okU {
+		return 0, 0, false
+	}
+	tcp = t4 + fields["TCP6"]["inuse"] + fields["TCP"]["tw"]
+	udp = u4 + fields["UDP6"]["inuse"]
+	return tcp, udp, true
+}
+
 func GetTCPCount() (int, error) {
 	root := HostProc()
+	if tcp, _, ok := sockstatCounts(root); ok {
+		return tcp, nil
+	}
 
 	tcp4, err := safeGetLinesNum(fmt.Sprintf("%v/net/tcp", root))
 	if err != nil {
@@ -67,6 +112,9 @@ func GetTCPCount() (int, error) {
 
 func GetUDPCount() (int, error) {
 	root := HostProc()
+	if _, udp, ok := sockstatCounts(root); ok {
+		return udp, nil
+	}
 
 	udp4, err := safeGetLinesNum(fmt.Sprintf("%v/net/udp", root))
 	if err != nil {
