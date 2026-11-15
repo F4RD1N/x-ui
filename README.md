@@ -205,6 +205,27 @@ ports. Before 11.15 each one took a port of that IP of its own, and a busy
 server with few IPs spent most of its CPU in the kernel looking for a free
 one.
 
+## Set the login, port and path in one command (11.20)
+
+```
+x-ui update-info <username> <password> <port> <path>
+x-ui update-info fardin fardin 60000 hetzner
+```
+
+Sets the panel's username, password, port and web base path without any
+questions, restarts the panel, and prints the new access URL. Nothing is
+changed unless everything is valid:
+
+- the username has no spaces;
+- the password is 1 to 72 characters;
+- the port is a number from 1 to 65535 that no other program listens on;
+- the path uses only letters, digits, `.` `_` `~` `-` and `/` between parts,
+  with no `.` or `..` parts. `hetzner`, `/hetzner` and `/hetzner/` are the
+  same, and `/` means no path.
+
+Two-factor authentication is left as it is. Like any command line, the password
+stays in the shell's history.
+
 ## Route every UDP destination (11.19)
 
 Xray routes a UDP session once, by its first packet. Full-cone UDP (mux.cool

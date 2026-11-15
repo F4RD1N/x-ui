@@ -390,6 +390,73 @@ check_config() {
     fi
 }
 
+# update_info <username> <password> <port> <path>: sets the panel's login, port
+# and web base path in one go, without questions, and restarts the panel.
+# Everything is checked before anything is changed. Two-factor
+# authentication is left as it is.
+update_info() {
+    if [[ $# -ne 4 ]]; then
+        LOGE "Usage: x-ui update-info <username> <password> <port> <path>"
+        echo "  e.g. x-ui update-info fardin fardin 60000 hetzner   (path \"/\" for none)"
+        return 1
+    fi
+    local user=$1 pass=$2 port=$3 path=$4 info cur_port out i
+    if [[ ! $user =~ ^[^[:space:]]+$ ]]; then
+        LOGE "The username must not be empty or contain spaces."
+        return 1
+    fi
+    if [[ -z $pass || ${#pass} -gt 72 ]]; then
+        LOGE "The password must be 1 to 72 characters."
+        return 1
+    fi
+    if [[ ! $port =~ ^[0-9]+$ ]] || ((10#$port < 1 || 10#$port > 65535)); then
+        LOGE "The port must be a number from 1 to 65535."
+        return 1
+    fi
+    port=$((10#$port))
+    # The path as the panel stores it: one leading and one trailing slash.
+    path="/${path#/}"
+    path="${path%/}/"
+    path=${path//\/\//\/}
+    if [[ ! $path =~ ^/([A-Za-z0-9._~-]+/)*$ || $path =~ /\.\.?/ ]]; then
+        LOGE "The path may use only letters, digits, . _ ~ - and / between parts."
+        return 1
+    fi
+    info=$(${xui_folder}/x-ui setting -show true 2>/dev/null)
+    cur_port=$(echo "$info" | grep -Eo 'port: [0-9]+' | awk '{print $2}')
+    # Another program's port would keep the panel from starting.
+    if [[ $port != "$cur_port" ]] && ss -Hltn "sport = :$port" 2>/dev/null | grep -q .; then
+        LOGE "Port $port is already in use on this server; the panel was not changed."
+        ss -Hltnp "sport = :$port" 2>/dev/null | awk '{print "  " $4, $6}'
+        return 1
+    fi
+
+    out=$(${xui_folder}/x-ui setting -username "$user" -password "$pass" -port "$port" -webBasePath "$path" 2>&1)
+    if [[ $? -ne 0 ]] || grep -qi 'fail' <<<"$out"; then
+        LOGE "Could not save the new settings:"
+        echo "$out"
+        return 1
+    fi
+    # the direct guard keeps the VPN off the panel's new port
+    [[ -f $protect_unit ]] && protect_on >/dev/null 2>&1
+
+    restart 0 >/dev/null 2>&1
+    for i in $(seq 1 30); do
+        ss -Hltn "sport = :$port" 2>/dev/null | grep -q . && break
+        sleep 1
+    done
+    if ! ss -Hltn "sport = :$port" 2>/dev/null | grep -q .; then
+        LOGE "Saved, but the panel is not listening on port $port after 30 s. Check: x-ui log"
+        return 1
+    fi
+    echo -e "Username: ${green}${user}${plain}"
+    echo -e "Password: ${green}${pass}${plain}"
+    echo -e "Port:     ${green}${port}${plain}"
+    echo -e "Path:     ${green}${path}${plain}"
+    check_config 0 2>/dev/null | grep 'Access URL'
+    return 0
+}
+
 set_port() {
     echo -n "Enter port number[1-65535]: "
     read -r port
@@ -4429,6 +4496,7 @@ show_usage() {
 │  ${blue}x-ui log${plain}                   - Check logs                       │
 │  ${blue}x-ui banlog${plain}                - Check Fail2ban ban logs          │
 │  ${blue}x-ui update [-y|--yes]${plain}     - Update (-y skips confirmation)   │
+│  ${blue}x-ui update-info U P PORT PATH${plain} - Set login, port and path     │
 │  ${blue}x-ui update-all-geofiles${plain}   - Update all geo files             │
 │  ${blue}x-ui anti-abuse${plain}            - Anti-abuse (on, status, off)     │
 │  ${blue}x-ui protect${plain}               - Direct guard, speed tests        │
@@ -4614,6 +4682,9 @@ if [[ $# -gt 0 ]]; then
         ;;
     "legacy")
         check_install 0 && legacy_version 0
+        ;;
+    "update-info")
+        check_install 0 && { update_info "${@:2}"; exit $?; }
         ;;
     "install")
         check_uninstall 0 && install 0

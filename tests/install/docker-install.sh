@@ -289,6 +289,18 @@ run_distro() {
     check "ports: outgoing range 10000-65535 and tcp_tw_reuse, written down" in_c 'XUI_HOST_SETUP_IN_CONTAINER=1 x-ui host-setup update >/dev/null; [[ $(sysctl -n net.ipv4.ip_local_port_range | tr "\t" " ") == "10000 65535" && $(sysctl -n net.ipv4.tcp_tw_reuse) == 1 ]] && grep -q "^net.ipv4.ip_local_port_range = 10000 65535" /etc/sysctl.d/60-x-ui.conf'
     check "x-ui-host.service enabled, host-boot runs (rings and governor where there are any)" in_c 'systemctl is-enabled x-ui-host.service | grep -qx enabled && out=$(x-ui host-boot) && echo "$out" | grep -q "^Network cards: " && echo "$out" | grep -q "^CPU: "'
 
+    # ---- x-ui update-info: login, port and path in one command ---------------
+    check "update-info refuses a bad port and changes nothing" in_c '! x-ui update-info alice S3c#r3t 70000 team/panel >/root/ui1.log 2>&1 && grep -q "from 1 to 65535" /root/ui1.log'
+    check "update-info refuses a port in use (sshd's 22)" in_c '! x-ui update-info alice S3c#r3t 22 team/panel >/root/ui2.log 2>&1 && grep -q "already in use" /root/ui2.log'
+    check "update-info refuses a path with .." in_c '! x-ui update-info alice S3c#r3t 60500 a/../b >/root/ui3.log 2>&1'
+    check "  ...and the old login still works" login 60000 hetzner fardin fardin
+    check "update-info alice S3c#r3t 60500 team/panel" in_c 'x-ui update-info alice S3c#r3t 60500 team/panel >/root/ui4.log 2>&1 && grep -q "Path:.*/team/panel/" /root/ui4.log'
+    check "  the panel answers on the new port and path" wait_panel 60500 team/panel
+    check "  the new login works" login 60500 team/panel alice 'S3c#r3t'
+    check "  the old port is closed" in_c '! ss -Hltn "sport = :60000" | grep -q .'
+    check "update-info back to fardin fardin 60000 hetzner" in_c 'x-ui update-info fardin fardin 60000 /hetzner/ >/dev/null 2>&1'
+    check "  and that login works again" login 60000 hetzner fardin fardin
+
     # ---- update keeps the login; off stays off -------------------------------
     in_c '/usr/local/x-ui/x-ui setting -username bob -password S3cret -port 61000 -webBasePath secretpath >/dev/null && systemctl restart x-ui'
     wait_panel 61000 secretpath
