@@ -205,6 +205,34 @@ ports. Before 11.15 each one took a port of that IP of its own, and a busy
 server with few IPs spent most of its CPU in the kernel looking for a free
 one.
 
+## Real client IPs of CDN users (11.21)
+
+Behind a CDN (Cloudflare, Fastly, ...) the socket shows only the CDN's IP;
+the user's own IP is in `X-Forwarded-For`, which the WebSocket, HTTPUpgrade
+and XHTTP inbounds already use as the remote address. The core now keeps the
+last 4096 of those forwarded IPs (IPv4 and IPv6), one per new connection
+(an XHTTP connection counts once, not once per upload request), and the
+metrics listener (`127.0.0.1:11111` in the default template) shows them:
+
+```
+curl -s http://127.0.0.1:11111/debug/clientips
+{"v":1,"recorded":183204,"ips":["151.232.10.5","2a01:5ec0:1000::1",...]}
+```
+
+`ips` runs oldest to newest; `recorded` counts every IP recorded since the
+core started. A few thousand recent IPs are enough to tell each operator's
+share of the CDN users to within about 1.5 %. Connections that come without
+the header record nothing.
+
+It is light: recording is one 16-byte store under a lock, about 10 ns and no
+allocation, and the old entries are simply overwritten. 30,000 new WebSocket
+connections cost the core the same CPU with and without it (in the test,
+about 0.7 ms of CPU per connection either way). Reading the page does not touch the traffic counters, and
+`/debug/vars` is unchanged. Without a metrics listener nothing new listens.
+
+**The metrics listener now also shows recent client IPs, so keep it on
+localhost** (`127.0.0.1`), as the default template does.
+
 ## Set the login, port and path in one command (11.20)
 
 ```
