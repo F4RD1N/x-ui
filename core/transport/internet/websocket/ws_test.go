@@ -122,6 +122,29 @@ func TestDialWithRemoteAddr(t *testing.T) {
 		t.Error("client IPs: ", js)
 	}
 
+	// With several entries the sample takes the same (leftmost) address as
+	// the remote address, so the two always agree.
+	before = clientsample.Recorded()
+	conn2, err := Dial(context.Background(), net.TCPDestination(net.DomainAddress("localhost"), listenPort), &internet.MemoryStreamConfig{
+		ProtocolName:     "websocket",
+		ProtocolSettings: &Config{Path: "ws", Header: map[string]string{"X-Forwarded-For": "5.6.7.8, 9.9.9.9"}},
+	})
+	common.Must(err)
+	_, err = conn2.Write([]byte("Test connection 2"))
+	common.Must(err)
+	n, err = conn2.Read(b[:])
+	common.Must(err)
+	if string(b[:n]) != "5.6.7.8:0" {
+		t.Error("response: ", string(b[:n]))
+	}
+	if got := clientsample.Recorded() - before; got != 1 {
+		t.Error("recorded ", got, " client IPs, want 1")
+	}
+	if js := string(clientsample.AppendJSON(nil)); !strings.HasSuffix(js, `"1.1.1.1","5.6.7.8"]}`) {
+		t.Error("client IPs: ", js)
+	}
+	conn2.Close()
+
 	common.Must(listen.Close())
 }
 

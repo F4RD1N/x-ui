@@ -221,17 +221,35 @@ curl -s http://127.0.0.1:11111/debug/clientips
 
 `ips` runs oldest to newest; `recorded` counts every IP recorded since the
 core started. A few thousand recent IPs are enough to tell each operator's
-share of the CDN users to within about 1.5 %. Connections that come without
-the header record nothing.
+share of the CDN users to within about 1.5 %, as long as the clients do
+not forge the header. Connections that come without the header record
+nothing.
+
+The sample trusts `X-Forwarded-For` the same way the remote address does:
+it takes the leftmost entry, and it records it when the connection arrives,
+before the user's UUID is checked. Cloudflare and Fastly add their entry
+after one the client already sent, so anyone who knows an inbound's host and
+path (they are in every config) can fill the sample with IPs of their
+choosing, through the CDN or straight to the server. That only skews the
+numbers; it changes no traffic or routing. Treat a sudden run of one IP, or
+of one network, as a sign of it.
 
 It is light: recording is one 16-byte store under a lock, about 10 ns and no
 allocation, and the old entries are simply overwritten. 30,000 new WebSocket
 connections cost the core the same CPU with and without it (in the test,
-about 0.7 ms of CPU per connection either way). Reading the page does not touch the traffic counters, and
-`/debug/vars` is unchanged. Without a metrics listener nothing new listens.
+about 0.7 ms of CPU per connection either way). Reading the page does not
+touch the traffic counters, and `/debug/vars` is unchanged. Without a
+metrics listener nothing new listens.
 
 **The metrics listener now also shows recent client IPs, so keep it on
-localhost** (`127.0.0.1`), as the default template does.
+localhost** (`127.0.0.1`), as the default template does. Localhost is safe
+only while `x-ui protect` is on (every install and update turns it on). The
+core's direct outbound can reach `localhost`, or any name that points at
+`127.0.0.1`, for the server's own VPN users, and only the direct guard stops
+that. A Docker install never has the guard, and `x-ui protect off` takes it
+away. There, any user connected to the server can read this list of other
+users' IPs, as they can already read `/debug/vars`. Turn `x-ui protect` back
+on, and in Docker leave the metrics listener out of the template.
 
 ## Set the login, port and path in one command (11.20)
 
