@@ -19,6 +19,7 @@ import (
 	goreality "github.com/xtls/reality"
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
+	"github.com/xtls/xray-core/common/clientsample"
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
 	http_proto "github.com/xtls/xray-core/common/protocol/http"
@@ -179,9 +180,13 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 			Port: remoteAddr.(*net.TCPAddr).Port,
 		}
 	}
+	// forwardedIP is sampled once per connection (below, at addConn), not per
+	// request: packet-up sends many POSTs for one connection.
+	var forwardedIP net.IP
 	if len(forwardedAddrs) > 0 && forwardedAddrs[0].Family().IsIP() {
+		forwardedIP = forwardedAddrs[0].IP()
 		remoteAddr = &net.TCPAddr{
-			IP:   forwardedAddrs[0].IP(),
+			IP:   forwardedIP,
 			Port: 0,
 		}
 	}
@@ -393,6 +398,9 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 			conn.reader = currentSession.uploadQueue
 		}
 
+		if forwardedIP != nil {
+			clientsample.Record(forwardedIP)
+		}
 		h.ln.addConn(stat.Connection(&conn))
 
 		// "A ResponseWriter may not be used after [Handler.ServeHTTP] has returned."

@@ -6,10 +6,12 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"strings"
+	"sync"
 
 	"github.com/xtls/xray-core/app/observatory"
 	"github.com/xtls/xray-core/app/stats"
 	"github.com/xtls/xray-core/common"
+	"github.com/xtls/xray-core/common/clientsample"
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/signal/done"
@@ -82,7 +84,25 @@ func NewMetricsHandler(ctx context.Context, config *Config) (*MetricsHandler, er
 		}
 		return resp
 	}))
+	clientIPsOnce.Do(func() {
+		http.HandleFunc("/debug/clientips", serveClientIPs)
+	})
 	return c, nil
+}
+
+var clientIPsOnce sync.Once
+
+// serveClientIPs returns the recent real client IPs that CDN inbounds took
+// from X-Forwarded-For: {"v":1,"recorded":N,"ips":[oldest,...,newest]}.
+func serveClientIPs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Write(clientsample.AppendJSON(make([]byte, 0, 20*clientsample.Size)))
 }
 
 func (p *MetricsHandler) Type() interface{} {

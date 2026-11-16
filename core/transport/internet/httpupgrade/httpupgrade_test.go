@@ -3,10 +3,12 @@ package httpupgrade_test
 import (
 	"context"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/xtls/xray-core/common"
+	"github.com/xtls/xray-core/common/clientsample"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol/tls/cert"
 	"github.com/xtls/xray-core/testing/servers/tcp"
@@ -155,6 +157,7 @@ func TestDialWithRemoteAddr(t *testing.T) {
 	})
 	common.Must(err)
 
+	before := clientsample.Recorded()
 	conn, err := Dial(context.Background(), net.TCPDestination(net.DomainAddress("localhost"), listenPort), &internet.MemoryStreamConfig{
 		ProtocolName:     "httpupgrade",
 		ProtocolSettings: &Config{Path: "httpupgrade", Header: map[string]string{"X-Forwarded-For": "1.1.1.1"}},
@@ -169,6 +172,13 @@ func TestDialWithRemoteAddr(t *testing.T) {
 	common.Must(err)
 	if string(b[:n]) != "1.1.1.1:0" {
 		t.Error("response: ", string(b[:n]))
+	}
+	// The forwarded address is sampled exactly once for the connection.
+	if got := clientsample.Recorded() - before; got != 1 {
+		t.Error("recorded ", got, " client IPs, want 1")
+	}
+	if js := string(clientsample.AppendJSON(nil)); !strings.HasSuffix(js, `"1.1.1.1"]}`) {
+		t.Error("client IPs: ", js)
 	}
 
 	common.Must(listen.Close())

@@ -104,4 +104,13 @@ func TestMetrics(t *testing.T) {
 	if json.Unmarshal(body2, &json2) != nil {
 		t.Error("unexpected response body from expvars handler")
 	}
+
+	// No CDN inbound here, so the sample of forwarded client IPs is empty.
+	resp3, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/debug/clientips", metricsPort))
+	common.Must(err)
+	body3, err := io.ReadAll(resp3.Body)
+	common.Must(err)
+	if resp3.StatusCode != http.StatusOK || string(body3) != `{"v":1,"recorded":0,"ips":[]}` {
+		t.Error("unexpected /debug/clientips response: ", resp3.StatusCode, " ", string(body3))
+	}
 }

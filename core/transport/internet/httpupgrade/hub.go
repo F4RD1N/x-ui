@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/xtls/xray-core/common"
+	"github.com/xtls/xray-core/common/clientsample"
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
 	http_proto "github.com/xtls/xray-core/common/protocol/http"
@@ -93,8 +94,10 @@ func (s *server) upgrade(conn net.Conn) (stat.Connection, error) {
 	}
 	remoteAddr := conn.RemoteAddr()
 	if len(forwardedAddrs) > 0 && forwardedAddrs[0].Family().IsIP() {
+		ip := forwardedAddrs[0].IP()
+		clientsample.Record(ip)
 		remoteAddr = &net.TCPAddr{
-			IP:   forwardedAddrs[0].IP(),
+			IP:   ip,
 			Port: int(0),
 		}
 	}
