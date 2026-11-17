@@ -205,6 +205,29 @@ ports. Before 11.15 each one took a port of that IP of its own, and a busy
 server with few IPs spent most of its CPU in the kernel looking for a free
 one.
 
+## Which CDN each sampled user came through (11.22)
+
+`/debug/clientips` now also says which peer delivered each sampled IP: the
+socket's own remote address, which behind a CDN is the CDN's edge server.
+The answer gains a `peers` list of the same length and order as `ips`:
+
+```
+curl -s http://127.0.0.1:11111/debug/clientips
+{"v":1,"recorded":183204,"ips":["151.232.10.5","2a01:5ec0:1000::1",...],"peers":["151.101.2.3","2a06:98c0:3600::103",...]}
+```
+
+`peers[i]` is the address that `ips[i]` arrived from, or `""` when it is
+unknown (an inbound on a Unix socket, say). Matching it against Fastly's and
+Cloudflare's ranges tells the users of each CDN apart. With the PROXY
+protocol on an inbound (`acceptProxyProtocol`), the peer is the address the
+PROXY header gives, as the core sees it everywhere else. `v`, `recorded` and
+`ips` are exactly as in 11.21, so readers written for 11.21 keep working.
+
+Recording stays as light: one 32-byte store under the same lock, about 10 ns
+and no allocation (about 42 ns with 8 cores recording nonstop), and the ring
+stays at 4096 entries. The full page is about twice as long as before and
+takes about 0.26 ms to serve.
+
 ## Real client IPs of CDN users (11.21)
 
 Behind a CDN (Cloudflare, Fastly, ...) the socket shows only the CDN's IP;

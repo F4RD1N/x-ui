@@ -9,13 +9,15 @@ and a metrics listener; a client Xray with one socks inbound per transport
 (XHTTP twice: packet-up via auto, and stream-one); between them a fake CDN
 reverse proxy (in this process) that rewrites every HTTP/1.1 request and sets
 X-Forwarded-For to the "current client" (any XFF the client sent is dropped),
-or sends none.
+or sends none. The proxy opens each backend connection from the "current
+edge", a loopback source address (127.0.0.2, 127.0.0.3, ...), the way a
+CDN's edge servers connect from their own IPs.
 
 Each proxied TCP connection through a socks port is one new VLESS connection.
-Per connection a different fake client IP from a few operator ranges is set;
-the payload must echo back intact; afterwards /debug/clientips must list
-exactly those IPs, newest last, and recorded must have grown by exactly that
-many. Connections without the header must record nothing. /debug/vars still
+Per connection a different fake client IP from a few operator ranges and an
+edge are set; the payload must echo back intact; afterwards /debug/clientips
+must list exactly those IPs, newest last, with "peers" listing exactly the
+edge each came from, and recorded must have grown by exactly that many. Connections without the header must record nothing. /debug/vars still
 answers. With the second xray (built -tags noclientsample) traffic works the
 same and nothing is recorded.
 """
@@ -41,8 +43,10 @@ def check(c, m):
     ok(m) if c else bad(m)
 
 # ---------------- fake CDN reverse proxy ----------------
-CURRENT = {"xff": None}       # the X-Forwarded-For value the CDN adds now
+CURRENT = {"xff": None,       # the X-Forwarded-For value the CDN adds now
+           "edge": "127.0.0.2"}  # the source address of new backend connections
 SEEN = []                     # (port, method, path, xff) per request
+EDGES = ["127.0.0.2", "127.0.0.3", "127.0.0.4"]
 
 async def pipe(r, w):
     try:
@@ -59,7 +63,8 @@ async def pipe(r, w):
 
 async def cdn_conn(cr, cw, backend):
     try:
-        br, bw = await asyncio.open_connection("127.0.0.1", backend, limit=1 << 20)
+        br, bw = await asyncio.open_connection("127.0.0.1", backend, limit=1 << 20,
+                                              local_addr=(CURRENT["edge"], 0))
     except Exception:
         cw.close(); return
     down = asyncio.ensure_future(pipe(br, cw))
@@ -210,11 +215,12 @@ def run(binary, recording):
         st, ct, body = get("/debug/clientips")
         j0 = json.loads(body)
         check(st == 200 and ct == "application/json", "%s: /debug/clientips 200 application/json" % tag)
-        check(j0 == {"v": 1, "recorded": 0, "ips": []}, "%s: empty at start: %s" % (tag, body.decode()))
+        check(j0 == {"v": 1, "recorded": 0, "ips": [], "peers": []}, "%s: empty at start: %s" % (tag, body.decode()))
+        check(body.startswith(b'{"v":1,"recorded":0,"ips":['), "%s: v, recorded and ips come first, as in 11.21" % tag)
         st, _, vars_ = get("/debug/vars")
         check(st == 200 and b'"stats"' in vars_, "%s: /debug/vars unchanged (200, has stats)" % tag)
 
-        expected = []
+        expected, expected_peers = [], []
         # with the header: 3 rounds over all four client paths, a new IP each
         i = 0
         for rnd in range(3):
@@ -222,10 +228,13 @@ def run(binary, recording):
                 ip = fake_ip(i); i += 1
                 # one in four as a CDN chain: "client, edge" (first is used)
                 CURRENT["xff"] = ip + (", 104.16.%d.1" % i if i % 4 == 0 else "")
+                CURRENT["edge"] = EDGES[(i + rnd) % len(EDGES)]
                 n = 1 << 20 if rnd == 0 else 4096
                 good = socks_echo(s, n)
-                check(good, "%s: %s via CDN with XFF %s: %d bytes echoed" % (tag, s, CURRENT["xff"], n))
+                check(good, "%s: %s via CDN edge %s with XFF %s: %d bytes echoed"
+                      % (tag, s, CURRENT["edge"], CURRENT["xff"], n))
                 expected.append(ip)
+                expected_peers.append(CURRENT["edge"])
                 time.sleep(0.05)
         CURRENT["xff"] = None
         j1 = clientips()
@@ -234,8 +243,13 @@ def run(binary, recording):
             check(j1["ips"] == expected, "%s: ips are exactly the forwarded IPs, newest last (%d)" % (tag, len(j1["ips"])))
             if j1["ips"] != expected:
                 print("     got      %s\n     expected %s" % (j1["ips"], expected))
+            check(j1.get("peers") == expected_peers,
+                  "%s: peers are exactly the proxy's edge addresses, same order (%d; %s)"
+                  % (tag, len(j1.get("peers") or []), ", ".join("%s=%d" % (e, expected_peers.count(e)) for e in EDGES)))
+            if j1.get("peers") != expected_peers:
+                print("     got      %s\n     expected %s" % (j1.get("peers"), expected_peers))
         else:
-            check(j1 == {"v": 1, "recorded": 0, "ips": []}, "%s: nothing recorded with -tags noclientsample" % tag)
+            check(j1 == {"v": 1, "recorded": 0, "ips": [], "peers": []}, "%s: nothing recorded with -tags noclientsample" % tag)
 
         # without the header: through the CDN (no XFF added) and with a header the CDN strips
         for s in CLIENT_PATHS:
@@ -245,12 +259,16 @@ def run(binary, recording):
 
         # newest last after more: one more WS with a known IP
         CURRENT["xff"] = "2a01:5ec0:1000::abcd"
-        check(socks_echo("s_ws", 4096), "%s: one more WS (IPv6 XFF): echoed" % tag)
+        CURRENT["edge"] = "127.0.0.9"
+        check(socks_echo("s_ws", 4096), "%s: one more WS (IPv6 XFF, edge 127.0.0.9): echoed" % tag)
         CURRENT["xff"] = None
+        CURRENT["edge"] = EDGES[0]
         j3 = clientips()
         if recording:
-            check(j3["ips"][-1] == "2a01:5ec0:1000::abcd" and j3["recorded"] == len(expected) + 1,
-                  "%s: newest last: %s, recorded %d" % (tag, j3["ips"][-1], j3["recorded"]))
+            check(j3["ips"][-1] == "2a01:5ec0:1000::abcd" and j3["peers"][-1] == "127.0.0.9" and
+                  j3["recorded"] == len(expected) + 1,
+                  "%s: newest last: %s from %s, recorded %d" % (tag, j3["ips"][-1], j3["peers"][-1], j3["recorded"]))
+            check(len(j3["peers"]) == len(j3["ips"]), "%s: peers as long as ips (%d)" % (tag, len(j3["ips"])))
         hdr_seen = sum(1 for x in SEEN if x[3])
         print("     cdn saw %d requests (%d with XFF)" % (len(SEEN), hdr_seen))
         xh_hdr = [x for x in SEEN if x[0] == P["xh"] and x[3]]
