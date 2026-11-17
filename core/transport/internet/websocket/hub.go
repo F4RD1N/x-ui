@@ -81,7 +81,7 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 	remoteAddr := conn.RemoteAddr()
 	if len(forwardedAddrs) > 0 && forwardedAddrs[0].Family().IsIP() {
 		ip := forwardedAddrs[0].IP()
-		clientsample.Record(ip)
+		clientsample.Record(ip, clientsample.PeerIP(remoteAddr))
 		remoteAddr = &net.TCPAddr{
 			IP:   ip,
 			Port: int(0),

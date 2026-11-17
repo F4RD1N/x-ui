@@ -12,8 +12,9 @@ import (
 
 func TestServeClientIPs(t *testing.T) {
 	before := clientsample.Recorded()
-	clientsample.Record(net.IP{198, 51, 100, 7})
-	clientsample.Record(net.ParseIP("2001:db8::7"))
+	clientsample.Record(net.IP{198, 51, 100, 7}, net.IP{151, 101, 1, 1})
+	clientsample.Record(net.ParseIP("2001:db8::7"), net.ParseIP("2a06:98c0::1"))
+	clientsample.Record(net.IP{203, 0, 113, 9}, nil)
 
 	rec := httptest.NewRecorder()
 	serveClientIPs(rec, httptest.NewRequest(http.MethodGet, "/debug/clientips", nil))
@@ -27,14 +28,27 @@ func TestServeClientIPs(t *testing.T) {
 		V        int      `json:"v"`
 		Recorded uint64   `json:"recorded"`
 		IPs      []string `json:"ips"`
+		Peers    []string `json:"peers"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("%v: %s", err, rec.Body.String())
 	}
 	n := len(got.IPs)
-	if got.V != 1 || got.Recorded != before+2 || n < 2 ||
-		got.IPs[n-2] != "198.51.100.7" || got.IPs[n-1] != "2001:db8::7" {
+	if got.V != 1 || got.Recorded != before+3 || n < 3 || len(got.Peers) != n ||
+		got.IPs[n-3] != "198.51.100.7" || got.IPs[n-2] != "2001:db8::7" || got.IPs[n-1] != "203.0.113.9" ||
+		got.Peers[n-3] != "151.101.1.1" || got.Peers[n-2] != "2a06:98c0::1" || got.Peers[n-1] != "" {
 		t.Fatalf("got %s", rec.Body.String())
+	}
+
+	// A 0.4.0 agent decodes only v, recorded and ips; "peers" must not
+	// get in its way.
+	var old struct {
+		V        int      `json:"v"`
+		Recorded uint64   `json:"recorded"`
+		IPs      []string `json:"ips"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &old); err != nil || old.V != 1 || len(old.IPs) != n {
+		t.Fatalf("old decoder: %v %+v", err, old)
 	}
 
 	rec = httptest.NewRecorder()

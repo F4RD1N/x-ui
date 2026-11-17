@@ -180,11 +180,15 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 			Port: remoteAddr.(*net.TCPAddr).Port,
 		}
 	}
-	// forwardedIP is sampled once per connection (below, at addConn), not per
-	// request: packet-up sends many POSTs for one connection.
-	var forwardedIP net.IP
+	// forwardedIP and the peer it came from are sampled once per connection
+	// (below, at addConn), not per request: packet-up sends many POSTs for
+	// one connection.
+	var forwardedIP, peerIP net.IP
 	if len(forwardedAddrs) > 0 && forwardedAddrs[0].Family().IsIP() {
 		forwardedIP = forwardedAddrs[0].IP()
+		if err == nil {
+			peerIP = clientsample.PeerIP(remoteAddr)
+		}
 		remoteAddr = &net.TCPAddr{
 			IP:   forwardedIP,
 			Port: 0,
@@ -399,7 +403,7 @@ func (h *requestHandler) ServeHTTP(writer http.ResponseWriter, request *http.Req
 		}
 
 		if forwardedIP != nil {
-			clientsample.Record(forwardedIP)
+			clientsample.Record(forwardedIP, peerIP)
 		}
 		h.ln.addConn(stat.Connection(&conn))
 

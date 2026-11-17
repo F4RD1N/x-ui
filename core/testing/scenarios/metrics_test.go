@@ -110,7 +110,7 @@ func TestMetrics(t *testing.T) {
 	common.Must(err)
 	body3, err := io.ReadAll(resp3.Body)
 	common.Must(err)
-	if resp3.StatusCode != http.StatusOK || string(body3) != `{"v":1,"recorded":0,"ips":[]}` {
+	if resp3.StatusCode != http.StatusOK || string(body3) != `{"v":1,"recorded":0,"ips":[],"peers":[]}` {
 		t.Error("unexpected /debug/clientips response: ", resp3.StatusCode, " ", string(body3))
 	}
 }

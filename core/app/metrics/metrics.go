@@ -93,7 +93,8 @@ func NewMetricsHandler(ctx context.Context, config *Config) (*MetricsHandler, er
 var clientIPsOnce sync.Once
 
 // serveClientIPs returns the recent real client IPs that CDN inbounds took
-// from X-Forwarded-For: {"v":1,"recorded":N,"ips":[oldest,...,newest]}.
+// from X-Forwarded-For, with the peer (CDN edge) each came from:
+// {"v":1,"recorded":N,"ips":[oldest,...,newest],"peers":[same order, "" if unknown]}.
 func serveClientIPs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
@@ -102,7 +103,7 @@ func serveClientIPs(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Write(clientsample.AppendJSON(make([]byte, 0, 20*clientsample.Size)))
+	w.Write(clientsample.AppendJSON(make([]byte, 0, 40*clientsample.Size)))
 }
 
 func (p *MetricsHandler) Type() interface{} {

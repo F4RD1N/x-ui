@@ -118,7 +118,8 @@ func TestDialWithRemoteAddr(t *testing.T) {
 	if got := clientsample.Recorded() - before; got != 1 {
 		t.Error("recorded ", got, " client IPs, want 1")
 	}
-	if js := string(clientsample.AppendJSON(nil)); !strings.HasSuffix(js, `"1.1.1.1"]}`) {
+	// The peer is the socket's remote address: the loopback the test dials from.
+	if js := string(clientsample.AppendJSON(nil)); !strings.Contains(js, `"1.1.1.1"],"peers":[`) || !strings.HasSuffix(js, `"127.0.0.1"]}`) {
 		t.Error("client IPs: ", js)
 	}
 
@@ -140,7 +141,7 @@ func TestDialWithRemoteAddr(t *testing.T) {
 	if got := clientsample.Recorded() - before; got != 1 {
 		t.Error("recorded ", got, " client IPs, want 1")
 	}
-	if js := string(clientsample.AppendJSON(nil)); !strings.HasSuffix(js, `"1.1.1.1","5.6.7.8"]}`) {
+	if js := string(clientsample.AppendJSON(nil)); !strings.Contains(js, `"1.1.1.1","5.6.7.8"],"peers":[`) || !strings.HasSuffix(js, `"127.0.0.1","127.0.0.1"]}`) {
 		t.Error("client IPs: ", js)
 	}
 	conn2.Close()
