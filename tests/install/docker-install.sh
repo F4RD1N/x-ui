@@ -291,7 +291,9 @@ run_distro() {
     # the container's own network namespace: the table size is the host's
     # (read-only here, so reported as not changeable or enough), the idle
     # TCP time is the namespace's own and goes to an hour
-    check "connection tracking: the udev rule (applies the values when the module loads) and the values in x-ui's sysctl file" in_c 'grep -q "KERNEL==\"nf_conntrack\", RUN+=\".*systemd-sysctl --prefix=/net/netfilter\"" /etc/udev/rules.d/90-x-ui-conntrack.rules && grep -q "^-net.netfilter.nf_conntrack_tcp_timeout_established = 3600" /etc/sysctl.d/60-x-ui.conf'
+    # the image has systemd but no udev (as --no-install-recommends gives):
+    # the rule is written only where udev has its rules folder
+    check "connection tracking: the values in x-ui's sysctl file, the udev rule where there is udev" in_c 'grep -q "^-net.netfilter.nf_conntrack_tcp_timeout_established = 3600" /etc/sysctl.d/60-x-ui.conf && if [[ -d /etc/udev/rules.d ]]; then grep -q "KERNEL==\"nf_conntrack\", RUN+=\".*systemd-sysctl --prefix=/net/netfilter\"" /etc/udev/rules.d/90-x-ui-conntrack.rules; else [[ ! -e /etc/udev/rules.d/90-x-ui-conntrack.rules ]]; fi'
     check "connection tracking: idle TCP 1 h where it is loaded, nothing claimed that did not happen" in_c 'out=$(XUI_HOST_SETUP_IN_CONTAINER=1 x-ui host-setup update | grep "^Connection tracking: "); echo "$out"; if [[ -e /proc/sys/net/netfilter/nf_conntrack_max ]]; then [[ $(sysctl -n net.netfilter.nf_conntrack_tcp_timeout_established) == 3600 ]] && { echo "$out" | grep -q -- "->" || echo "$out" | grep -q "idle TCP kept 3600 s"; } && ! echo "$out" | grep -q "table [0-9]* -> "; else echo "$out" | grep -q "not in use here"; fi'
 
     # ---- x-ui update-info: login, port and path in one command ---------------
