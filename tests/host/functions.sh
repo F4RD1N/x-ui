@@ -39,6 +39,7 @@ eval "$(sed -n '/^anti_abuse_jail=/p; /^anti_abuse_jail_old=/p; /^anti_abuse_ssh
 eval "$(sed -n '/^disable_bbr() {/,/^}/p' "$SCRIPT")"
 host_swapfile=$W/swapfile
 host_bbr_off=$W/bbr.off
+host_ct=$W/noct   # never this machine's own /proc/sys/net/netfilter
 
 # stubs
 CC=cubic QDISC=fq_codel SWAPS=""
@@ -200,6 +201,52 @@ ok bash -c "[[ \$(cat $host_cpu/cpu0/cpufreq/scaling_governor $host_cpu/cpu1/cpu
 what="  ...and says so"; ok command grep -q 'performance governor on 2 of 4 cores' "$W/out"
 what="governor: none to set (a virtual machine) is fine"
 host_cpu=$W/nocpu; host_governor >"$W/out"; ok command grep -q 'no cpufreq governor' "$W/out"
+
+# connection tracking: the Hetzner case (7.6 GiB, kernel defaults 262144
+# slots, hash 65536, idle TCP 5 days)
+host_ct=$W/ct; mkdir -p "$host_ct"; : >"$host_ct/nf_conntrack_max"; : >"$host_ct/nf_conntrack_buckets"
+printf 'MemTotal:        7930880 kB\n' >"$W/meminfo"
+SYS[net.netfilter.nf_conntrack_max]=262144 SYS[net.netfilter.nf_conntrack_buckets]=65536 SYS[net.netfilter.nf_conntrack_tcp_timeout_established]=432000
+rm -f "$host_sysctl"
+what="conntrack: 8 GiB -> 524288 slots, hash 131072, idle TCP 1 h"
+host_conntrack >"$W/out"; sed 's/^/    /' "$W/out"
+ok bash -c "[[ '${SYS[net.netfilter.nf_conntrack_max]}/${SYS[net.netfilter.nf_conntrack_buckets]}/${SYS[net.netfilter.nf_conntrack_tcp_timeout_established]}' == 524288/131072/3600 ]]"
+what="  ...and says so"; ok command grep -q 'table 262144 -> 524288, hash 65536 -> 131072, idle TCP kept 432000 s -> 3600 s' "$W/out"
+what="  ...nothing in x-ui's sysctl file (the module may not be loaded at boot; host-boot applies it)"
+ok bash -c "! command grep -qs nf_conntrack '$host_sysctl'"
+what="conntrack: a second run changes nothing"
+host_conntrack >"$W/out"
+ok bash -c "[[ '${SYS[net.netfilter.nf_conntrack_max]}/${SYS[net.netfilter.nf_conntrack_buckets]}/${SYS[net.netfilter.nf_conntrack_tcp_timeout_established]}' == 524288/131072/3600 ]] && command grep -q 'table 524288 (enough), idle TCP kept 3600 s' '$W/out'"
+what="conntrack: a big server is capped at 4194304, a larger table is never lowered"
+printf 'MemTotal:        197000000 kB\n' >"$W/meminfo"
+host_conntrack >/dev/null; a=${SYS[net.netfilter.nf_conntrack_max]}
+SYS[net.netfilter.nf_conntrack_max]=8388608 SYS[net.netfilter.nf_conntrack_tcp_timeout_established]=600
+host_conntrack >/dev/null
+ok bash -c "[[ $a == 4194304 && '${SYS[net.netfilter.nf_conntrack_max]}/${SYS[net.netfilter.nf_conntrack_tcp_timeout_established]}' == 8388608/600 ]]"
+what="conntrack: a small machine gets 65536, hash 16384 kept when already larger"
+printf 'MemTotal:        954000 kB\n' >"$W/meminfo"
+SYS[net.netfilter.nf_conntrack_max]=16384 SYS[net.netfilter.nf_conntrack_buckets]=16384
+host_conntrack >/dev/null
+ok bash -c "[[ '${SYS[net.netfilter.nf_conntrack_max]}/${SYS[net.netfilter.nf_conntrack_buckets]}' == 65536/16384 ]]"
+what="conntrack: an admin's table and idle time in /etc/sysctl.d are kept"
+SYS[net.netfilter.nf_conntrack_max]=100000 SYS[net.netfilter.nf_conntrack_buckets]=25000 SYS[net.netfilter.nf_conntrack_tcp_timeout_established]=86400
+printf 'net.netfilter.nf_conntrack_max = 100000\nnet.netfilter.nf_conntrack_tcp_timeout_established=86400\n' >/etc/sysctl.d/90-admin.conf
+host_conntrack >"$W/out"
+ok bash -c "[[ '${SYS[net.netfilter.nf_conntrack_max]}/${SYS[net.netfilter.nf_conntrack_buckets]}/${SYS[net.netfilter.nf_conntrack_tcp_timeout_established]}' == 100000/25000/86400 ]] && command grep -q 'table kept' '$W/out' && command grep -q 'idle TCP time kept' '$W/out'"
+rm -f /etc/sysctl.d/90-admin.conf
+what="conntrack: a kernel whose hash cannot change live keeps it, the table still grows"
+printf 'MemTotal:        7930880 kB\n' >"$W/meminfo"
+rm -f "$host_ct/nf_conntrack_buckets"; SYS[net.netfilter.nf_conntrack_max]=262144 SYS[net.netfilter.nf_conntrack_buckets]=65536
+host_conntrack >/dev/null
+ok bash -c "[[ '${SYS[net.netfilter.nf_conntrack_max]}/${SYS[net.netfilter.nf_conntrack_buckets]}' == 524288/65536 ]]"
+what="conntrack: not loaded -> left alone (nothing loaded or set)"
+host_ct=$W/noct; SYS[net.netfilter.nf_conntrack_max]=1
+host_conntrack >"$W/out"
+ok bash -c "[[ '${SYS[net.netfilter.nf_conntrack_max]}' == 1 ]] && command grep -q 'not in use here' '$W/out'"
+what="conntrack: in the setup and at every boot"
+ct_wired() { declare -f host_setup | command grep -q host_conntrack && declare -f host_boot | command grep -q host_conntrack; }
+ok ct_wired
+printf 'MemTotal:        954000 kB\n' >"$W/meminfo"
 
 # the boot unit: written and enabled by the setup, gone with uninstall
 host_unit=$W/x-ui-host.service

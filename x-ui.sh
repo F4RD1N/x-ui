@@ -933,6 +933,75 @@ host_ports() {
     fi
 }
 
+# host_conntrack sizes the kernel's connection-tracking table, which every
+# connection through the server takes a slot in when a firewall (nftables,
+# iptables, ufw, fail2ban, docker) has it loaded. When the table is full the
+# kernel silently drops every new connection. The table is raised (never
+# lowered) to 65536 slots per GiB of RAM, as a power of two, 65536 to 4194304
+# (524288 at 8 GiB; about 300 bytes per slot in use), with a hash of a
+# quarter of that. Idle TCP entries are forgotten after an hour instead of
+# the kernel's 5 days: the core closes idle connections long before that
+# (connIdle, 300 s by default), so the old entries only fill the table.
+# Values set in another sysctl file are the admin's and stay. Nothing is
+# loaded where it is not in use; applied live, and again at every boot by
+# x-ui-host.service (the module may not be loaded yet when the boot sysctl
+# files are read).
+host_ct=/proc/sys/net/netfilter
+host_ct_idle=3600
+host_conntrack() {
+    local mem_kb want cur hash curhash idle said=""
+    if [[ ! -e $host_ct/nf_conntrack_max ]]; then
+        echo "Connection tracking: not in use here, left alone"
+        return 0
+    fi
+    mem_kb=$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)
+    want=65536
+    while (( want < ${mem_kb:-0} / 16 && want < 4194304 )); do want=$((want * 2)); done
+    if host_sysctl_admin net.netfilter.nf_conntrack_max; then
+        said="table kept (set in this server's sysctl files)"
+    else
+        cur=$(sysctl -n net.netfilter.nf_conntrack_max 2>/dev/null)
+        if [[ $cur =~ ^[0-9]+$ ]] && (( cur < want )); then
+            sysctl -q -w "net.netfilter.nf_conntrack_max=${want}" >/dev/null 2>&1
+            # read back: a container or another network namespace may not
+            # change it
+            if [[ $(sysctl -n net.netfilter.nf_conntrack_max 2>/dev/null) == "$want" ]]; then
+                said="table ${cur} -> ${want}"
+            else
+                said="table ${cur} (could not be changed here)"
+            fi
+        else
+            said="table ${cur:-?} (enough)"
+        fi
+        # the hash: only where it can be changed live (the host's own
+        # network namespace, recent kernels)
+        hash=$(( want / 4 ))
+        curhash=$(sysctl -n net.netfilter.nf_conntrack_buckets 2>/dev/null)
+        if [[ -w $host_ct/nf_conntrack_buckets && $curhash =~ ^[0-9]+$ ]] && (( curhash < hash )) &&
+            ! host_sysctl_admin net.netfilter.nf_conntrack_buckets; then
+            sysctl -q -w "net.netfilter.nf_conntrack_buckets=${hash}" >/dev/null 2>&1
+            [[ $(sysctl -n net.netfilter.nf_conntrack_buckets 2>/dev/null) == "$hash" ]] &&
+                said="${said}, hash ${curhash} -> ${hash}"
+        fi
+    fi
+    if host_sysctl_admin net.netfilter.nf_conntrack_tcp_timeout_established; then
+        said="${said}, idle TCP time kept (set in this server's sysctl files)"
+    else
+        idle=$(sysctl -n net.netfilter.nf_conntrack_tcp_timeout_established 2>/dev/null)
+        if [[ $idle =~ ^[0-9]+$ ]] && (( idle > host_ct_idle )); then
+            sysctl -q -w "net.netfilter.nf_conntrack_tcp_timeout_established=${host_ct_idle}" >/dev/null 2>&1
+            if [[ $(sysctl -n net.netfilter.nf_conntrack_tcp_timeout_established 2>/dev/null) == "$host_ct_idle" ]]; then
+                said="${said}, idle TCP kept ${idle} s -> ${host_ct_idle} s"
+            else
+                said="${said}, idle TCP kept ${idle} s (could not be changed here)"
+            fi
+        else
+            said="${said}, idle TCP kept ${idle:-?} s"
+        fi
+    fi
+    echo "Connection tracking: ${said}"
+}
+
 # host_rings raises the receive ring of every physical network card to 4096
 # descriptors (or the card's maximum, if lower). Many cards start at 512,
 # which a busy server overflows: packets are dropped before the kernel sees
@@ -995,20 +1064,22 @@ host_governor() {
 }
 
 # host_boot is what x-ui-host.service runs at every boot: the settings the
-# hardware forgets (receive rings, governor). The sysctl ones come back from
-# x-ui's sysctl file by themselves.
+# hardware forgets (receive rings, governor) and connection tracking (its
+# module is usually loaded by the firewall, after the boot sysctl files were
+# read). The other sysctl ones come back from x-ui's sysctl file by themselves.
 host_unit=/etc/systemd/system/x-ui-host.service
 host_boot() {
     host_rings
     host_governor
+    host_conntrack
 }
 
 host_unit_install() {
     command -v systemctl >/dev/null 2>&1 || return 0
     cat >"$host_unit" <<'UNIT'
 [Unit]
-Description=x-ui server settings the hardware forgets (network card rings, CPU governor)
-After=network-online.target
+Description=x-ui server settings the hardware forgets (network card rings, CPU governor, connection tracking)
+After=network-online.target nftables.service netfilter-persistent.service ufw.service firewalld.service
 Wants=network-online.target
 
 [Service]
@@ -1023,9 +1094,9 @@ UNIT
     systemctl enable x-ui-host.service >/dev/null 2>&1
 }
 
-# host_setup runs the server setup: "install" (BBR, ports, network cards,
-# CPU and swap) or "update" (the same without swap; swap is a fresh
-# install's).
+# host_setup runs the server setup: "install" (BBR, ports, connection
+# tracking, network cards, CPU and swap) or "update" (the same without swap;
+# swap is a fresh install's).
 host_setup() {
     # (XUI_HOST_SETUP_IN_CONTAINER=1: the tests run it in a container.)
     if host_container && [[ ${XUI_HOST_SETUP_IN_CONTAINER:-} != 1 ]]; then
@@ -1034,6 +1105,7 @@ host_setup() {
     fi
     host_bbr
     host_ports
+    host_conntrack
     host_rings
     host_governor
     host_unit_install
