@@ -287,7 +287,12 @@ run_distro() {
     check "BBR left alone the second time" in_c 'XUI_HOST_SETUP_IN_CONTAINER=1 x-ui host-setup update | grep -q "BBR: already on"'
     check "swap fails cleanly where it cannot be turned on" in_c 'out=$(XUI_HOST_SETUP_IN_CONTAINER=1 x-ui host-setup install); echo "$out" | grep -q "^Swap: "; [[ ! -e /swapfile ]] || swapon --show | grep -q /swapfile'
     check "ports: outgoing range 10000-65535 and tcp_tw_reuse, written down" in_c 'XUI_HOST_SETUP_IN_CONTAINER=1 x-ui host-setup update >/dev/null; [[ $(sysctl -n net.ipv4.ip_local_port_range | tr "\t" " ") == "10000 65535" && $(sysctl -n net.ipv4.tcp_tw_reuse) == 1 ]] && grep -q "^net.ipv4.ip_local_port_range = 10000 65535" /etc/sysctl.d/60-x-ui.conf'
-    check "x-ui-host.service enabled, host-boot runs (rings and governor where there are any)" in_c 'systemctl is-enabled x-ui-host.service | grep -qx enabled && out=$(x-ui host-boot) && echo "$out" | grep -q "^Network cards: " && echo "$out" | grep -q "^CPU: "'
+    check "x-ui-host.service enabled, host-boot runs (rings, governor and connection tracking where there are any)" in_c 'systemctl is-enabled x-ui-host.service | grep -qx enabled && out=$(x-ui host-boot) && echo "$out" | grep -q "^Network cards: " && echo "$out" | grep -q "^CPU: " && echo "$out" | grep -q "^Connection tracking: "'
+    # the container's own network namespace: the table size is the host's
+    # (read-only here, so reported as not changeable or enough), the idle
+    # TCP time is the namespace's own and goes to an hour
+    check "connection tracking: the udev rule (applies the values when the module loads) and the values in x-ui's sysctl file" in_c 'grep -q "KERNEL==\"nf_conntrack\", RUN+=\".*systemd-sysctl --prefix=/net/netfilter\"" /etc/udev/rules.d/90-x-ui-conntrack.rules && grep -q "^-net.netfilter.nf_conntrack_tcp_timeout_established = 3600" /etc/sysctl.d/60-x-ui.conf'
+    check "connection tracking: idle TCP 1 h where it is loaded, nothing claimed that did not happen" in_c 'out=$(XUI_HOST_SETUP_IN_CONTAINER=1 x-ui host-setup update | grep "^Connection tracking: "); echo "$out"; if [[ -e /proc/sys/net/netfilter/nf_conntrack_max ]]; then [[ $(sysctl -n net.netfilter.nf_conntrack_tcp_timeout_established) == 3600 ]] && { echo "$out" | grep -q -- "->" || echo "$out" | grep -q "idle TCP kept 3600 s"; } && ! echo "$out" | grep -q "table [0-9]* -> "; else echo "$out" | grep -q "not in use here"; fi'
 
     # ---- x-ui update-info: login, port and path in one command ---------------
     check "update-info refuses a bad port and changes nothing" in_c '! x-ui update-info alice S3c#r3t 70000 team/panel >/root/ui1.log 2>&1 && grep -q "from 1 to 65535" /root/ui1.log'
@@ -356,7 +361,7 @@ import sqlite3; c = sqlite3.connect('/etc/x-ui/x-ui.db'); c.execute(\\\"delete f
     check "uninstall" in_c 'echo y | x-ui uninstall >/root/uninstall.log 2>&1; true'
     check "resolv.conf as before the install" in_c 'diff <(readlink /etc/resolv.conf; cat /etc/resolv.conf) <(readlink /root/resolv.conf.before; cat /root/resolv.conf.before) >/dev/null'
     check "nothing of x-ui left" in_c '! nft list table inet xui_anti_abuse >/dev/null 2>&1 && ! nft list table inet xui_direct_guard >/dev/null 2>&1 &&
-        [[ ! -e /etc/sysctl.d/60-x-ui.conf && ! -e /etc/x-ui && ! -e /usr/local/x-ui && ! -e /etc/systemd/system/unbound.service.d/90-x-ui.conf && ! -e /etc/systemd/system/x-ui-host.service ]] &&
+        [[ ! -e /etc/sysctl.d/60-x-ui.conf && ! -e /etc/x-ui && ! -e /usr/local/x-ui && ! -e /etc/systemd/system/unbound.service.d/90-x-ui.conf && ! -e /etc/systemd/system/x-ui-host.service && ! -e /etc/udev/rules.d/90-x-ui-conntrack.rules ]] &&
         ! ls /etc/unbound/unbound.conf.d/x-ui.conf >/dev/null 2>&1 && ! systemctl is-active --quiet unbound'
 
     docker rm -f "$C" >/dev/null 2>&1

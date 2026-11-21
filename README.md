@@ -87,7 +87,7 @@ path.
 | BBR | BBR with fq, unless another congestion control was chosen on the server. |
 | Swap | On a fresh install of a machine with 2 GiB of RAM or less and no swap: a 1 GiB `/swapfile`. |
 | Ports | The kernel's range for outgoing connections is 10000-65535 (the default 32768-60999 runs out on a busy server: the core's connections, or the outbound test, then fail with "address already in use"), with `tcp_tw_reuse` on; ports something already listens on inside the new range are reserved first. The panel keeps every port it and the core listen on out of that range (`ip_local_reserved_ports`), so a restart never finds one taken. A range or `tcp_tw_reuse` set in another sysctl file is kept. |
-| Connection tracking | Where a firewall has the kernel's connection tracking loaded (nftables, iptables, ufw, fail2ban, Docker), its table is raised to 65536 slots per GiB of RAM (524288 on an 8 GB server, at most 4194304; never lowered), with a hash a quarter of that, and idle TCP connections are forgotten after an hour instead of the kernel's 5 days. A full table makes the kernel silently drop every new connection. Values set in another sysctl file are kept; nothing is loaded where it is not in use. Applied again at every boot (`x-ui-host.service`). |
+| Connection tracking | Where a firewall has the kernel's connection tracking loaded (nftables, iptables, ufw, fail2ban, Docker), its table is raised to 65536 slots per GiB of RAM (524288 on an 8 GB server, at most 4194304; never lowered), with a hash a quarter of that, and idle TCP connections are forgotten after an hour instead of the kernel's 5 days. A full table makes the kernel silently drop every new connection. Values set in another sysctl file are kept (and applied). Nothing is loaded where it is not in use; a udev rule applies the values whenever a firewall or Docker loads the module, also after every boot. |
 | Network cards | The receive ring of every physical network card is raised to 4096 (or the card's maximum): at the usual 512 a busy server drops packets before the kernel sees them. Changing it resets the card for a second or two, so cards go one at a time and a bond keeps running on its other links; a server with a single card has that blip once. Applied again at every boot (`x-ui-host.service`). |
 | CPU | Every core runs the `performance` cpufreq governor where the server can choose one (most virtual machines cannot), also at every boot. |
 | Memory limit | The Go memory limit (`GOMEMLIMIT`) of the panel and the core comes from the memory the server has, worked out again at every start (so at every boot) and saved nowhere: 3/4 of what is left after the kernel's TCP buffers and a reserve for the system -- about 440 MiB on a 1 GB server, 15 GiB on a 24 GB one. A server made from a snapshot of a smaller one gets the limit for its own memory. A `GOMEMLIMIT` (or `GOGC=off`) in the service's environment is not used; to give x-ui less memory, set `MemoryMax=` in a drop-in (`systemctl edit x-ui`; updates rewrite `x-ui.service` itself) and the limit follows it. The panel's log shows the value. |
@@ -219,17 +219,24 @@ Every install and update now raises the table to 65536 slots per GiB of RAM
 (524288 on an 8 GB server, at most 4194304; a larger table stays) with a hash
 of a quarter of that, and forgets idle TCP connections after an hour. A slot
 in use takes about 300 bytes, so 524288 full slots are about 150 MB. It is
-applied live, with no restart, and again at every boot by `x-ui-host.service`,
-because the module is often loaded only by the firewall, after the boot's
-sysctl files were read. The setup prints what it did:
+applied live, with no restart. The module is usually loaded by the firewall or
+Docker only after the boot's sysctl files were read, so on its own nothing
+would take effect at boot -- neither x-ui's values nor ones an admin put in a
+sysctl file. x-ui writes its values to `/etc/sysctl.d/60-x-ui.conf` with a `-`
+(no complaint while the module is not there yet) and adds
+`/etc/udev/rules.d/90-x-ui-conntrack.rules`, which applies the `net/netfilter`
+values of every sysctl file the moment the module loads, whoever loads it (the
+way `sysctl.d(5)` does it for `br_netfilter`). The setup prints what it did:
 
 ```
 Connection tracking: table 262144 -> 524288, hash 65536 -> 131072, idle TCP kept 432000 s -> 3600 s
 ```
 
-Servers without connection tracking loaded are left alone (`not in use here`),
-and so are values set in another sysctl file. Uninstall removes the boot
-unit; the kernel keeps the values until the next reboot.
+A server without connection tracking loaded is not changed now (`not in use
+here`); the values wait in the file for a firewall to load it. Values set in
+another sysctl file (also the old name `net.nf_conntrack_max`) are the admin's:
+x-ui applies them and leaves them as they are. Uninstall removes the file and
+the rule; the kernel keeps the values until the next reboot.
 
 ## Which CDN each sampled user came through (11.22)
 

@@ -40,6 +40,11 @@ eval "$(sed -n '/^disable_bbr() {/,/^}/p' "$SCRIPT")"
 host_swapfile=$W/swapfile
 host_bbr_off=$W/bbr.off
 host_ct=$W/noct   # never this machine's own /proc/sys/net/netfilter
+host_ct_udev=$W/udev/90-x-ui-conntrack.rules   # nor its udev rules
+mkdir -p "$W/udev"
+printf '#!/bin/sh\necho "$*" >>%s/ss.log\n' "$W" >"$W/systemd-sysctl"; chmod +x "$W/systemd-sysctl"
+host_systemd_sysctl() { echo "$W/systemd-sysctl"; }
+udevadm() { :; }
 
 # stubs
 CC=cubic QDISC=fq_codel SWAPS=""
@@ -212,11 +217,13 @@ what="conntrack: 8 GiB -> 524288 slots, hash 131072, idle TCP 1 h"
 host_conntrack >"$W/out"; sed 's/^/    /' "$W/out"
 ok bash -c "[[ '${SYS[net.netfilter.nf_conntrack_max]}/${SYS[net.netfilter.nf_conntrack_buckets]}/${SYS[net.netfilter.nf_conntrack_tcp_timeout_established]}' == 524288/131072/3600 ]]"
 what="  ...and says so"; ok command grep -q 'table 262144 -> 524288, hash 65536 -> 131072, idle TCP kept 432000 s -> 3600 s' "$W/out"
-what="  ...nothing in x-ui's sysctl file (the module may not be loaded at boot; host-boot applies it)"
-ok bash -c "! command grep -qs nf_conntrack '$host_sysctl'"
+what="  ...written down with a '-' (no complaint at boot before the module is there)"
+ok bash -c "command grep -qx -- '-net.netfilter.nf_conntrack_max = 524288' '$host_sysctl' && command grep -qx -- '-net.netfilter.nf_conntrack_buckets = 131072' '$host_sysctl' && command grep -qx -- '-net.netfilter.nf_conntrack_tcp_timeout_established = 3600' '$host_sysctl'"
+what="  ...and a udev rule applies the net/netfilter values when the module loads"
+ok command grep -qx "ACTION==\"add\", SUBSYSTEM==\"module\", KERNEL==\"nf_conntrack\", RUN+=\"$W/systemd-sysctl --prefix=/net/netfilter\"" "$host_ct_udev"
 what="conntrack: a second run changes nothing"
-host_conntrack >"$W/out"
-ok bash -c "[[ '${SYS[net.netfilter.nf_conntrack_max]}/${SYS[net.netfilter.nf_conntrack_buckets]}/${SYS[net.netfilter.nf_conntrack_tcp_timeout_established]}' == 524288/131072/3600 ]] && command grep -q 'table 524288 (enough), idle TCP kept 3600 s' '$W/out'"
+cp "$host_sysctl" "$W/sysctl.before"; host_conntrack >"$W/out"
+ok bash -c "cmp -s '$host_sysctl' '$W/sysctl.before' && [[ '${SYS[net.netfilter.nf_conntrack_max]}/${SYS[net.netfilter.nf_conntrack_tcp_timeout_established]}' == 524288/3600 ]] && command grep -q 'table 524288 (enough), idle TCP kept 3600 s' '$W/out'"
 what="conntrack: a big server is capped at 4194304, a larger table is never lowered"
 printf 'MemTotal:        197000000 kB\n' >"$W/meminfo"
 host_conntrack >/dev/null; a=${SYS[net.netfilter.nf_conntrack_max]}
@@ -228,21 +235,27 @@ printf 'MemTotal:        954000 kB\n' >"$W/meminfo"
 SYS[net.netfilter.nf_conntrack_max]=16384 SYS[net.netfilter.nf_conntrack_buckets]=16384
 host_conntrack >/dev/null
 ok bash -c "[[ '${SYS[net.netfilter.nf_conntrack_max]}/${SYS[net.netfilter.nf_conntrack_buckets]}' == 65536/16384 ]]"
-what="conntrack: an admin's table and idle time in /etc/sysctl.d are kept"
+what="conntrack: an admin's table and idle time are theirs: not changed, x-ui's lines for them gone, their files applied"
+printf 'MemTotal:        7930880 kB\n' >"$W/meminfo"
 SYS[net.netfilter.nf_conntrack_max]=100000 SYS[net.netfilter.nf_conntrack_buckets]=25000 SYS[net.netfilter.nf_conntrack_tcp_timeout_established]=86400
 printf 'net.netfilter.nf_conntrack_max = 100000\nnet.netfilter.nf_conntrack_tcp_timeout_established=86400\n' >/etc/sysctl.d/90-admin.conf
-host_conntrack >"$W/out"
-ok bash -c "[[ '${SYS[net.netfilter.nf_conntrack_max]}/${SYS[net.netfilter.nf_conntrack_buckets]}/${SYS[net.netfilter.nf_conntrack_tcp_timeout_established]}' == 100000/25000/86400 ]] && command grep -q 'table kept' '$W/out' && command grep -q 'idle TCP time kept' '$W/out'"
+rm -f "$W/ss.log"; host_conntrack >"$W/out"; sed 's/^/    /' "$W/out"
+ok bash -c "[[ '${SYS[net.netfilter.nf_conntrack_max]}/${SYS[net.netfilter.nf_conntrack_tcp_timeout_established]}' == 100000/86400 ]] && ! command grep -q 'nf_conntrack_max\|tcp_timeout_established' '$host_sysctl' && command grep -qx -- '--prefix=/net/netfilter' '$W/ss.log' && command grep -q 'table 100000 (set in' '$W/out' && command grep -q 'idle TCP kept 86400 s (set in' '$W/out'"
+rm -f /etc/sysctl.d/90-admin.conf
+what="conntrack: the old key net.nf_conntrack_max in an admin's file counts too"
+SYS[net.netfilter.nf_conntrack_max]=100000
+echo 'net.nf_conntrack_max = 100000' >/etc/sysctl.d/90-admin.conf
+host_conntrack >/dev/null
+ok test "${SYS[net.netfilter.nf_conntrack_max]}" = 100000
 rm -f /etc/sysctl.d/90-admin.conf
 what="conntrack: a kernel whose hash cannot change live keeps it, the table still grows"
-printf 'MemTotal:        7930880 kB\n' >"$W/meminfo"
 rm -f "$host_ct/nf_conntrack_buckets"; SYS[net.netfilter.nf_conntrack_max]=262144 SYS[net.netfilter.nf_conntrack_buckets]=65536
 host_conntrack >/dev/null
 ok bash -c "[[ '${SYS[net.netfilter.nf_conntrack_max]}/${SYS[net.netfilter.nf_conntrack_buckets]}' == 524288/65536 ]]"
-what="conntrack: not loaded -> left alone (nothing loaded or set)"
-host_ct=$W/noct; SYS[net.netfilter.nf_conntrack_max]=1
+what="conntrack: not loaded -> nothing loaded or set now, the values written down for when a firewall loads it"
+host_ct=$W/noct; SYS[net.netfilter.nf_conntrack_max]=1; rm -f "$host_sysctl" "$host_ct_udev"
 host_conntrack >"$W/out"
-ok bash -c "[[ '${SYS[net.netfilter.nf_conntrack_max]}' == 1 ]] && command grep -q 'not in use here' '$W/out'"
+ok bash -c "[[ '${SYS[net.netfilter.nf_conntrack_max]}' == 1 ]] && command grep -q 'not in use here' '$W/out' && command grep -qx -- '-net.netfilter.nf_conntrack_max = 524288' '$host_sysctl' && [[ -f '$host_ct_udev' ]]"
 what="conntrack: in the setup and at every boot"
 ct_wired() { declare -f host_setup | command grep -q host_conntrack && declare -f host_boot | command grep -q host_conntrack; }
 ok ct_wired
@@ -254,9 +267,9 @@ SYSTEMCTL=""; systemctl() { SYSTEMCTL="$SYSTEMCTL|$*"; }
 what="setup writes and enables x-ui-host.service (host-boot at every boot)"
 host_unit_install
 ok bash -c "command grep -q '^ExecStart=/usr/bin/x-ui host-boot' '$host_unit' && [[ '$SYSTEMCTL' == *'enable x-ui-host.service'* ]]"
-what="uninstall disables and removes it with the sysctl file"
+what="uninstall disables and removes it with the sysctl file and the conntrack udev rule"
 SYSTEMCTL=""; host_revert >/dev/null
-ok bash -c "[[ ! -e '$host_unit' && ! -e '$host_sysctl' && '$SYSTEMCTL' == *'disable x-ui-host.service'* ]]"
+ok bash -c "[[ ! -e '$host_unit' && ! -e '$host_sysctl' && ! -e '$host_ct_udev' && '$SYSTEMCTL' == *'disable x-ui-host.service'* ]]"
 
 # ignoreip: [DEFAULT] and [sshd] only, continuation lines too
 what="ignoreip: DEFAULT with continuation lines, sshd, not other jails"

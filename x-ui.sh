@@ -943,61 +943,111 @@ host_ports() {
 # the kernel's 5 days: the core closes idle connections long before that
 # (connIdle, 300 s by default), so the old entries only fill the table.
 # Values set in another sysctl file are the admin's and stay. Nothing is
-# loaded where it is not in use; applied live, and again at every boot by
-# x-ui-host.service (the module may not be loaded yet when the boot sysctl
-# files are read).
+# loaded where it is not in use.
+#
+# The module is usually loaded by the firewall or Docker after the boot's
+# sysctl files were read, so neither x-ui's values nor an admin's would take
+# effect at boot on their own: x-ui's go into its sysctl file with a "-"
+# (no complaint while the module is not there yet), and a udev rule applies
+# every sysctl file's net/netfilter values again the moment the module loads,
+# whoever loads it (as sysctl.d(5) does it for br_netfilter).
 host_ct=/proc/sys/net/netfilter
 host_ct_idle=3600
+host_ct_udev=/etc/udev/rules.d/90-x-ui-conntrack.rules
+host_ct_keys="net.netfilter.nf_conntrack_max net.netfilter.nf_conntrack_buckets net.netfilter.nf_conntrack_tcp_timeout_established"
+
+# host_systemd_sysctl prints the path of systemd-sysctl, if there is one.
+host_systemd_sysctl() {
+    local p
+    for p in /usr/lib/systemd/systemd-sysctl /lib/systemd/systemd-sysctl; do
+        [[ -x $p ]] && { echo "$p"; return 0; }
+    done
+    return 1
+}
+
+# host_ct_line KEY [VALUE] puts "-KEY = VALUE" into x-ui's sysctl file, or
+# takes KEY's line out when there is no VALUE.
+host_ct_line() {
+    [[ -f $host_sysctl ]] || { [[ -n ${2:-} ]] || return 0; printf '# Written by x-ui (install and update); uninstall removes it.\n' >"$host_sysctl"; }
+    sed -i "/^-\{0,1\}${1//./\\.}[[:space:]]*=/d" "$host_sysctl"
+    [[ -n ${2:-} ]] && echo "-${1} = ${2}" >>"$host_sysctl"
+    return 0
+}
+
+# host_ct_admin KEY: KEY (or the old name of the table's size) is set in a
+# sysctl file other than x-ui's.
+host_ct_admin() {
+    host_sysctl_admin "$1" && return 0
+    [[ $1 == net.netfilter.nf_conntrack_max ]] && host_sysctl_admin net.nf_conntrack_max
+}
+
 host_conntrack() {
-    local mem_kb want cur hash curhash idle said=""
-    if [[ ! -e $host_ct/nf_conntrack_max ]]; then
-        echo "Connection tracking: not in use here, left alone"
-        return 0
+    local mem_kb want cur hash curhash idle said="" admin="" ss key
+    ss=$(host_systemd_sysctl)
+    # the rule first: it is what applies all of this at the next boot
+    if [[ -n $ss ]] && [[ -d ${host_ct_udev%/*} ]]; then
+        printf '# Written by x-ui: when the connection-tracking module loads (firewall,\n# Docker), apply the net/netfilter values of every sysctl file again.\nACTION=="add", SUBSYSTEM=="module", KERNEL=="nf_conntrack", RUN+="%s --prefix=/net/netfilter"\n' "$ss" >"$host_ct_udev"
+        command -v udevadm >/dev/null 2>&1 && udevadm control --reload >/dev/null 2>&1
     fi
     mem_kb=$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)
     want=65536
     while (( want < ${mem_kb:-0} / 16 && want < 4194304 )); do want=$((want * 2)); done
-    if host_sysctl_admin net.netfilter.nf_conntrack_max; then
-        said="table kept (set in this server's sysctl files)"
-    else
-        cur=$(sysctl -n net.netfilter.nf_conntrack_max 2>/dev/null)
-        if [[ $cur =~ ^[0-9]+$ ]] && (( cur < want )); then
-            sysctl -q -w "net.netfilter.nf_conntrack_max=${want}" >/dev/null 2>&1
-            # read back: a container or another network namespace may not
-            # change it
-            if [[ $(sysctl -n net.netfilter.nf_conntrack_max 2>/dev/null) == "$want" ]]; then
-                said="table ${cur} -> ${want}"
-            else
-                said="table ${cur} (could not be changed here)"
-            fi
+    # an admin's values: theirs, and x-ui's line for that key goes
+    for key in $host_ct_keys; do
+        host_ct_admin "$key" && { admin="${admin} ${key}"; host_ct_line "$key"; }
+    done
+    if [[ ! -e $host_ct/nf_conntrack_max ]]; then
+        echo "Connection tracking: not in use here (applied when a firewall loads it)"
+        # written down for when it does (the udev rule applies them then)
+        [[ $admin == *nf_conntrack_max* ]] || host_ct_line net.netfilter.nf_conntrack_max "$want"
+        [[ $admin == *nf_conntrack_buckets* ]] || host_ct_line net.netfilter.nf_conntrack_buckets $((want / 4))
+        [[ $admin == *tcp_timeout_established* ]] || host_ct_line net.netfilter.nf_conntrack_tcp_timeout_established "$host_ct_idle"
+        return 0
+    fi
+    # an admin's values may never have been applied (the module came after
+    # the boot's sysctl files): apply them now
+    [[ -n $admin && -n $ss ]] && "$ss" --prefix=/net/netfilter >/dev/null 2>&1
+
+    cur=$(sysctl -n net.netfilter.nf_conntrack_max 2>/dev/null)
+    if [[ $admin == *nf_conntrack_max* ]]; then
+        said="table ${cur:-?} (set in this server's sysctl files)"
+    elif [[ $cur =~ ^[0-9]+$ ]] && (( cur < want )); then
+        sysctl -q -w "net.netfilter.nf_conntrack_max=${want}" >/dev/null 2>&1
+        # read back: a container or another network namespace may not
+        # change it
+        if [[ $(sysctl -n net.netfilter.nf_conntrack_max 2>/dev/null) == "$want" ]]; then
+            said="table ${cur} -> ${want}"
+            host_ct_line net.netfilter.nf_conntrack_max "$want"
         else
-            said="table ${cur:-?} (enough)"
+            said="table ${cur} (could not be changed here)"
         fi
-        # the hash: only where it can be changed live (the host's own
-        # network namespace, recent kernels)
-        hash=$(( want / 4 ))
-        curhash=$(sysctl -n net.netfilter.nf_conntrack_buckets 2>/dev/null)
-        if [[ -w $host_ct/nf_conntrack_buckets && $curhash =~ ^[0-9]+$ ]] && (( curhash < hash )) &&
-            ! host_sysctl_admin net.netfilter.nf_conntrack_buckets; then
-            sysctl -q -w "net.netfilter.nf_conntrack_buckets=${hash}" >/dev/null 2>&1
-            [[ $(sysctl -n net.netfilter.nf_conntrack_buckets 2>/dev/null) == "$hash" ]] &&
-                said="${said}, hash ${curhash} -> ${hash}"
+    else
+        said="table ${cur:-?} (enough)"
+    fi
+    # the hash: only where it can be changed live (the host's own network
+    # namespace, recent kernels)
+    hash=$(( want / 4 ))
+    curhash=$(sysctl -n net.netfilter.nf_conntrack_buckets 2>/dev/null)
+    if [[ $admin != *nf_conntrack_buckets* && -w $host_ct/nf_conntrack_buckets && $curhash =~ ^[0-9]+$ ]] && (( curhash < hash )); then
+        sysctl -q -w "net.netfilter.nf_conntrack_buckets=${hash}" >/dev/null 2>&1
+        if [[ $(sysctl -n net.netfilter.nf_conntrack_buckets 2>/dev/null) == "$hash" ]]; then
+            said="${said}, hash ${curhash} -> ${hash}"
+            host_ct_line net.netfilter.nf_conntrack_buckets "$hash"
         fi
     fi
-    if host_sysctl_admin net.netfilter.nf_conntrack_tcp_timeout_established; then
-        said="${said}, idle TCP time kept (set in this server's sysctl files)"
-    else
-        idle=$(sysctl -n net.netfilter.nf_conntrack_tcp_timeout_established 2>/dev/null)
-        if [[ $idle =~ ^[0-9]+$ ]] && (( idle > host_ct_idle )); then
-            sysctl -q -w "net.netfilter.nf_conntrack_tcp_timeout_established=${host_ct_idle}" >/dev/null 2>&1
-            if [[ $(sysctl -n net.netfilter.nf_conntrack_tcp_timeout_established 2>/dev/null) == "$host_ct_idle" ]]; then
-                said="${said}, idle TCP kept ${idle} s -> ${host_ct_idle} s"
-            else
-                said="${said}, idle TCP kept ${idle} s (could not be changed here)"
-            fi
+    idle=$(sysctl -n net.netfilter.nf_conntrack_tcp_timeout_established 2>/dev/null)
+    if [[ $admin == *tcp_timeout_established* ]]; then
+        said="${said}, idle TCP kept ${idle:-?} s (set in this server's sysctl files)"
+    elif [[ $idle =~ ^[0-9]+$ ]] && (( idle > host_ct_idle )); then
+        sysctl -q -w "net.netfilter.nf_conntrack_tcp_timeout_established=${host_ct_idle}" >/dev/null 2>&1
+        if [[ $(sysctl -n net.netfilter.nf_conntrack_tcp_timeout_established 2>/dev/null) == "$host_ct_idle" ]]; then
+            said="${said}, idle TCP kept ${idle} s -> ${host_ct_idle} s"
+            host_ct_line net.netfilter.nf_conntrack_tcp_timeout_established "$host_ct_idle"
         else
-            said="${said}, idle TCP kept ${idle:-?} s"
+            said="${said}, idle TCP kept ${idle} s (could not be changed here)"
         fi
+    else
+        said="${said}, idle TCP kept ${idle:-?} s"
     fi
     echo "Connection tracking: ${said}"
 }
@@ -1121,7 +1171,8 @@ host_revert() {
         rm -f "$host_unit"
         systemctl daemon-reload >/dev/null 2>&1
     fi
-    rm -f "$host_sysctl" "$host_bbr_off"
+    rm -f "$host_sysctl" "$host_bbr_off" "$host_ct_udev"
+    command -v udevadm >/dev/null 2>&1 && udevadm control --reload >/dev/null 2>&1
     local line="^${host_swapfile}[[:space:]].*${host_fstab_tag}\$"
     if grep -q "$line" /etc/fstab 2>/dev/null; then
         swapoff "$host_swapfile" 2>/dev/null
